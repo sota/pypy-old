@@ -30,14 +30,14 @@ class CollectAnalyzer(graphanalyze.BoolGraphAnalyzer):
                 return False
             if getattr(func, '_gctransformer_hint_close_stack_', False):
                 return True
-        return graphanalyze.GraphAnalyzer.analyze_direct_call(self, graph,
-                                                              seen)
+        return graphanalyze.BoolGraphAnalyzer.analyze_direct_call(self, graph,
+                                                                  seen)
     def analyze_external_call(self, op, seen=None):
         funcobj = op.args[0].value._obj
         if getattr(funcobj, 'random_effects_on_gcobjs', False):
             return True
-        return graphanalyze.GraphAnalyzer.analyze_external_call(self, op,
-                                                                seen)
+        return graphanalyze.BoolGraphAnalyzer.analyze_external_call(self, op,
+                                                                    seen)
     def analyze_simple_operation(self, op, graphinfo):
         if op.opname in ('malloc', 'malloc_varsize'):
             flags = op.args[1].value
@@ -424,7 +424,7 @@ class BaseFrameworkGCTransformer(GCTransformer):
         self.identityhash_ptr = getfn(GCClass.identityhash.im_func,
                                       [s_gc, s_gcref],
                                       annmodel.SomeInteger(),
-                                      minimal_transform=False)
+                                      minimal_transform=False, inline=True)
         if getattr(GCClass, 'obtain_free_space', False):
             self.obtainfreespace_ptr = getfn(GCClass.obtain_free_space.im_func,
                                              [s_gc, annmodel.SomeInteger()],
@@ -433,7 +433,7 @@ class BaseFrameworkGCTransformer(GCTransformer):
         if GCClass.moving_gc:
             self.id_ptr = getfn(GCClass.id.im_func,
                                 [s_gc, s_gcref], annmodel.SomeInteger(),
-                                inline = False,
+                                inline = True,
                                 minimal_transform = False)
         else:
             self.id_ptr = None

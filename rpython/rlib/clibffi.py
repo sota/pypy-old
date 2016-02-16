@@ -64,15 +64,17 @@ if _WIN32:
 else:
     separate_module_sources = []
 
+
 if not _WIN32:
     includes = ['ffi.h']
 
     if _MAC_OS:
         pre_include_bits = ['#define MACOSX']
-    else: 
+    else:
         pre_include_bits = []
 
     libraries = ['ffi']
+    link_files = []
 
     eci = ExternalCompilationInfo(
         pre_include_bits = pre_include_bits,
@@ -81,6 +83,7 @@ if not _WIN32:
         separate_module_sources = separate_module_sources,
         include_dirs = platform.include_dirs_for_libffi(),
         library_dirs = platform.library_dirs_for_libffi(),
+        link_files = link_files,
         testonly_libraries = ['ffi'],
     )
 elif _MINGW:
@@ -333,7 +336,7 @@ CALLBACK_TP = rffi.CCallback([FFI_CIFP, rffi.VOIDP, rffi.VOIDPP, rffi.VOIDP],
                              lltype.Void)
 c_ffi_prep_closure = external('ffi_prep_closure', [FFI_CLOSUREP, FFI_CIFP,
                                                    CALLBACK_TP, rffi.VOIDP],
-                              rffi.INT)            
+                              rffi.INT)
 
 FFI_STRUCT_P = lltype.Ptr(lltype.Struct('FFI_STRUCT',
                                         ('ffistruct', FFI_TYPE_P.TO),

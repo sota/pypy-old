@@ -39,7 +39,7 @@ class TestArray(BaseTestPyPyC):
         assert log.result == 19507200
         loop, = log.loops_by_filename(self.filepath)
         assert loop.match("""
-            guard_not_invalidated(descr=...)
+            guard_not_invalidated?
             i13 = int_lt(i7, i9)
             guard_true(i13, descr=...)
             i15 = getarrayitem_raw(i10, i7, descr=<ArrayS .>)
@@ -116,7 +116,7 @@ class TestArray(BaseTestPyPyC):
             i20 = int_add(i6, 1)
             --TICK--
             jump(..., descr=...)
-        """)
+        """, ignore_ops=['guard_not_invalidated'])
 
     def test_array_of_floats(self):
         try:
@@ -155,7 +155,7 @@ class TestArray(BaseTestPyPyC):
             i23 = int_add(i6, 1)
             --TICK--
             jump(..., descr=...)
-        """)
+        """, ignore_ops=['guard_not_invalidated'])
 
 
     def test_zeropadded(self):
