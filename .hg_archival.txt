@@ -1,0 +1,5 @@
+repo: 45eff22199974f85fd96138d25510f4660aba5a1
+node: b9c3566aa0170aaa736db0491d542c309ec7a5dc
+branch: release-2.0.x
+latesttag: release-2.0-beta-1
+latesttagdistance: 1739
