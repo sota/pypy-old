@@ -1,5 +1,4 @@
 # -*- encoding: utf-8 -*-
-import py, sys
 from pypy.module._pypyjson.interp_decoder import JSONDecoder
 
 def test_skip_whitespace():
@@ -184,3 +183,9 @@ class AppTest(object):
         expected = u'z\U0001d120x'
         res = _pypyjson.loads('"z\\ud834\\udd20x"')
         assert res == expected
+
+    def test_tab_in_string_should_fail(self):
+        import _pypyjson
+        # http://json.org/JSON_checker/test/fail25.json
+        s = '["\ttab\tcharacter\tin\tstring\t"]'
+        raises(ValueError, "_pypyjson.loads(s)")
