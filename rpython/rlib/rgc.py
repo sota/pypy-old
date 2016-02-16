@@ -86,6 +86,14 @@ def _make_sure_does_not_move(p):
         collect(i)
         i += 1
 
+def needs_write_barrier(obj):
+    """ We need to emit write barrier if the right hand of assignment
+    is in nursery, used by the JIT for handling set*_gc(Const)
+    """
+    if not obj:
+        return False
+    return can_move(obj)
+
 def _heap_stats():
     raise NotImplementedError # can't be run directly
 
@@ -231,6 +239,7 @@ def ll_arraycopy(source, dest, source_start, dest_start, length):
 
 
 @jit.oopspec('rgc.ll_shrink_array(p, smallerlength)')
+@enforceargs(None, int)
 @specialize.ll()
 def ll_shrink_array(p, smallerlength):
     from rpython.rtyper.lltypesystem.lloperation import llop
