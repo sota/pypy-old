@@ -1,5 +1,5 @@
 from rpython.jit.backend.llsupport import jitframe
-from rpython.jit.backend.llsupport.memcpy import memcpy_fn
+from rpython.jit.backend.llsupport.memcpy import memcpy_fn, memset_fn
 from rpython.jit.backend.llsupport.symbolic import WORD
 from rpython.jit.metainterp.history import (INT, REF, FLOAT, JitCellToken,
     ConstInt, BoxInt, AbstractFailDescr)
@@ -63,6 +63,7 @@ class BaseAssembler(object):
     def __init__(self, cpu, translate_support_code=False):
         self.cpu = cpu
         self.memcpy_addr = 0
+        self.memset_addr = 0
         self.rtyper = cpu.rtyper
         self._debug = False
 
@@ -79,6 +80,7 @@ class BaseAssembler(object):
         else:
             self.gc_size_of_header = WORD # for tests
         self.memcpy_addr = self.cpu.cast_ptr_to_int(memcpy_fn)
+        self.memset_addr = self.cpu.cast_ptr_to_int(memset_fn)
         self._build_failure_recovery(False, withfloats=False)
         self._build_failure_recovery(True, withfloats=False)
         self._build_wb_slowpath(False)
@@ -190,8 +192,6 @@ class BaseAssembler(object):
             positions[i] = rffi.cast(rffi.USHORT, position)
         # write down the positions of locs
         guardtok.faildescr.rd_locs = positions
-        # we want the descr to keep alive
-        guardtok.faildescr.rd_loop_token = self.current_clt
         return fail_descr, target
 
     def call_assembler(self, op, guard_op, argloc, vloc, result_loc, tmploc):
@@ -223,7 +223,8 @@ class BaseAssembler(object):
                 raise AssertionError(kind)
 
         gcref = cast_instance_to_gcref(value)
-        rgc._make_sure_does_not_move(gcref)
+        if gcref:
+            rgc._make_sure_does_not_move(gcref)
         value = rffi.cast(lltype.Signed, gcref)
         je_location = self._call_assembler_check_descr(value, tmploc)
         #
