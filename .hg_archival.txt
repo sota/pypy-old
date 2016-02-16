@@ -1,5 +1,4 @@
 repo: 45eff22199974f85fd96138d25510f4660aba5a1
-node: 10f1b29a2bd21f837090286174a9ca030b8680b2
+node: 9c4588d731b7fe0b08669bd732c2b676cb0a8233
 branch: release-2.5.x
-latesttag: release-2.3.1
-latesttagdistance: 615
+tag: release-2.5.1
