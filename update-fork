@@ -1,0 +1,27 @@
+#!/bin/bash
+
+CWD=`pwd`
+TMP=`mktemp -d`
+REPO=`git rev-parse --show-toplevel`
+echo "CWD=$CWD TMP=$TMP REPO=$REPO"
+BITBUCKET=https://bitbucket.org
+DOWNLOADS=pypy/pypy/downloads
+
+cd $TMP
+wget --quiet $BITBUCKET/$DOWNLOADS/
+RELEASES=`sed -n "s|.*$DOWNLOADS/\(pypy-[0-9.]*-src.tar.bz2\).*|\1|p" index.html | sort --version-sort`
+
+cd $REPO
+for RELEASE in $RELEASES; do
+    BRANCH="${RELEASE%%-src.tar.bz2*}"
+    if [ ! `git branch --list $BRANCH` ]; then
+        git checkout -b $BRANCH
+        (cd $TMP && wget --quiet $BITBUCKET/$DOWNLOADS/$RELEASE)
+        tar --strip-components 1 -xvf $TMP/$RELEASE -C $REPO
+        git add .
+        git commit -m"$BITBUCKET/$DOWNLOADS/$RELEASE"
+        git rebase master
+        git checkout master
+        git merge $BRANCH
+    fi
+done
