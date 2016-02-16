@@ -1,7 +1,5 @@
 import sys
 
-import py
-
 from rpython.tool.sourcetools import func_with_new_name
 from rpython.rtyper.lltypesystem import lltype, llmemory
 from rpython.rtyper.annlowlevel import (llhelper, MixLevelHelperAnnotator,
@@ -15,7 +13,6 @@ from rpython.rlib.objectmodel import we_are_translated
 from rpython.rlib.unroll import unrolling_iterable
 from rpython.rlib.debug import fatalerror
 from rpython.rlib.rstackovf import StackOverflow
-from rpython.translator.simplify import get_functype
 from rpython.translator.backendopt import removenoops
 from rpython.translator.unsimplify import call_final_function
 
@@ -167,6 +164,12 @@ def get_stats():
 def reset_stats():
     pyjitpl._warmrunnerdesc.stats.clear()
 
+def reset_jit():
+    """Helper for some tests (see micronumpy/test/test_zjit.py)"""
+    reset_stats()
+    pyjitpl._warmrunnerdesc.memory_manager.alive_loops.clear()
+    pyjitpl._warmrunnerdesc.jitcounter._clear_all()
+
 def get_translator():
     return pyjitpl._warmrunnerdesc.translator
 
@@ -207,6 +210,12 @@ class WarmRunnerDesc(object):
         from rpython.jit.metainterp.virtualref import VirtualRefInfo
         vrefinfo = VirtualRefInfo(self)
         self.codewriter.setup_vrefinfo(vrefinfo)
+        #
+        from rpython.jit.metainterp import counter
+        if self.cpu.translate_support_code:
+            self.jitcounter = counter.JitCounter(translator=translator)
+        else:
+            self.jitcounter = counter.DeterministicJitCounter()
         #
         self.hooks = policy.jithookiface
         self.make_virtualizable_infos()
@@ -249,7 +258,7 @@ class WarmRunnerDesc(object):
         test_ajit::test_inline_jit_merge_point
         """
         from rpython.translator.backendopt.inline import (
-            get_funcobj, inlinable_static_callers, auto_inlining)
+            inlinable_static_callers, auto_inlining)
 
         jmp_calls = {}
         def get_jmp_call(graph, _inline_jit_merge_point_):
@@ -279,7 +288,7 @@ class WarmRunnerDesc(object):
             msg = ("The first operation of an _inline_jit_merge_point_ graph must be "
                    "a direct_call to the function passed to @jitdriver.inline()")
             assert op_jmp_call.opname == 'direct_call', msg
-            jmp_funcobj = get_funcobj(op_jmp_call.args[0].value)
+            jmp_funcobj = op_jmp_call.args[0].value._obj
             assert jmp_funcobj._callable is _inline_jit_merge_point_, msg
             jmp_block.operations.remove(op_jmp_call)
             return op_jmp_call, jmp_funcobj.graph
@@ -512,21 +521,10 @@ class WarmRunnerDesc(object):
         jd._maybe_compile_and_run_fn = maybe_compile_and_run
 
     def make_driverhook_graphs(self):
-        from rpython.rlib.jit import BaseJitCell
-        bk = self.rtyper.annotator.bookkeeper
-        classdef = bk.getuniqueclassdef(BaseJitCell)
-        s_BaseJitCell_or_None = annmodel.SomeInstance(classdef,
-                                                      can_be_None=True)
-        s_BaseJitCell_not_None = annmodel.SomeInstance(classdef)
         s_Str = annmodel.SomeString()
         #
         annhelper = MixLevelHelperAnnotator(self.translator.rtyper)
         for jd in self.jitdrivers_sd:
-            jd._set_jitcell_at_ptr = self._make_hook_graph(jd,
-                annhelper, jd.jitdriver.set_jitcell_at, annmodel.s_None,
-                s_BaseJitCell_not_None)
-            jd._get_jitcell_at_ptr = self._make_hook_graph(jd,
-                annhelper, jd.jitdriver.get_jitcell_at, s_BaseJitCell_or_None)
             jd._get_printable_location_ptr = self._make_hook_graph(jd,
                 annhelper, jd.jitdriver.get_printable_location, s_Str)
             jd._confirm_enter_jit_ptr = self._make_hook_graph(jd,
@@ -663,7 +661,7 @@ class WarmRunnerDesc(object):
     def helper_func(self, FUNCPTR, func):
         if not self.cpu.translate_support_code:
             return llhelper(FUNCPTR, func)
-        FUNC = get_functype(FUNCPTR)
+        FUNC = FUNCPTR.TO
         args_s = [annmodel.lltype_to_annotation(ARG) for ARG in FUNC.ARGS]
         s_result = annmodel.lltype_to_annotation(FUNC.RESULT)
         graph = self.annhelper.getgraph(func, args_s, s_result)
@@ -861,10 +859,6 @@ class WarmRunnerDesc(object):
 
         def assembler_call_helper(deadframe, virtualizableref):
             fail_descr = self.cpu.get_latest_descr(deadframe)
-            if vinfo is not None:
-                virtualizable = lltype.cast_opaque_ptr(
-                    vinfo.VTYPEPTR, virtualizableref)
-                vinfo.reset_vable_token(virtualizable)
             try:
                 fail_descr.handle_fail(deadframe, self.metainterp_sd, jd)
             except jitexc.JitException, e:
@@ -977,8 +971,6 @@ class WarmRunnerDesc(object):
             op.args[:3] = [closures[key]]
 
     def rewrite_force_virtual(self, vrefinfo):
-        if self.cpu.ts.name != 'lltype':
-            py.test.skip("rewrite_force_virtual: port it to ootype")
         all_graphs = self.translator.graphs
         vrefinfo.replace_force_virtual_with_call(all_graphs)
 

@@ -454,11 +454,19 @@ class rbigint(object):
 
     @jit.elidable
     def repr(self):
-        return self.format(BASE10, suffix="L")
+        try:
+            x = self.toint()
+        except OverflowError:
+            return self.format(BASE10, suffix="L")
+        return str(x) + "L"
 
     @jit.elidable
     def str(self):
-        return self.format(BASE10)
+        try:
+            x = self.toint()
+        except OverflowError:
+            return self.format(BASE10)
+        return str(x)
 
     @jit.elidable
     def eq(self, other):
@@ -723,10 +731,16 @@ class rbigint(object):
             if c.numdigits() == 1 and c._digits[0] == ONEDIGIT:
                 return NULLRBIGINT
 
-            # if base < 0:
-            #     base = base % modulus
-            # Having the base positive just makes things easier.
-            if a.sign < 0:
+            # Reduce base by modulus in some cases:
+            # 1. If base < 0.  Forcing the base non-neg makes things easier.
+            # 2. If base is obviously larger than the modulus.  The "small
+            #    exponent" case later can multiply directly by base repeatedly,
+            #    while the "large exponent" case multiplies directly by base 31
+            #    times.  It can be unboundedly faster to multiply by
+            #    base % modulus instead.
+            # We could _always_ do this reduction, but mod() isn't cheap,
+            # so we only do it when it buys something.
+            if a.sign < 0 or a.numdigits() > c.numdigits():
                 a = a.mod(c)
 
         elif b.sign == 0:
@@ -916,20 +930,67 @@ class rbigint(object):
 
         loshift = int_other % SHIFT
         hishift = SHIFT - loshift
-        lomask = (1 << hishift) - 1
-        himask = MASK ^ lomask
         z = rbigint([NULLDIGIT] * newsize, self.sign, newsize)
         i = 0
         while i < newsize:
-            newdigit = (self.digit(wordshift) >> loshift) & lomask
+            newdigit = (self.digit(wordshift) >> loshift)
             if i+1 < newsize:
-                newdigit |= (self.digit(wordshift+1) << hishift) & himask
+                newdigit |= (self.digit(wordshift+1) << hishift)
             z.setdigit(i, newdigit)
             i += 1
             wordshift += 1
         z._normalize()
         return z
     rshift._always_inline_ = 'try' # It's so fast that it's always benefitial.
+
+    @jit.elidable
+    def abs_rshift_and_mask(self, bigshiftcount, mask):
+        assert isinstance(bigshiftcount, r_ulonglong)
+        assert mask >= 0
+        wordshift = bigshiftcount / SHIFT
+        numdigits = self.numdigits()
+        if wordshift >= numdigits:
+            return 0
+        wordshift = intmask(wordshift)
+        loshift = intmask(intmask(bigshiftcount) - intmask(wordshift * SHIFT))
+        lastdigit = self.digit(wordshift) >> loshift
+        if mask > (MASK >> loshift) and wordshift + 1 < numdigits:
+            hishift = SHIFT - loshift
+            lastdigit |= self.digit(wordshift+1) << hishift
+        return lastdigit & mask
+
+    @staticmethod
+    def from_list_n_bits(list, nbits):
+        if len(list) == 0:
+            return NULLRBIGINT
+
+        if nbits == SHIFT:
+            z = rbigint(list, 1)
+        else:
+            if not (1 <= nbits < SHIFT):
+                raise ValueError
+
+            lllength = (r_ulonglong(len(list)) * nbits) // SHIFT
+            length = intmask(lllength) + 1
+            z = rbigint([NULLDIGIT] * length, 1)
+
+            out = 0
+            i = 0
+            accum = 0
+            for input in list:
+                accum |= (input << i)
+                original_i = i
+                i += nbits
+                if i > SHIFT:
+                    z.setdigit(out, accum)
+                    out += 1
+                    accum = input >> (SHIFT - original_i)
+                    i -= SHIFT
+            assert out < length
+            z.setdigit(out, accum)
+
+        z._normalize()
+        return z
 
     @jit.elidable
     def and_(self, other):
@@ -2050,9 +2111,38 @@ def _format_base2_notzero(a, digits, prefix='', suffix=''):
                          # hint for the annotator for the slice below)
         return ''.join(result[next_char_index:])
 
-_FORMAT_MINDIGITS = 5 # 36 ** 5 fits in 32 bits, there may be a better choice for this
 
-def _format_int(val, digits):
+class _PartsCache(object):
+    def __init__(self):
+        # 36 - 3, because bases 0, 1 make no sense
+        # and 2 is handled differently
+        self.parts_cache = [None] * 34
+        self.mindigits = [0] * 34
+
+        for i in range(34):
+            base = i + 3
+            mindigits = 1
+            while base ** mindigits < sys.maxint:
+                mindigits += 1
+            mindigits -= 1
+            self.mindigits[i] = mindigits
+
+    def get_cached_parts(self, base):
+        index = base - 3
+        res = self.parts_cache[index]
+        if res is None:
+            rbase = rbigint.fromint(base)
+            part = rbase.pow(rbigint.fromint(self.mindigits[index]))
+            res = [part]
+            self.parts_cache[base - 3] = res
+        return res
+
+    def get_mindigits(self, base):
+        return self.mindigits[base - 3]
+
+_parts_cache = _PartsCache()
+
+def _format_int_general(val, digits):
     base = len(digits)
     out = []
     while val:
@@ -2061,26 +2151,27 @@ def _format_int(val, digits):
     out.reverse()
     return "".join(out)
 
+def _format_int10(val, digits):
+    return str(val)
 
-def _format_recursive(x, i, output, pts, digits, size_prefix):
+@specialize.arg(7)
+def _format_recursive(x, i, output, pts, digits, size_prefix, mindigits, _format_int):
     # bottomed out with min_digit sized pieces
     # use str of ints
     if i < 0:
         # this checks whether any digit has been appended yet
         if output.getlength() == size_prefix:
-            if x.sign == 0:
-                pass
-            else:
+            if x.sign != 0:
                 s = _format_int(x.toint(), digits)
                 output.append(s)
         else:
             s = _format_int(x.toint(), digits)
-            output.append_multiple_char(digits[0], _FORMAT_MINDIGITS - len(s))
+            output.append_multiple_char(digits[0], mindigits - len(s))
             output.append(s)
     else:
         top, bot = x.divmod(pts[i]) # split the number
-        _format_recursive(top, i-1, output, pts, digits, size_prefix)
-        _format_recursive(bot, i-1, output, pts, digits, size_prefix)
+        _format_recursive(top, i-1, output, pts, digits, size_prefix, mindigits, _format_int)
+        _format_recursive(bot, i-1, output, pts, digits, size_prefix, mindigits, _format_int)
 
 def _format(x, digits, prefix='', suffix=''):
     if x.sign == 0:
@@ -2095,21 +2186,41 @@ def _format(x, digits, prefix='', suffix=''):
     rbase = rbigint.fromint(base)
     two = rbigint.fromint(2)
 
-    pts = [rbase.pow(rbigint.fromint(_FORMAT_MINDIGITS))]
-    stringsize = _FORMAT_MINDIGITS
-    while pts[-1].lt(x):
-        pts.append(pts[-1].pow(two))
-        stringsize *= 2
-    pts.pop() # remove first base**2**i greater than x
+    pts = _parts_cache.get_cached_parts(base)
+    mindigits = _parts_cache.get_mindigits(base)
+    stringsize = mindigits
+    startindex = 0
+    for startindex, part in enumerate(pts):
+        if not part.lt(x):
+            break
+        stringsize *= 2 # XXX can this overflow on 32 bit?
+    else:
+        # not enough parts computed yet
+        while pts[-1].lt(x):
+            pts.append(pts[-1].pow(two))
+            stringsize *= 2
+
+        startindex = len(pts) - 1
+
+    # remove first base**2**i greater than x
+    startindex -= 1
 
     output = StringBuilder(stringsize)
     if negative:
         output.append('-')
     output.append(prefix)
-    _format_recursive(x, len(pts)-1, output, pts, digits, output.getlength())
+    if digits == BASE10:
+        _format_recursive(
+            x, startindex, output, pts, digits, output.getlength(), mindigits,
+            _format_int10)
+    else:
+        _format_recursive(
+            x, startindex, output, pts, digits, output.getlength(), mindigits,
+            _format_int_general)
 
     output.append(suffix)
     return output.build()
+
 
 def _bitwise(a, op, b): # '&', '|', '^'
     """ Bitwise and/or/xor operations """

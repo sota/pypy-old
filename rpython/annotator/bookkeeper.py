@@ -7,13 +7,12 @@ from __future__ import absolute_import
 import sys, types, inspect, weakref
 
 from rpython.flowspace.model import Constant
-from rpython.annotator.model import SomeString, SomeChar, SomeFloat, \
-     SomePtr, unionof, SomeInstance, SomeDict, SomeBuiltin, SomePBC, \
-     SomeInteger, SomeOOInstance, SomeOOObject, TLS, SomeAddress, \
-     SomeUnicodeCodePoint, SomeOOStaticMeth, s_None, s_ImpossibleValue, \
-     SomeLLADTMeth, SomeBool, SomeTuple, SomeOOClass, SomeImpossibleValue, \
-     SomeUnicodeString, SomeList, HarmlesslyBlocked, \
-     SomeWeakRef, lltype_to_annotation, SomeType, SomeByteArray
+from rpython.annotator.model import (SomeOrderedDict,
+    SomeString, SomeChar, SomeFloat, SomePtr, unionof, SomeInstance, SomeDict,
+    SomeBuiltin, SomePBC, SomeInteger, TLS, SomeAddress, SomeUnicodeCodePoint,
+    s_None, s_ImpossibleValue, SomeLLADTMeth, SomeBool, SomeTuple,
+    SomeImpossibleValue, SomeUnicodeString, SomeList, HarmlesslyBlocked,
+    SomeWeakRef, lltype_to_annotation, SomeType, SomeByteArray)
 from rpython.annotator.classdef import InstanceSource, ClassDef
 from rpython.annotator.listdef import ListDef, ListItem
 from rpython.annotator.dictdef import DictDef
@@ -23,7 +22,6 @@ from rpython.annotator.argument import ArgumentsForTranslation, RPythonCallsSpac
 from rpython.rlib.objectmodel import r_dict, Symbolic
 from rpython.tool.algo.unionfind import UnionFind
 from rpython.rtyper.lltypesystem import lltype, llmemory
-from rpython.rtyper.ootypesystem import ootype
 from rpython.rtyper import extregistry
 
 
@@ -372,7 +370,7 @@ class Bookkeeper(object):
                 for e in x:
                     listdef.generalize(self.immutablevalue(e, False))
                 result = SomeList(listdef)
-        elif tp is dict or tp is r_dict:
+        elif tp is dict or tp is r_dict or tp is SomeOrderedDict.knowntype:
             if need_const:
                 key = Constant(x)
                 try:
@@ -414,7 +412,10 @@ class Bookkeeper(object):
                     dictdef.generalize_key(self.immutablevalue(ek, False))
                     dictdef.generalize_value(self.immutablevalue(ev, False))
                     dictdef.seen_prebuilt_key(ek)
-                result = SomeDict(dictdef)
+                if tp is SomeOrderedDict.knowntype:
+                    result = SomeOrderedDict(dictdef)
+                else:
+                    result = SomeDict(dictdef)
         elif tp is weakref.ReferenceType:
             x1 = x()
             if x1 is None:
@@ -433,16 +434,6 @@ class Bookkeeper(object):
             result = SomePtr(lltype.typeOf(x))
         elif isinstance(x, llmemory.fakeaddress):
             result = SomeAddress()
-        elif isinstance(x, ootype._static_meth):
-            result = SomeOOStaticMeth(ootype.typeOf(x))
-        elif isinstance(x, ootype._class):
-            result = SomeOOClass(x._INSTANCE)   # NB. can be None
-        elif isinstance(x, ootype.instance_impl): # XXX
-            result = SomeOOInstance(ootype.typeOf(x))
-        elif isinstance(x, (ootype._record, ootype._string)):
-            result = SomeOOInstance(ootype.typeOf(x))
-        elif isinstance(x, (ootype._object)):
-            result = SomeOOObject()
         elif tp is type:
             if (x is type(None) or      # add cases here if needed
                 x.__module__ == 'rpython.rtyper.lltypesystem.lltype'):
@@ -700,7 +691,7 @@ class Bookkeeper(object):
         fn, block, i = self.position_key
         op = block.operations[i]
         if opname is not None:
-            assert op.opname == opname or op.opname in opname
+            assert op.opname == opname
         if arity is not None:
             assert len(op.args) == arity
         if pos is not None:
