@@ -4,7 +4,7 @@ from collections import OrderedDict
 import py
 
 from rpython.rlib.rfloat import NAN, INFINITY
-from rpython.rlib.entrypoint import entrypoint
+from rpython.rlib.entrypoint import entrypoint_highlevel
 from rpython.rlib.unroll import unrolling_iterable
 from rpython.rlib.rarithmetic import r_longlong, r_ulonglong, r_uint, intmask
 from rpython.rlib.objectmodel import specialize
@@ -495,7 +495,7 @@ def test_entrypoints():
         return 3
 
     key = "test_entrypoints42"
-    @entrypoint(key, [int], "foobar")
+    @entrypoint_highlevel(key, [int], "foobar")
     def g(x):
         return x + 42
 
@@ -596,7 +596,7 @@ def test_inhibit_tail_call():
     t.context._graphof(foobar_fn).inhibit_tail_call = True
     t.source_c()
     lines = t.driver.cbuilder.c_source_filename.join('..',
-                              'rpython_translator_c_test_test_genc.c').readlines()
+                              'rpython_translator_c_test.c').readlines()
     for i, line in enumerate(lines):
         if '= pypy_g_foobar_fn' in line:
             break

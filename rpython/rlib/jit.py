@@ -284,7 +284,7 @@ isvirtual._annspecialcase_ = "specialize:call_location"
 def loop_unrolling_heuristic(lst, size, cutoff=2):
     """ In which cases iterating over items of lst can be unrolled
     """
-    return isvirtual(lst) or (isconstant(size) and size <= cutoff)
+    return size == 0 or isvirtual(lst) or (isconstant(size) and size <= cutoff)
 
 class Entry(ExtRegistryEntry):
     _about_ = hint
@@ -604,7 +604,7 @@ class JitDriver(object):
                  get_printable_location=None, confirm_enter_jit=None,
                  can_never_inline=None, should_unroll_one_iteration=None,
                  name='jitdriver', check_untranslated=True, vectorize=False,
-                 get_unique_id=None):
+                 get_unique_id=None, is_recursive=False):
         if greens is not None:
             self.greens = greens
         self.name = name
@@ -623,6 +623,8 @@ class JitDriver(object):
             raise AttributeError("no 'greens' or 'reds' supplied")
         if virtualizables is not None:
             self.virtualizables = virtualizables
+        if get_unique_id is not None:
+            assert is_recursive, "get_unique_id and is_recursive must be specified at the same time"
         for v in self.virtualizables:
             assert v in self.reds
         # if reds are automatic, they won't be passed to jit_merge_point, so
@@ -643,6 +645,7 @@ class JitDriver(object):
         self.can_never_inline = can_never_inline
         self.should_unroll_one_iteration = should_unroll_one_iteration
         self.check_untranslated = check_untranslated
+        self.is_recursive = is_recursive
         self.vec = vectorize
 
     def _freeze_(self):
@@ -1061,6 +1064,12 @@ class JitHookInterface(object):
         greenkey where it started, reason is a string why it got aborted
         """
 
+    def on_trace_too_long(self, jitdriver, greenkey, greenkey_repr):
+        """ A hook called each time we abort the trace because it's too
+        long with the greenkey being the one responsible for the
+        disabled function
+        """
+
     #def before_optimize(self, debug_info):
     #    """ A hook called before optimizer is run, called with instance of
     #    JitDebugInfo. Overwrite for custom behavior
@@ -1108,7 +1117,7 @@ def ll_record_exact_class(ll_value, ll_cls):
     from rpython.rtyper.lltypesystem.lloperation import llop
     from rpython.rtyper.lltypesystem import lltype
     from rpython.rtyper.rclass import ll_type
-    ll_assert(ll_value == lltype.nullptr(lltype.typeOf(ll_value).TO), "record_exact_class called with None argument")
+    ll_assert(ll_value != lltype.nullptr(lltype.typeOf(ll_value).TO), "record_exact_class called with None argument")
     ll_assert(ll_type(ll_value) is ll_cls, "record_exact_class called with invalid arguments")
     llop.jit_record_exact_class(lltype.Void, ll_value, ll_cls)
 
@@ -1158,6 +1167,24 @@ class ConditionalCallEntry(ExtRegistryEntry):
                                                     hop.args_s[2:], hop.spaceop)
         hop.exception_is_here()
         return hop.genop('jit_conditional_call', args_v)
+
+def enter_portal_frame(unique_id):
+    """call this when starting to interpret a function. calling this is not
+    necessary for almost all interpreters. The only exception is stackless
+    interpreters where the portal never calls itself.
+    """
+    from rpython.rtyper.lltypesystem import lltype
+    from rpython.rtyper.lltypesystem.lloperation import llop
+    llop.jit_enter_portal_frame(lltype.Void, unique_id)
+
+def leave_portal_frame():
+    """call this after the end of executing a function. calling this is not
+    necessary for almost all interpreters. The only exception is stackless
+    interpreters where the portal never calls itself.
+    """
+    from rpython.rtyper.lltypesystem import lltype
+    from rpython.rtyper.lltypesystem.lloperation import llop
+    llop.jit_leave_portal_frame(lltype.Void)
 
 class Counters(object):
     counters="""

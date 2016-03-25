@@ -203,9 +203,8 @@ class TranslationDriver(SimpleTaskEngine):
                 try:
                     points = secondary_entrypoints[key]
                 except KeyError:
-                    raise KeyError(
-                        "Entrypoints not found. I only know the keys %r." %
-                        (", ".join(secondary_entrypoints.keys()), ))
+                    raise KeyError("Entrypoint %r not found (not in %r)" %
+                                   (key, secondary_entrypoints.keys()))
                 self.secondary_entrypoints.extend(points)
 
         self.translator.driver_instrument_result = self.instrument_result
@@ -488,13 +487,14 @@ class TranslationDriver(SimpleTaskEngine):
                     exe = py.path.local(exename)
                     exename = exe.new(purebasename=exe.purebasename + 'w')
                     shutil_copy(str(exename), str(newexename))
-                    # the import library is named python27.lib, according
-                    # to the pragma in pyconfig.h
-                    libname = str(newsoname.dirpath().join('python27.lib'))
+                    # for pypy, the import library is renamed and moved to
+                    # libs/python27.lib, according to the pragma in pyconfig.h
+                    libname = self.config.translation.libname
+                    libname = libname or soname.new(ext='lib').basename
+                    libname = str(newsoname.dirpath().join(libname))
                     shutil.copyfile(str(soname.new(ext='lib')), libname)
                     self.log.info("copied: %s" % (libname,))
-                    # XXX TODO : replace the nonsense above with
-                    # ext_to_copy = ['lib', 'pdb']
+                    # the pdb file goes in the same place as pypy(w).exe
                     ext_to_copy = ['pdb',]
                     for ext in ext_to_copy:
                         name = soname.new(ext=ext)
@@ -502,7 +502,6 @@ class TranslationDriver(SimpleTaskEngine):
                         shutil.copyfile(str(name), str(newname.new(ext=ext)))
                         self.log.info("copied: %s" % (newname,))
             self.c_entryp = newexename
-        self.log.info('usession directory: %s' % (udir,))
         self.log.info("created: %s" % (self.c_entryp,))
 
     @taskdef(['source_c'], "Compiling c source")
@@ -548,7 +547,9 @@ class TranslationDriver(SimpleTaskEngine):
             goals = [goals]
         goals.extend(self.extra_goals)
         goals = self.backend_select_goals(goals)
-        return self._execute(goals, task_skip = self._maybe_skip())
+        result = self._execute(goals, task_skip = self._maybe_skip())
+        self.log.info('usession directory: %s' % (udir,))
+        return result
 
     @staticmethod
     def from_targetspec(targetspec_dic, config=None, args=None,

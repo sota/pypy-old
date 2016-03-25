@@ -548,7 +548,9 @@ class BaseBackendTest(Runner):
 
         if cpu.supports_floats:
             def func(f0, f1, f2, f3, f4, f5, f6, i0, f7, i1, f8, f9):
+                seen.append((f0, f1, f2, f3, f4, f5, f6, i0, f7, i1, f8, f9))
                 return f0 + f1 + f2 + f3 + f4 + f5 + f6 + float(i0 + i1) + f7 + f8 + f9
+            seen = []
             F = lltype.Float
             I = lltype.Signed
             FUNC = self.FuncType([F] * 7 + [I] + [F] + [I] + [F]* 2, F)
@@ -557,13 +559,15 @@ class BaseBackendTest(Runner):
             calldescr = cpu.calldescrof(FUNC, FUNC.ARGS, FUNC.RESULT,
                                         EffectInfo.MOST_GENERAL)
             funcbox = self.get_funcbox(cpu, func_ptr)
-            args = ([boxfloat(.1) for i in range(7)] +
-                    [InputArgInt(1), boxfloat(.2), InputArgInt(2), boxfloat(.3),
-                     boxfloat(.4)])
+            args = ([boxfloat(.0), boxfloat(.1), boxfloat(.2), boxfloat(.3),
+                     boxfloat(.4), boxfloat(.5), boxfloat(.6),
+                     InputArgInt(1), boxfloat(.7), InputArgInt(2), boxfloat(.8),
+                     boxfloat(.9)])
             res = self.execute_operation(rop.CALL_F,
                                          [funcbox] + args,
                                          'float', descr=calldescr)
-            assert abs(longlong.getrealfloat(res) - 4.6) < 0.0001
+            assert seen == [(.0, .1, .2, .3, .4, .5, .6, 1, .7, 2, .8, .9)]
+            assert abs(longlong.getrealfloat(res) - 7.5) < 0.0001
 
     def test_call_many_arguments(self):
         # Test calling a function with a large number of arguments (more than
@@ -3649,6 +3653,8 @@ class LLtypeBackendTest(BaseBackendTest):
         [i0, i1, i2, i3, i4, i5, i6, i7, i8, i9]
         i10 = int_add(i0, 42)
         i11 = call_assembler_i(i10, i1, i2, i3, i4, i5, i6, i7, i8, i9, descr=looptoken)
+        # NOTE: call_assembler_i() is turned into a single-argument version
+        #       by rewrite.py
         guard_not_forced()[]
         finish(i11)
         '''
@@ -4963,52 +4969,6 @@ class LLtypeBackendTest(BaseBackendTest):
         res = self.execute_operation(rop.CAST_FLOAT_TO_SINGLEFLOAT,
                                    [boxfloat(12.5)], 'int')
         assert res == struct.unpack("I", struct.pack("f", 12.5))[0]
-
-    def test_zero_ptr_field(self):
-        if not isinstance(self.cpu, AbstractLLCPU):
-            py.test.skip("llgraph can't do zero_ptr_field")
-        T = lltype.GcStruct('T')
-        S = lltype.GcStruct('S', ('x', lltype.Ptr(T)))
-        tdescr = self.cpu.sizeof(T)
-        sdescr = self.cpu.sizeof(S)
-        fielddescr = self.cpu.fielddescrof(S, 'x')
-        loop = parse("""
-        []
-        p0 = new(descr=tdescr)
-        p1 = new(descr=sdescr)
-        setfield_gc(p1, p0, descr=fielddescr)
-        zero_ptr_field(p1, %d)
-        finish(p1)
-        """ % fielddescr.offset, namespace=locals())
-        looptoken = JitCellToken()
-        self.cpu.compile_loop(loop.inputargs, loop.operations, looptoken)
-        deadframe = self.cpu.execute_token(looptoken)
-        ref = self.cpu.get_ref_value(deadframe, 0)
-        s = lltype.cast_opaque_ptr(lltype.Ptr(S), ref)
-        assert not s.x
-
-    def test_zero_ptr_field_2(self):
-        if not isinstance(self.cpu, AbstractLLCPU):
-            py.test.skip("llgraph does not do zero_ptr_field")
-
-        from rpython.jit.backend.llsupport import symbolic
-        S = lltype.GcStruct('S', ('x', lltype.Signed),
-                                 ('p', llmemory.GCREF),
-                                 ('y', lltype.Signed))
-        s = lltype.malloc(S)
-        s.x = -1296321
-        s.y = -4398176
-        s_ref = lltype.cast_opaque_ptr(llmemory.GCREF, s)
-        s.p = s_ref
-        ofs_p, _ = symbolic.get_field_token(S, 'p', False)
-        #
-        self.execute_operation(rop.ZERO_PTR_FIELD, [
-            InputArgRef(s_ref), ConstInt(ofs_p)],   # OK for now to assume that the
-            'void')                            # 2nd argument is a constant
-        #
-        assert s.x == -1296321
-        assert s.p == lltype.nullptr(llmemory.GCREF.TO)
-        assert s.y == -4398176
 
     def test_zero_array(self):
         if not isinstance(self.cpu, AbstractLLCPU):
