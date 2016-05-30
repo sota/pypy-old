@@ -5,17 +5,16 @@ attacks for the hmac module.
 import py
 
 from rpython.rtyper.lltypesystem import lltype, rffi
-from rpython.translator import cdir
 from rpython.translator.tool.cbuild import ExternalCompilationInfo
 
 from pypy.interpreter.error import oefmt
-from pypy.interpreter.baseobjspace import BufferInterfaceNotFound
 
 cwd = py.path.local(__file__).dirpath()
 eci = ExternalCompilationInfo(
     includes=[cwd.join('tscmp.h')],
-    include_dirs=[str(cwd), cdir],
-    separate_module_files=[cwd.join('tscmp.c')])
+    include_dirs=[str(cwd)],
+    separate_module_files=[cwd.join('tscmp.c')],
+    export_symbols=['pypy_tscmp', 'pypy_tscmp_wide'])
 
 
 def llexternal(*args, **kwargs):
@@ -61,7 +60,7 @@ def compare_digest_buffer(space, w_a, w_b):
     try:
         a_buf = w_a.buffer_w(space, space.BUF_SIMPLE)
         b_buf = w_b.buffer_w(space, space.BUF_SIMPLE)
-    except BufferInterfaceNotFound:
+    except TypeError:
         raise oefmt(space.w_TypeError,
                     "unsupported operand types(s) or combination of types: "
                     "'%T' and '%T'", w_a, w_b)

@@ -2,10 +2,10 @@
 
 import unittest
 import sys
-import Tkinter as tkinter
-from ttk import Scale
-from test_ttk.support import (AbstractTkTest, tcl_version, requires_tcl,
-                              get_tk_patchlevel, pixels_conv, tcl_obj_eq)
+import Tkinter
+from ttk import setup_master, Scale
+from test_ttk.support import (tcl_version, requires_tcl, get_tk_patchlevel,
+                              pixels_conv, tcl_obj_eq)
 import test.test_support
 
 
@@ -26,25 +26,32 @@ if get_tk_patchlevel()[:3] == (8, 5, 11):
 
 _sentinel = object()
 
-class AbstractWidgetTest(AbstractTkTest):
+class AbstractWidgetTest(object):
     _conv_pixels = staticmethod(pixels_round)
     _conv_pad_pixels = None
-    _stringify = False
+    wantobjects = True
 
-    @property
-    def scaling(self):
-        try:
-            return self._scaling
-        except AttributeError:
-            self._scaling = float(self.root.call('tk', 'scaling'))
-            return self._scaling
+    def setUp(self):
+        self.root = setup_master()
+        self.scaling = float(self.root.call('tk', 'scaling'))
+        if not self.root.wantobjects():
+            self.wantobjects = False
+
+    def tearDown(self):
+        for w in self.root.winfo_children():
+            w.destroy()
 
     def _str(self, value):
-        if not self._stringify and self.wantobjects and tcl_version >= (8, 6):
+        if self.wantobjects and tcl_version >= (8, 6):
             return value
         if isinstance(value, tuple):
             return ' '.join(map(self._str, value))
         return str(value)
+
+    def create(self, **kwargs):
+        widget = self._create(**kwargs)
+        self.addCleanup(widget.destroy)
+        return widget
 
     def assertEqual2(self, actual, expected, msg=None, eq=object.__eq__):
         if eq(actual, expected):
@@ -58,9 +65,9 @@ class AbstractWidgetTest(AbstractTkTest):
             expected = value
         if conv:
             expected = conv(expected)
-        if self._stringify or not self.wantobjects:
+        if not self.wantobjects:
             if isinstance(expected, tuple):
-                expected = tkinter._join(expected)
+                expected = Tkinter._join(expected)
             else:
                 expected = str(expected)
         if eq is None:
@@ -78,7 +85,7 @@ class AbstractWidgetTest(AbstractTkTest):
         orig = widget[name]
         if errmsg is not None:
             errmsg = errmsg.format(value)
-        with self.assertRaises(tkinter.TclError) as cm:
+        with self.assertRaises(Tkinter.TclError) as cm:
             widget[name] = value
         if errmsg is not None:
             self.assertEqual(str(cm.exception), errmsg)
@@ -86,7 +93,7 @@ class AbstractWidgetTest(AbstractTkTest):
             self.assertEqual(widget[name], orig)
         else:
             widget[name] = orig
-        with self.assertRaises(tkinter.TclError) as cm:
+        with self.assertRaises(Tkinter.TclError) as cm:
             widget.configure({name: value})
         if errmsg is not None:
             self.assertEqual(str(cm.exception), errmsg)
@@ -205,7 +212,7 @@ class AbstractWidgetTest(AbstractTkTest):
                 errmsg=errmsg)
 
     def checkImageParam(self, widget, name):
-        image = tkinter.PhotoImage(master=self.root, name='image1')
+        image = Tkinter.PhotoImage('image1')
         self.checkParam(widget, name, image, conv=str)
         self.checkInvalidParam(widget, name, 'spam',
                 errmsg='image "spam" doesn\'t exist')
@@ -426,7 +433,7 @@ class StandardOptionsTests(object):
 
     def test_textvariable(self):
         widget = self.create()
-        var = tkinter.StringVar(self.root)
+        var = Tkinter.StringVar()
         self.checkVariableParam(widget, 'textvariable', var)
 
     def test_troughcolor(self):
@@ -487,7 +494,7 @@ class StandardOptionsTests(object):
 
     def test_variable(self):
         widget = self.create()
-        var = tkinter.DoubleVar(self.root)
+        var = Tkinter.DoubleVar()
         self.checkVariableParam(widget, 'variable', var)
 
 
@@ -536,5 +543,5 @@ def add_standard_options(*source_classes):
 
 def setUpModule():
     if test.test_support.verbose:
-        tcl = tkinter.Tcl()
+        tcl = Tkinter.Tcl()
         print 'patchlevel =', tcl.call('info', 'patchlevel')

@@ -3,7 +3,6 @@
 
 #include <stdlib.h>
 #include <wchar.h>
-#include "src/precommondefs.h"
 #include "tscmp.h"
 
 int

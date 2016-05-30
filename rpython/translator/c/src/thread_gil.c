@@ -36,42 +36,30 @@
      value of 'rpy_fastgil' to 1.
 */
 
-
-/* The GIL is initially released; see pypy_main_function(), which calls
-   RPyGilAcquire/RPyGilRelease.  The point is that when building
-   RPython libraries, they can be a collection of regular functions that
-   also call RPyGilAcquire/RPyGilRelease; see test_standalone.TestShared.
-*/
-long rpy_fastgil = 0;
-static long rpy_waiting_threads = -42;    /* GIL not initialized */
+long rpy_fastgil = 1;
+long rpy_waiting_threads = -42;    /* GIL not initialized */
 static mutex1_t mutex_gil_stealer;
 static mutex2_t mutex_gil;
 
-
-static void rpy_init_mutexes(void)
+void RPyGilAllocate(void)
 {
+    assert(RPY_FASTGIL_LOCKED(rpy_fastgil));
     mutex1_init(&mutex_gil_stealer);
     mutex2_init_locked(&mutex_gil);
     rpy_waiting_threads = 0;
 }
 
-void RPyGilAllocate(void)
+void RPyGilAcquire(void)
 {
-    if (rpy_waiting_threads < 0) {
-        assert(rpy_waiting_threads == -42);
-        rpy_init_mutexes();
-#ifdef HAVE_PTHREAD_ATFORK
-        pthread_atfork(NULL, NULL, rpy_init_mutexes);
-#endif
-    }
-}
+    /* Acquires the GIL.
 
-void RPyGilAcquireSlowPath(long old_fastgil)
-{
-    /* Acquires the GIL.  This assumes that we already did:
-
-          old_fastgil = lock_test_and_set(&rpy_fastgil, 1);
+       Note: in the slow path, this function saves and restores 'errno'.
+       This is needed for now because it may be *followed* by reading
+       the 'errno'.  It's a bit strange, because we could read the errno
+       before calling RPyGilAcquire(), but it's simpler this way.
      */
+    long old_fastgil = lock_test_and_set(&rpy_fastgil, 1);
+
     if (!RPY_FASTGIL_LOCKED(old_fastgil)) {
         /* The fastgil was not previously locked: success.
            'mutex_gil' should still be locked at this point.
@@ -79,23 +67,12 @@ void RPyGilAcquireSlowPath(long old_fastgil)
     }
     else {
         /* Otherwise, another thread is busy with the GIL. */
-
-        if (rpy_waiting_threads < 0) {
-            /* <arigo> I tried to have RPyGilAllocate() called from
-             * here, but it fails occasionally on an example
-             * (2.7/test/test_threading.py).  I think what occurs is
-             * that if one thread runs RPyGilAllocate(), it still
-             * doesn't have the GIL; then the other thread might fork()
-             * at precisely this moment, killing the first thread.
-             */
-            fprintf(stderr, "Fatal RPython error: a thread is trying to wait "
-                            "for the GIL, but the GIL was not initialized\n");
-            abort();
-        }
+        SAVE_ERRNO();
 
         /* Register me as one of the threads that is actively waiting
            for the GIL.  The number of such threads is found in
            rpy_waiting_threads. */
+        assert(rpy_waiting_threads >= 0);
         atomic_increment(&rpy_waiting_threads);
 
         /* Enter the waiting queue from the end.  Assuming a roughly
@@ -132,6 +109,8 @@ void RPyGilAcquireSlowPath(long old_fastgil)
         atomic_decrement(&rpy_waiting_threads);
         mutex2_loop_stop(&mutex_gil);
         mutex1_unlock(&mutex_gil_stealer);
+
+        RESTORE_ERRNO();
     }
     assert(RPY_FASTGIL_LOCKED(rpy_fastgil));
 
@@ -183,7 +162,6 @@ long RPyGilYieldThread(void)
 */
 
 #undef RPyGilRelease
-RPY_EXTERN
 void RPyGilRelease(void)
 {
     /* Releases the GIL in order to do an external function call.
@@ -193,15 +171,7 @@ void RPyGilRelease(void)
     _RPyGilRelease();
 }
 
-#undef RPyGilAcquire
-RPY_EXTERN
-void RPyGilAcquire(void)
-{
-    _RPyGilAcquire();
-}
-
 #undef RPyFetchFastGil
-RPY_EXTERN
 long *RPyFetchFastGil(void)
 {
     return _RPyFetchFastGil();

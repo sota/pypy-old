@@ -1,3 +1,4 @@
+from rpython.rlib import rgc
 from rpython.rlib.rarithmetic import ovfcheck
 from rpython.rtyper.lltypesystem import llmemory
 from rpython.jit.metainterp import history
@@ -390,31 +391,23 @@ class GcRewriterAssembler(object):
         val = op.getarg(0)
         if val not in self.write_barrier_applied:
             v = op.getarg(1)
-            if isinstance(v, BoxPtr) or (isinstance(v, ConstPtr) and
-                                         bool(v.value)): # store a non-NULL
+            if (isinstance(v, BoxPtr) or (isinstance(v, ConstPtr) and
+                               rgc.needs_write_barrier(v.value))):
                 self.gen_write_barrier(val)
                 #op = op.copy_and_change(rop.SETFIELD_RAW)
-        self.newops.append(op)
-
-    def handle_write_barrier_setinteriorfield(self, op):
-        val = op.getarg(0)
-        if val not in self.write_barrier_applied:
-            v = op.getarg(2)
-            if isinstance(v, BoxPtr) or (isinstance(v, ConstPtr) and
-                                         bool(v.value)): # store a non-NULL
-                self.gen_write_barrier(val)
-                #op = op.copy_and_change(rop.SETINTERIORFIELD_RAW)
         self.newops.append(op)
 
     def handle_write_barrier_setarrayitem(self, op):
         val = op.getarg(0)
         if val not in self.write_barrier_applied:
             v = op.getarg(2)
-            if isinstance(v, BoxPtr) or (isinstance(v, ConstPtr) and
-                                         bool(v.value)): # store a non-NULL
+            if (isinstance(v, BoxPtr) or (isinstance(v, ConstPtr) and
+                                         rgc.needs_write_barrier(v.value))):
                 self.gen_write_barrier_array(val, op.getarg(1))
-                #op = op.copy_and_change(rop.SETARRAYITEM_RAW)
+                #op = op.copy_and_change(rop.SET{ARRAYITEM,INTERIORFIELD}_RAW)
         self.newops.append(op)
+
+    handle_write_barrier_setinteriorfield = handle_write_barrier_setarrayitem
 
     def gen_write_barrier(self, v_base):
         write_barrier_descr = self.gc_ll_descr.write_barrier_descr

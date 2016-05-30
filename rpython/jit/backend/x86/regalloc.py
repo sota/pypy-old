@@ -2,7 +2,7 @@
 """ Register allocation scheme.
 """
 
-import os
+import os, sys
 from rpython.jit.backend.llsupport import symbolic
 from rpython.jit.backend.llsupport.descr import (ArrayDescr, CallDescr,
     unpack_arraydescr, unpack_fielddescr, unpack_interiorfielddescr)
@@ -692,6 +692,32 @@ class RegAlloc(BaseRegalloc):
         loc0 = self.xrm.force_result_in_reg(op.result, op.getarg(1))
         self.perform_math(op, [loc0], loc0)
 
+    TLREF_SUPPORT = sys.platform.startswith('linux')
+    ERRNO_SUPPORT = sys.platform.startswith('linux')
+
+    def _consider_threadlocalref_get(self, op):
+        if self.TLREF_SUPPORT:
+            resloc = self.force_allocate_reg(op.result)
+            self.assembler.threadlocalref_get(op, resloc)
+        else:
+            self._consider_call(op)
+
+    def _consider_get_errno(self, op):
+        if self.ERRNO_SUPPORT:
+            resloc = self.force_allocate_reg(op.result)
+            self.assembler.get_set_errno(op, resloc, issue_a_write=False)
+        else:
+            self._consider_call(op)
+
+    def _consider_set_errno(self, op):
+        if self.ERRNO_SUPPORT:
+            # op.getarg(0) is the function set_errno; op.getarg(1) is
+            # the new errno value
+            loc0 = self.rm.make_sure_var_in_reg(op.getarg(1))
+            self.assembler.get_set_errno(op, loc0, issue_a_write=True)
+        else:
+            self._consider_call(op)
+
     def _call(self, op, arglocs, force_store=[], guard_not_forced_op=None):
         # we need to save registers on the stack:
         #
@@ -769,6 +795,14 @@ class RegAlloc(BaseRegalloc):
                         return
             if oopspecindex == EffectInfo.OS_MATH_SQRT:
                 return self._consider_math_sqrt(op)
+            if oopspecindex == EffectInfo.OS_THREADLOCALREF_GET:
+                return self._consider_threadlocalref_get(op)
+            if oopspecindex == EffectInfo.OS_GET_ERRNO:
+                return self._consider_get_errno(op)
+            if oopspecindex == EffectInfo.OS_SET_ERRNO:
+                return self._consider_set_errno(op)
+            if oopspecindex == EffectInfo.OS_MATH_READ_TIMESTAMP:
+                return self._consider_math_read_timestamp(op)
         self._consider_call(op)
 
     def consider_call_may_force(self, op, guard_op):
@@ -1174,7 +1208,7 @@ class RegAlloc(BaseRegalloc):
         else:
             raise AssertionError("bad unicode item size")
 
-    def consider_read_timestamp(self, op):
+    def _consider_math_read_timestamp(self, op):
         tmpbox_high = TempBox()
         self.rm.force_allocate_reg(tmpbox_high, selected_reg=eax)
         if longlong.is_64_bit:
@@ -1182,7 +1216,7 @@ class RegAlloc(BaseRegalloc):
             # result in rdx
             result_loc = self.rm.force_allocate_reg(op.result,
                                                     selected_reg=edx)
-            self.perform(op, [], result_loc)
+            self.perform_math(op, [], result_loc)
         else:
             # on 32-bit, use both eax and edx as temporary registers,
             # use a temporary xmm register, and returns the result in
@@ -1192,7 +1226,7 @@ class RegAlloc(BaseRegalloc):
             xmmtmpbox = TempBox()
             xmmtmploc = self.xrm.force_allocate_reg(xmmtmpbox)
             result_loc = self.xrm.force_allocate_reg(op.result)
-            self.perform(op, [xmmtmploc], result_loc)
+            self.perform_math(op, [xmmtmploc], result_loc)
             self.xrm.possibly_free_var(xmmtmpbox)
             self.rm.possibly_free_var(tmpbox_low)
         self.rm.possibly_free_var(tmpbox_high)

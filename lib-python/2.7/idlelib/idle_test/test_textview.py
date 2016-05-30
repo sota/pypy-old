@@ -3,7 +3,7 @@
 import unittest
 import os
 from test.test_support import requires
-from Tkinter import Tk
+from Tkinter import Tk, Text, TclError
 from idlelib import textView as tv
 from idlelib.idle_test.mock_idle import Func
 from idlelib.idle_test.mock_tk import Mbox
@@ -93,4 +93,6 @@ class textviewTest(unittest.TestCase):
         self.assertIsNone(view)
 
 if __name__ == '__main__':
-    unittest.main(verbosity=2)
+    unittest.main(verbosity=2, exit=False)
+    from idlelib.idle_test.htest import run
+    run(TextViewer)

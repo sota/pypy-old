@@ -2,12 +2,15 @@ import unittest
 import Tkinter as tkinter
 import ttk
 import test.test_support as support
-from test_ttk.support import AbstractTkTest, requires_tcl
+from test_ttk.support import requires_tcl
 
 support.requires('gui')
 
 
-class MiscTest(AbstractTkTest, unittest.TestCase):
+class MiscTest(unittest.TestCase):
+
+    def setUp(self):
+        self.root = ttk.setup_master()
 
     def test_image_types(self):
         image_types = self.root.image_types()
@@ -20,12 +23,14 @@ class MiscTest(AbstractTkTest, unittest.TestCase):
         self.assertIsInstance(image_names, tuple)
 
 
-class BitmapImageTest(AbstractTkTest, unittest.TestCase):
+class BitmapImageTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        AbstractTkTest.setUpClass.__func__(cls)
         cls.testfile = support.findfile('python.xbm', subdir='imghdrdata')
+
+    def setUp(self):
+        self.root = ttk.setup_master()
 
     def test_create_from_file(self):
         image = tkinter.BitmapImage('::img::test', master=self.root,
@@ -37,7 +42,6 @@ class BitmapImageTest(AbstractTkTest, unittest.TestCase):
         self.assertEqual(image.height(), 16)
         self.assertIn('::img::test', self.root.image_names())
         del image
-        support.gc_collect()
         self.assertNotIn('::img::test', self.root.image_names())
 
     def test_create_from_data(self):
@@ -52,7 +56,6 @@ class BitmapImageTest(AbstractTkTest, unittest.TestCase):
         self.assertEqual(image.height(), 16)
         self.assertIn('::img::test', self.root.image_names())
         del image
-        support.gc_collect()
         self.assertNotIn('::img::test', self.root.image_names())
 
     def assertEqualStrList(self, actual, expected):
@@ -104,12 +107,15 @@ class BitmapImageTest(AbstractTkTest, unittest.TestCase):
                          '-foreground {} {} #000000 yellow')
 
 
-class PhotoImageTest(AbstractTkTest, unittest.TestCase):
+class PhotoImageTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        AbstractTkTest.setUpClass.__func__(cls)
         cls.testfile = support.findfile('python.gif', subdir='imghdrdata')
+
+    def setUp(self):
+        self.root = ttk.setup_master()
+        self.wantobjects = self.root.wantobjects()
 
     def create(self):
         return tkinter.PhotoImage('::img::test', master=self.root,
@@ -133,7 +139,6 @@ class PhotoImageTest(AbstractTkTest, unittest.TestCase):
         self.assertEqual(image['file'], testfile)
         self.assertIn('::img::test', self.root.image_names())
         del image
-        support.gc_collect()
         self.assertNotIn('::img::test', self.root.image_names())
 
     def check_create_from_data(self, ext):
@@ -146,29 +151,30 @@ class PhotoImageTest(AbstractTkTest, unittest.TestCase):
         self.assertEqual(image.type(), 'photo')
         self.assertEqual(image.width(), 16)
         self.assertEqual(image.height(), 16)
-        self.assertEqual(image['data'], data if self.wantobjects
-                                        else data.decode('latin1'))
+        self.assertEqual(image['data'], data)
         self.assertEqual(image['file'], '')
         self.assertIn('::img::test', self.root.image_names())
         del image
-        support.gc_collect()
         self.assertNotIn('::img::test', self.root.image_names())
 
     def test_create_from_ppm_file(self):
         self.check_create_from_file('ppm')
 
+    @unittest.skip('issue #21580')
     def test_create_from_ppm_data(self):
         self.check_create_from_data('ppm')
 
     def test_create_from_pgm_file(self):
         self.check_create_from_file('pgm')
 
+    @unittest.skip('issue #21580')
     def test_create_from_pgm_data(self):
         self.check_create_from_data('pgm')
 
     def test_create_from_gif_file(self):
         self.check_create_from_file('gif')
 
+    @unittest.skip('issue #21580')
     def test_create_from_gif_data(self):
         self.check_create_from_data('gif')
 
@@ -176,18 +182,19 @@ class PhotoImageTest(AbstractTkTest, unittest.TestCase):
     def test_create_from_png_file(self):
         self.check_create_from_file('png')
 
+    @unittest.skip('issue #21580')
     @requires_tcl(8, 6)
     def test_create_from_png_data(self):
         self.check_create_from_data('png')
 
+    @unittest.skip('issue #21580')
     def test_configure_data(self):
         image = tkinter.PhotoImage('::img::test', master=self.root)
         self.assertEqual(image['data'], '')
         with open(self.testfile, 'rb') as f:
             data = f.read()
         image.configure(data=data)
-        self.assertEqual(image['data'], data if self.wantobjects
-                                        else data.decode('latin1'))
+        self.assertEqual(image['data'], data)
         self.assertEqual(image.width(), 16)
         self.assertEqual(image.height(), 16)
 
