@@ -3,7 +3,7 @@ from pypy.interpreter.gateway import unwrap_spec, WrappedDefault
 from rpython.rlib.buffer import SubBuffer
 from rpython.rlib.rstring import strip_spaces
 from rpython.rtyper.lltypesystem import lltype, rffi
-from pypy.module.micronumpy import descriptor, loop
+from pypy.module.micronumpy import descriptor, loop, support
 from pypy.module.micronumpy.base import (
     W_NDimArray, convert_to_array, W_NumpyObject)
 from pypy.module.micronumpy.converters import shape_converter
@@ -75,16 +75,35 @@ def _array(space, w_object, w_dtype=None, copy=True, w_order=None, subok=False):
         if order != 'C':  # or order != 'F':
             raise oefmt(space.w_ValueError, "Unknown order: %s", order)
 
-    # arrays with correct dtype
-    if isinstance(w_object, W_NDimArray) and \
-            (space.is_none(w_dtype) or w_object.get_dtype() is dtype):
-        if copy and (subok or type(w_object) is W_NDimArray):
-            return w_object.descr_copy(space, w_order)
-        elif not copy and (subok or type(w_object) is W_NDimArray):
-            return w_object
-
-    # not an array or incorrect dtype
-    shape, elems_w = strides.find_shape_and_elems(space, w_object, dtype)
+    if isinstance(w_object, W_NDimArray):
+        if (dtype is None or w_object.get_dtype() is dtype):
+            if copy and (subok or type(w_object) is W_NDimArray):
+                return w_object.descr_copy(space, w_order)
+            elif not copy and (subok or type(w_object) is W_NDimArray):
+                return w_object
+        # we have a ndarray, but need to copy or change dtype or create W_NDimArray
+        if dtype is None:
+            dtype = w_object.get_dtype()
+        if dtype != w_object.get_dtype():
+            # silently reject the copy value
+            copy = True
+        if copy:
+            shape = w_object.get_shape()
+            _elems_w = w_object.reshape(space, space.wrap(-1))
+            elems_w = [None] * w_object.get_size()
+            for i in range(len(elems_w)):
+                elems_w[i] = _elems_w.descr_getitem(space, space.wrap(i))
+        elif subok:
+            raise oefmt(space.w_NotImplementedError, 
+                "array(...copy=False, subok=True) not implemented yet")
+        else:
+            sz = support.product(w_object.get_shape()) * dtype.elsize
+            return W_NDimArray.from_shape_and_storage(space,
+                w_object.get_shape(),w_object.implementation.storage,
+                dtype, storage_bytes=sz, w_base=w_object)
+    else:
+        # not an array
+        shape, elems_w = strides.find_shape_and_elems(space, w_object, dtype)
     if dtype is None or (dtype.is_str_or_unicode() and dtype.elsize < 1):
         dtype = strides.find_dtype_for_seq(space, elems_w, dtype)
         if dtype is None:
@@ -134,6 +153,15 @@ def _zeros_or_empty(space, w_shape, w_dtype, w_order, zero):
     if dtype.is_str_or_unicode() and dtype.elsize < 1:
         dtype = descriptor.variable_dtype(space, dtype.char + '1')
     shape = shape_converter(space, w_shape, dtype)
+    for dim in shape:
+        if dim < 0:
+            raise OperationError(space.w_ValueError, space.wrap(
+                "negative dimensions are not allowed"))
+    try:
+        support.product(shape)
+    except OverflowError:
+        raise OperationError(space.w_ValueError, space.wrap(
+            "array is too big."))
     return W_NDimArray.from_shape(space, shape, dtype=dtype, zero=zero)
 
 def empty(space, w_shape, w_dtype=None, w_order=None):
@@ -293,5 +321,5 @@ def frombuffer(space, w_buffer, w_dtype=None, count=-1, offset=0):
         return a
     else:
         writable = not buf.readonly
-    return W_NDimArray.from_shape_and_storage(space, [n], storage, dtype=dtype,
-                                              w_base=w_buffer, writable=writable)
+    return W_NDimArray.from_shape_and_storage(space, [n], storage, storage_bytes=s, 
+                                dtype=dtype, w_base=w_buffer, writable=writable)

@@ -11,7 +11,8 @@ from rpython.jit.codewriter import longlong, heaptracker
 from rpython.jit.codewriter.effectinfo import EffectInfo
 
 from rpython.rtyper.llinterp import LLInterpreter, LLException
-from rpython.rtyper.lltypesystem import lltype, llmemory, rffi, rclass, rstr
+from rpython.rtyper.lltypesystem import lltype, llmemory, rffi, rstr
+from rpython.rtyper import rclass
 
 from rpython.rlib.clibffi import FFI_DEFAULT_ABI
 from rpython.rlib.rarithmetic import ovfcheck, r_uint, r_ulonglong
@@ -224,6 +225,7 @@ _example_res = {'v': None,
                 'r': lltype.nullptr(llmemory.GCREF.TO),
                 'i': 0,
                 'f': 0.0}
+
 
 class LLGraphCPU(model.AbstractCPU):
     from rpython.jit.metainterp.typesystem import llhelper as ts
@@ -641,6 +643,11 @@ class LLGraphCPU(model.AbstractCPU):
 
     def bh_new_array(self, length, arraydescr):
         array = lltype.malloc(arraydescr.A, length, zero=True)
+        assert getkind(arraydescr.A.OF) != 'ref' # getkind crashes on structs
+        return lltype.cast_opaque_ptr(llmemory.GCREF, array)
+
+    def bh_new_array_clear(self, length, arraydescr):
+        array = lltype.malloc(arraydescr.A, length, zero=True)
         return lltype.cast_opaque_ptr(llmemory.GCREF, array)
 
     def bh_classof(self, struct):
@@ -928,7 +935,7 @@ class LLFrame(object):
         del self.force_guard_op
         return res
 
-    def execute_call_release_gil(self, descr, func, *args):
+    def execute_call_release_gil(self, descr, saveerr, func, *args):
         if hasattr(descr, '_original_func_'):
             func = descr._original_func_     # see pyjitpl.py
             # we want to call the function that does the aroundstate

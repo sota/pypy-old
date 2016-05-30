@@ -82,12 +82,12 @@ class TestCall(BaseTestPyPyC):
         assert log.opnames(ops) == []
         #
         assert entry_bridge.match_by_id('call', """
-            p38 = call(ConstClass(_ll_0_threadlocalref_getter___), descr=<Callr . EF=1 OS=5>)
+            p38 = call(ConstClass(_ll_1_threadlocalref_get__Ptr_GcStruct_objectLlT_Signed), #, descr=<Callr . i EF=1 OS=5>)
             p39 = getfield_gc(p38, descr=<FieldP pypy.interpreter.executioncontext.ExecutionContext.inst_topframeref .*>)
             i40 = force_token()
-            p41 = getfield_gc(p38, descr=<FieldP pypy.interpreter.executioncontext.ExecutionContext.inst_w_tracefunc .*>)
+            p41 = getfield_gc_pure(p38, descr=<FieldP pypy.interpreter.executioncontext.ExecutionContext.inst_w_tracefunc .*>)
             guard_value(p41, ConstPtr(ptr42), descr=...)
-            i42 = getfield_gc(p38, descr=<FieldU pypy.interpreter.executioncontext.ExecutionContext.inst_profilefunc .*>)
+            i42 = getfield_gc_pure(p38, descr=<FieldU pypy.interpreter.executioncontext.ExecutionContext.inst_profilefunc .*>)
             i43 = int_is_zero(i42)
             guard_true(i43, descr=...)
             i50 = force_token()
@@ -382,16 +382,20 @@ class TestCall(BaseTestPyPyC):
             ...
             p20 = force_token()
             p22 = new_with_vtable(...)
-            p24 = new_array(1, descr=<ArrayP .>)
+            p24 = new_array_clear(1, descr=<ArrayP .>)
             p26 = new_with_vtable(ConstClass(W_ListObject))
             {{{
             setfield_gc(p0, p20, descr=<FieldP .*PyFrame.vable_token .*>)
+            setfield_gc(p22, ConstPtr(null), descr=<FieldP pypy.interpreter.argument.Arguments.inst_keywords_w .*>)
+            setfield_gc(p22, ConstPtr(null), descr=<FieldP pypy.interpreter.argument.Arguments.inst_keywords .*>)
             setfield_gc(p22, 1, descr=<FieldU pypy.interpreter.argument.Arguments.inst__jit_few_keywords .*>)
+            setfield_gc(p22, ConstPtr(null), descr=<FieldP pypy.interpreter.argument.Arguments.inst_keyword_names_w .*>)
             setfield_gc(p26, ConstPtr(ptr22), descr=<FieldP pypy.objspace.std.listobject.W_ListObject.inst_strategy .*>)
+            setfield_gc(p26, ConstPtr(null), descr=<FieldP pypy.objspace.std.listobject.W_ListObject.inst_lstorage .*>)
             setarrayitem_gc(p24, 0, p26, descr=<ArrayP .>)
             setfield_gc(p22, p24, descr=<FieldP .*Arguments.inst_arguments_w .*>)
             }}}
-            p32 = call_may_force(..., p18, p22, descr=<Callr . rr EF=6>)
+            p32 = call_may_force(_, p18, p22, descr=<Callr . rr EF=6>)
             ...
         """)
 
@@ -440,12 +444,12 @@ class TestCall(BaseTestPyPyC):
             p26 = getfield_gc(p7, descr=<FieldP pypy.objspace.std.dictmultiobject.W_DictMultiObject.inst_strategy .*>)
             guard_value(p26, ConstPtr(ptr27), descr=...)
             guard_not_invalidated(descr=...)
-            p29 = call(ConstClass(_ll_0_threadlocalref_getter___), descr=<Callr . EF=1 OS=5>)
+            p29 = call(ConstClass(_ll_1_threadlocalref_get__Ptr_GcStruct_objectLlT_Signed), #, descr=<Callr . i EF=1 OS=5>)
             p30 = getfield_gc(p29, descr=<FieldP pypy.interpreter.executioncontext.ExecutionContext.inst_topframeref .*>)
             p31 = force_token()
-            p32 = getfield_gc(p29, descr=<FieldP pypy.interpreter.executioncontext.ExecutionContext.inst_w_tracefunc .*>)
+            p32 = getfield_gc_pure(p29, descr=<FieldP pypy.interpreter.executioncontext.ExecutionContext.inst_w_tracefunc .*>)
             guard_value(p32, ConstPtr(ptr33), descr=...)
-            i34 = getfield_gc(p29, descr=<FieldU pypy.interpreter.executioncontext.ExecutionContext.inst_profilefunc .*>)
+            i34 = getfield_gc_pure(p29, descr=<FieldU pypy.interpreter.executioncontext.ExecutionContext.inst_profilefunc .*>)
             i35 = int_is_zero(i34)
             guard_true(i35, descr=...)
             p37 = getfield_gc(ConstPtr(ptr36), descr=<FieldP pypy.interpreter.nestedscope.Cell.inst_w_value .*>)

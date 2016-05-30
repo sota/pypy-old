@@ -12,11 +12,14 @@ class AppTestSorting(BaseNumpyAppTest):
             exp = sorted(range(len(exp)), key=exp.__getitem__)
             c = a.copy()
             res = a.argsort()
-            assert (res == exp).all(), 'Failed sortng %r\na=%r\nres=%r\nexp=%r' % (dtype,a,res,exp)
+            assert (res == exp).all(), '%r\n%r\n%r' % (a,res,exp)
             assert (a == c).all() # not modified
 
             a = arange(100, dtype=dtype)
             assert (a.argsort() == a).all()
+        import sys
+        if '__pypy__' in sys.builtin_module_names:
+            raises(NotImplementedError, 'arange(10,dtype="float16").argsort()')
 
     def test_argsort_ndim(self):
         from numpy import array
@@ -24,13 +27,11 @@ class AppTestSorting(BaseNumpyAppTest):
         assert (a.argsort() == [[1, 0], [0, 1]]).all()
         a = array(range(10) + range(10) + range(10))
         b = a.argsort()
-        assert ((b[:3] == [0, 10, 20]).all() or
-                (b[:3] == [0, 20, 10]).all())
+        assert (b[:3] == [0, 10, 20]).all()
         #trigger timsort 'run' mode which calls arg_getitem_slice
         a = array(range(100) + range(100) + range(100))
         b = a.argsort()
-        assert ((b[:3] == [0, 100, 200]).all() or
-                (b[:3] == [0, 200, 100]).all())
+        assert (b[:3] == [0, 100, 200]).all()
         a = array([[[]]]).reshape(3,4,0)
         b = a.argsort()
         assert b.size == 0
@@ -62,13 +63,14 @@ class AppTestSorting(BaseNumpyAppTest):
                       'i2', complex]:
             a = array([6, 4, -1, 3, 8, 3, 256+20, 100, 101], dtype=dtype)
             exp = sorted(list(a))
-            a.sort()
-            assert (a == exp).all(), 'Failed sorting %r\n%r\n%r' % (dtype, a, exp)
+            res = a.copy()
+            res.sort()
+            assert (res == exp).all(), '%r\n%r\n%r' % (a,res,exp)
 
             a = arange(100, dtype=dtype)
             c = a.copy()
             a.sort()
-            assert (a == c).all(), 'Failed sortng %r\na=%r\nc=%r' % (dtype,a,c)
+            assert (a == c).all()
 
     def test_sort_nonnative(self):
         from numpy import array
@@ -83,13 +85,6 @@ class AppTestSorting(BaseNumpyAppTest):
                 assert exc.value[0].find('supported') >= 0
             #assert (a == b).all(), \
             #    'a,orig,dtype %r,%r,%r' % (a,c,dtype)
-
-    def test_sort_noncontiguous(self):
-        from numpy import array
-        x = array([[2, 10], [1, 11]])
-        assert (x[:, 0].argsort() == [1, 0]).all()
-        x[:, 0].sort()
-        assert (x == [[1, 10], [2, 11]]).all()
 
 # tests from numpy/tests/test_multiarray.py
     def test_sort_corner_cases(self):
@@ -178,10 +173,8 @@ class AppTestSorting(BaseNumpyAppTest):
         assert (d == c).all(), "test sort with default axis"
 
     def test_sort_corner_cases_string_records(self):
+        skip('not implemented yet')
         from numpy import array, dtype
-        import sys
-        if '__pypy__' in sys.builtin_module_names:
-            skip('not implemented yet in PyPy')
         # test string sorts.
         s = 'aaaaaaaa'
         a = array([s + chr(i) for i in range(101)])
@@ -210,35 +203,26 @@ class AppTestSorting(BaseNumpyAppTest):
             assert (c == a).all(), msg
 
     def test_sort_unicode(self):
-        import sys
         from numpy import array
         # test unicode sorts.
         s = 'aaaaaaaa'
-        a = array([s + chr(i) for i in range(101)], dtype=unicode)
-        b = a[::-1].copy()
-        for kind in ['q', 'm', 'h']:
+        try:
+            a = array([s + chr(i) for i in range(101)], dtype=unicode)
+            b = a[::-1].copy()
+        except:
+            skip('unicode type not supported yet')
+        for kind in ['q', 'm', 'h'] :
             msg = "unicode sort, kind=%s" % kind
-            c = a.copy()
-            if '__pypy__' in sys.builtin_module_names:
-                exc = raises(NotImplementedError, "c.sort(kind=kind)")
-                assert 'non-numeric types' in exc.value.message
-            else:
-                c.sort(kind=kind)
-                assert (c == a).all(), msg
-            c = b.copy()
-            if '__pypy__' in sys.builtin_module_names:
-                exc = raises(NotImplementedError, "c.sort(kind=kind)")
-                assert 'non-numeric types' in exc.value.message
-            else:
-                c.sort(kind=kind)
-                assert (c == a).all(), msg
+            c = a.copy();
+            c.sort(kind=kind)
+            assert (c == a).all(), msg
+            c = b.copy();
+            c.sort(kind=kind)
+            assert (c == a).all(), msg
 
     def test_sort_objects(self):
         # test object array sorts.
         from numpy import empty
-        import sys
-        if '__pypy__' in sys.builtin_module_names:
-            skip('not implemented yet in PyPy')
         try:
             a = empty((101,), dtype=object)
         except:
@@ -285,10 +269,9 @@ class AppTestSorting(BaseNumpyAppTest):
 
     def test_sort_order(self):
         from numpy import array, zeros
-        from sys import byteorder, builtin_module_names
-        if '__pypy__' in builtin_module_names:
-            skip('not implemented yet in PyPy')
+        from sys import byteorder
         # Test sorting an array with fields
+        skip('not implemented yet')
         x1 = array([21, 32, 14])
         x2 = array(['my', 'first', 'name'])
         x3=array([3.1, 4.5, 6.2])
