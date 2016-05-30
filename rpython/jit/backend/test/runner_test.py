@@ -22,6 +22,7 @@ from rpython.rlib.rarithmetic import intmask, is_valid_int
 from rpython.jit.backend.detect_cpu import autodetect
 from rpython.jit.backend.llsupport import jitframe
 from rpython.jit.backend.llsupport.llmodel import AbstractLLCPU
+from rpython.jit.backend.llsupport.rewrite import GcRewriterAssembler
 
 
 IS_32_BIT = sys.maxint < 2**32
@@ -53,11 +54,15 @@ class Runner(object):
     add_loop_instructions = ['overload for a specific cpu']
     bridge_loop_instructions = ['overload for a specific cpu']
 
+    
     def execute_operation(self, opname, valueboxes, result_type, descr=None):
         inputargs, operations = self._get_single_operation_list(opname,
                                                                 result_type,
                                                                 valueboxes,
                                                                 descr)
+        return self.execute_operations(inputargs, operations, result_type)
+
+    def execute_operations(self, inputargs, operations, result_type):
         looptoken = JitCellToken()
         self.cpu.compile_loop(inputargs, operations, looptoken)
         args = []
@@ -85,6 +90,23 @@ class Runner(object):
             return None
         else:
             assert False
+
+    def _get_operation_list(self, operations, result_type):
+        inputargs = []
+        blacklist = set()
+        for op in operations:
+            for arg in op.getarglist():
+                if not isinstance(arg, Const) and arg not in inputargs and \
+                   arg not in blacklist:
+                    inputargs.append(arg)
+            if op.type != 'v':
+                blacklist.add(op)
+        if result_type == 'void':
+            op1 = ResOperation(rop.FINISH, [], descr=BasicFinalDescr(0))
+        else:
+            op1 = ResOperation(rop.FINISH, [operations[-1]], descr=BasicFinalDescr(0))
+        operations.append(op1)
+        return inputargs, operations
 
     def _get_single_operation_list(self, opnum, result_type, valueboxes,
                                    descr):
@@ -210,6 +232,8 @@ class BaseBackendTest(Runner):
             del looptoken._x86_ops_offset # else it's kept alive
         if hasattr(looptoken, '_ppc_ops_offset'):
             del looptoken._ppc_ops_offset # else it's kept alive
+        if hasattr(looptoken, '_zarch_ops_offset'):
+            del looptoken._zarch_ops_offset # else it's kept alive
         del loop
         gc.collect()
         assert not wr_i1() and not wr_guard()
@@ -417,7 +441,9 @@ class BaseBackendTest(Runner):
 
     def test_float_operations(self):
         from rpython.jit.metainterp.test.test_executor import get_float_tests
+        from rpython.jit.metainterp.resoperation import opname
         for opnum, boxargs, rettype, retvalue in get_float_tests(self.cpu):
+            print("testing", opname[opnum])
             res = self.execute_operation(opnum, boxargs, rettype)
             if rettype == 'float':
                 res = longlong.getrealfloat(res)
@@ -509,13 +535,15 @@ class BaseBackendTest(Runner):
             return chr(ord(c) + ord(c1))
 
         functions = [
-            (func_int, lltype.Signed, types.sint, 655360),
-            (func_int, rffi.SHORT, types.sint16, 1213),
-            (func_char, lltype.Char, types.uchar, 12)
+            (func_int, lltype.Signed, types.sint, 655360, 655360),
+            (func_int, lltype.Signed, types.sint, 655360, -293999429),
+            (func_int, rffi.SHORT, types.sint16, 1213, 1213),
+            (func_int, rffi.SHORT, types.sint16, 1213, -12020),
+            (func_char, lltype.Char, types.uchar, 12, 12),
             ]
 
         cpu = self.cpu
-        for func, TP, ffi_type, num in functions:
+        for func, TP, ffi_type, num, num1 in functions:
             #
             FPTR = self.Ptr(self.FuncType([TP, TP], TP))
             func_ptr = llhelper(FPTR, func)
@@ -526,25 +554,25 @@ class BaseBackendTest(Runner):
                                         EffectInfo.MOST_GENERAL)
             res = self.execute_operation(rop.CALL_I,
                                          [funcbox, InputArgInt(num),
-                                          InputArgInt(num)],
+                                          InputArgInt(num1)],
                                          'int', descr=calldescr)
-            assert res == 2 * num
+            assert res == num + num1
             # then, try it with the dynamic calldescr
             dyn_calldescr = cpu._calldescr_dynamic_for_tests(
                 [ffi_type, ffi_type], ffi_type)
             res = self.execute_operation(rop.CALL_I,
                                          [funcbox, InputArgInt(num),
-                                          InputArgInt(num)],
+                                          InputArgInt(num1)],
                                          'int', descr=dyn_calldescr)
-            assert res == 2 * num
+            assert res == num + num1
 
             # last, try it with one constant argument
             calldescr = cpu.calldescrof(FUNC, FUNC.ARGS, FUNC.RESULT, EffectInfo.MOST_GENERAL)
             res = self.execute_operation(rop.CALL_I,
                                          [funcbox, ConstInt(num),
-                                          InputArgInt(num)],
+                                          InputArgInt(num1)],
                                          'int', descr=calldescr)
-            assert res == 2 * num
+            assert res == num + num1
 
         if cpu.supports_floats:
             def func(f0, f1, f2, f3, f4, f5, f6, i0, f7, i1, f8, f9):
@@ -4473,19 +4501,31 @@ class LLtypeBackendTest(BaseBackendTest):
 
         def checkops(mc, ops_regexp):
             import re
-            words = [line.split("\t")[2].split()[0] + ';' for line in mc]
+            words = []
+            print '----- checkops -----'
+            for line in mc:
+                print line.rstrip()
+                t = line.split("\t")
+                if len(t) <= 2:
+                    continue
+                w = t[2].split()
+                if len(w) == 0:
+                    if '<UNDEFINED>' in line:
+                        w = ['UNDEFINED']
+                    else:
+                        continue
+                words.append(w[0] + ';')
+                print '[[%s]]' % (w[0],)
             text = ' '.join(words)
             assert re.compile(ops_regexp).match(text)
 
         data = ctypes.string_at(info.asmaddr, info.asmlen)
         try:
             mc = list(machine_code_dump(data, info.asmaddr, cpuname))
-            lines = [line for line in mc if line.count('\t') >= 2]
-            checkops(lines, self.add_loop_instructions)
+            checkops(mc, self.add_loop_instructions)
             data = ctypes.string_at(bridge_info.asmaddr, bridge_info.asmlen)
             mc = list(machine_code_dump(data, bridge_info.asmaddr, cpuname))
-            lines = [line for line in mc if line.count('\t') >= 2]
-            checkops(lines, self.bridge_loop_instructions)
+            checkops(mc, self.bridge_loop_instructions)
         except ObjdumpNotFound:
             py.test.skip("requires (g)objdump")
 
@@ -5000,11 +5040,31 @@ class LLtypeBackendTest(BaseBackendTest):
                         lengthbox = cls2(length)
                         if cls1 == cls2 and start == length:
                             lengthbox = startbox    # same box!
-                        self.execute_operation(rop.ZERO_ARRAY,
-                                               [InputArgRef(a_ref),
-                                                startbox,
-                                                lengthbox],
-                                           'void', descr=arraydescr)
+                        scale = arraydescr.itemsize
+                        ops = []
+                        def emit(op):
+                            ops.append(op)
+                        helper = GcRewriterAssembler(None, self.cpu)
+                        helper.emit_op = emit
+                        offset = 0
+                        scale_start, s_offset, v_start = \
+                                helper._emit_mul_if_factor_offset_not_supported(
+                                        startbox, scale, offset)
+                        if v_start is None:
+                            v_start = ConstInt(s_offset)
+                        scale_len, e_offset, v_len = \
+                                helper._emit_mul_if_factor_offset_not_supported(
+                                        lengthbox, scale, offset)
+                        if v_len is None:
+                            v_len = ConstInt(e_offset)
+                        args = [InputArgRef(a_ref), v_start, v_len,
+                                ConstInt(scale_start), ConstInt(scale_len)]
+                        ops.append(ResOperation(rop.ZERO_ARRAY, args,
+                                                descr=arraydescr))
+
+                        scalebox = ConstInt(arraydescr.itemsize)
+                        inputargs, oplist = self._get_operation_list(ops,'void')
+                        self.execute_operations(inputargs, oplist, 'void')
                         assert len(a) == 100
                         for i in range(100):
                             val = (0 if start <= i < start + length
@@ -5206,3 +5266,36 @@ class LLtypeBackendTest(BaseBackendTest):
         fail = self.cpu.get_latest_descr(deadframe)
         res = self.cpu.get_int_value(deadframe, 0)
         assert res == 0
+
+    def test_load_from_gc_table_many(self):
+        # Test that 'load_from_gc_table' handles a table of NUM entries.
+        # Done by writing NUM setfield_gc on constants.  Each one
+        # requires a load_from_gc_table.  The value of NUM is choosen
+        # so that not all of them fit into the ARM's 4096-bytes offset.
+        NUM = 1025
+        S = lltype.GcStruct('S', ('x', lltype.Signed))
+        fielddescr = self.cpu.fielddescrof(S, 'x')
+        table = [lltype.malloc(S) for i in range(NUM)]
+        looptoken = JitCellToken()
+        targettoken = TargetToken()
+        ops = [
+            '[]',
+            ]
+        namespace = {'fielddescr': fielddescr,
+                     'finaldescr': BasicFinalDescr(5)}
+        for i, s in enumerate(table):
+            ops.append('setfield_gc(ConstPtr(ptr%d), %d, descr=fielddescr)'
+                           % (i, i))
+            namespace['ptr%d' % i] = lltype.cast_opaque_ptr(llmemory.GCREF, s)
+        ops.append('finish(descr=finaldescr)')
+
+        loop = parse('\n'.join(ops), namespace=namespace)
+
+        self.cpu.compile_loop(loop.inputargs, loop.operations, looptoken)
+        deadframe = self.cpu.execute_token(looptoken)
+        fail = self.cpu.get_latest_descr(deadframe)
+        assert fail.identifier == 5
+
+        # check that all setfield_gc() worked
+        for i, s in enumerate(table):
+            assert s.x == i

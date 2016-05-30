@@ -417,7 +417,10 @@ class ObjSpace(object):
         self.wait_for_thread_shutdown()
         w_exitfunc = self.sys.getdictvalue(self, 'exitfunc')
         if w_exitfunc is not None:
-            self.call_function(w_exitfunc)
+            try:
+                self.call_function(w_exitfunc)
+            except OperationError as e:
+                e.write_unraisable(self, 'sys.exitfunc == ', w_exitfunc)
         from pypy.interpreter.module import Module
         for w_mod in self.builtin_modules.values():
             if isinstance(w_mod, Module) and w_mod.startup_called:
@@ -1025,6 +1028,9 @@ class ObjSpace(object):
 
     def newlist_int(self, list_i):
         return self.newlist([self.wrap(i) for i in list_i])
+
+    def newlist_float(self, list_f):
+        return self.newlist([self.wrap(f) for f in list_f])
 
     def newlist_hint(self, sizehint):
         from pypy.objspace.std.listobject import make_empty_list_with_size

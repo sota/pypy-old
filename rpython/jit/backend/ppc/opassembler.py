@@ -291,8 +291,10 @@ class GuardOpAssembler(object):
     def build_guard_token(self, op, frame_depth, arglocs, fcond):
         descr = op.getdescr()
         gcmap = allocate_gcmap(self, frame_depth, r.JITFRAME_FIXED_SIZE)
+        faildescrindex = self.get_gcref_from_faildescr(descr)
         token = PPCGuardToken(self.cpu, gcmap, descr, op.getfailargs(),
                               arglocs, op.getopnum(), frame_depth,
+                              faildescrindex,
                               fcond)
         return token
 
@@ -474,19 +476,19 @@ class MiscOpAssembler(object):
 
     def emit_finish(self, op, arglocs, regalloc):
         base_ofs = self.cpu.get_baseofs_of_frame_field()
-        if len(arglocs) > 1:
-            [return_val, fail_descr_loc] = arglocs
+        if len(arglocs) > 0:
+            [return_val] = arglocs
             if op.getarg(0).type == FLOAT:
                 self.mc.stfd(return_val.value, r.SPP.value, base_ofs)
             else:
                 self.mc.std(return_val.value, r.SPP.value, base_ofs)
-        else:
-            [fail_descr_loc] = arglocs
 
         ofs = self.cpu.get_ofs_of_frame_field('jf_descr')
         ofs2 = self.cpu.get_ofs_of_frame_field('jf_gcmap')
 
-        self.mc.load_imm(r.r5, fail_descr_loc.getint())
+        descr = op.getdescr()
+        faildescrindex = self.get_gcref_from_faildescr(descr)
+        self._load_from_gc_table(r.r5, r.r5, faildescrindex)
 
         # gcmap logic here:
         arglist = op.getarglist()
@@ -541,7 +543,7 @@ class MiscOpAssembler(object):
     emit_cast_int_to_ptr = _genop_same_as
 
     def emit_guard_no_exception(self, op, arglocs, regalloc):
-        self.mc.load_from_addr(r.SCRATCH2, self.cpu.pos_exception())
+        self.mc.load_from_addr(r.SCRATCH2, r.SCRATCH2, self.cpu.pos_exception())
         self.mc.cmp_op(0, r.SCRATCH2.value, 0, imm=True)
         self.guard_success_cc = c.EQ
         self._emit_guard(op, arglocs)
@@ -585,6 +587,17 @@ class MiscOpAssembler(object):
         mc.load_imm(r.SCRATCH, 0)
         mc.store(r.SCRATCH.value, r.SCRATCH2.value, 0)
         mc.store(r.SCRATCH.value, r.SCRATCH2.value, diff)
+
+    def _load_from_gc_table(self, rD, rT, index):
+        # rT is a temporary, may be equal to rD, must be != r0
+        addr = self.gc_table_addr + index * WORD
+        self.mc.load_from_addr(rD, rT, addr)
+
+    def emit_load_from_gc_table(self, op, arglocs, regalloc):
+        index = op.getarg(0).getint()
+        [resloc] = arglocs
+        assert resloc.is_reg()
+        self._load_from_gc_table(resloc, resloc, index)
 
 
 class CallOpAssembler(object):
@@ -646,9 +659,9 @@ class CallOpAssembler(object):
                 guard_op.getopnum() == rop.GUARD_NOT_FORCED_2)
         faildescr = guard_op.getdescr()
         ofs = self.cpu.get_ofs_of_frame_field('jf_force_descr')
-        self.mc.load_imm(r.SCRATCH, rffi.cast(lltype.Signed,
-                                           cast_instance_to_gcref(faildescr)))
-        self.mc.store(r.SCRATCH.value, r.SPP.value, ofs)
+        faildescrindex = self.get_gcref_from_faildescr(faildescr)
+        self._load_from_gc_table(r.r2, r.r2, faildescrindex)
+        self.mc.store(r.r2.value, r.SPP.value, ofs)
 
     def _find_nearby_operation(self, regalloc, delta):
         return regalloc.operations[regalloc.rm.position + delta]
@@ -851,40 +864,6 @@ class FieldOpAssembler(object):
             self.mc.sldi(scratch_loc.value, loc.value, scale)
         return scratch_loc
 
-    def _apply_scale(self, ofs, index_loc, itemsize):
-        # XXX should die now that getarrayitem and getinteriorfield are gone
-        # but can't because of emit_zero_array() at the moment
-
-        # For arrayitem and interiorfield reads and writes: this returns an
-        # offset suitable for use in ld/ldx or similar instructions.
-        # The result will be either the register r2 or a 16-bit immediate.
-        # The arguments stand for "ofs + index_loc * itemsize",
-        # with the following constrains:
-        assert ofs.is_imm()                # must be an immediate...
-        assert _check_imm_arg(ofs.getint())   # ...that fits 16 bits
-        assert index_loc is not r.SCRATCH2 # can be a reg or imm (any size)
-        assert itemsize.is_imm()           # must be an immediate (any size)
-
-        multiply_by = itemsize.value
-        offset = ofs.getint()
-        if index_loc.is_imm():
-            offset += index_loc.getint() * multiply_by
-            if _check_imm_arg(offset):
-                return imm(offset)
-            else:
-                self.mc.load_imm(r.SCRATCH2, offset)
-                return r.SCRATCH2
-        else:
-            index_loc = self._multiply_by_constant(index_loc, multiply_by,
-                                                   r.SCRATCH2)
-            # here, the new index_loc contains 'index_loc * itemsize'.
-            # If offset != 0 then we have to add it here.  Note that
-            # mc.addi() would not be valid with operand r0.
-            if offset != 0:
-                self.mc.addi(r.SCRATCH2.value, index_loc.value, offset)
-                index_loc = r.SCRATCH2
-            return index_loc
-
     def _copy_in_scratch2(self, loc):
         if loc.is_imm():
             self.mc.li(r.SCRATCH2.value, loc.value)
@@ -903,86 +882,94 @@ class FieldOpAssembler(object):
         elif itemsize & 2:                self.mc.sthu(a, b, c)
         elif (itemsize & 4) or IS_PPC_32: self.mc.stwu(a, b, c)
         else:                             self.mc.stdu(a, b, c)
-    def eza_stX(self, a, b, c, itemsize):
-        if itemsize & 1:                  self.mc.stb(a, b, c)
-        elif itemsize & 2:                self.mc.sth(a, b, c)
-        elif (itemsize & 4) or IS_PPC_32: self.mc.stw(a, b, c)
-        else:                             self.mc.std(a, b, c)
 
     def emit_zero_array(self, op, arglocs, regalloc):
-        base_loc, startindex_loc, length_loc, ofs_loc, itemsize_loc = arglocs
+        base_loc, startindex_loc, length_loc, ofs_loc = arglocs
 
-        # assume that an array where an item size is N:
-        # * if N is even, then all items are aligned to a multiple of 2
-        # * if N % 4 == 0, then all items are aligned to a multiple of 4
-        # * if N % 8 == 0, then all items are aligned to a multiple of 8
-        itemsize = itemsize_loc.getint()
-        if itemsize & 1:                  stepsize = 1
-        elif itemsize & 2:                stepsize = 2
-        elif (itemsize & 4) or IS_PPC_32: stepsize = 4
-        else:                             stepsize = WORD
+        stepsize = 8
+        shift_by = 3
+        if IS_PPC_32:
+            stepsize = 4
+            shift_by = 2
 
-        repeat_factor = itemsize // stepsize
-        if repeat_factor != 1:
-            # This is only for itemsize not in (1, 2, 4, WORD).
-            # Include the repeat_factor inside length_loc if it is a constant
-            if length_loc.is_imm():
-                length_loc = imm(length_loc.value * repeat_factor)
-                repeat_factor = 1     # included
-
-        unroll = -1
         if length_loc.is_imm():
-            if length_loc.value <= 8:
-                unroll = length_loc.value
-                if unroll <= 0:
-                    return     # nothing to do
+            if length_loc.value <= 0:
+                return     # nothing to do
 
-        ofs_loc = self._apply_scale(ofs_loc, startindex_loc, itemsize_loc)
-        ofs_loc = self._copy_in_scratch2(ofs_loc)
-
-        if unroll > 0:
-            assert repeat_factor == 1
-            self.mc.li(r.SCRATCH.value, 0)
-            self.eza_stXux(r.SCRATCH.value, ofs_loc.value, base_loc.value,
-                           itemsize)
-            for i in range(1, unroll):
-                self.eza_stX(r.SCRATCH.value, ofs_loc.value, i * stepsize,
-                             itemsize)
-
+        if startindex_loc.is_imm():
+            self.mc.load_imm(r.SCRATCH2, startindex_loc.value)
+            startindex_loc = r.SCRATCH2
+        if ofs_loc.is_imm():
+            self.mc.addi(r.SCRATCH2.value, startindex_loc.value, ofs_loc.value)
         else:
-            if length_loc.is_imm():
-                self.mc.load_imm(r.SCRATCH, length_loc.value)
-                length_loc = r.SCRATCH
-                jz_location = -1
-                assert repeat_factor == 1
-            else:
-                self.mc.cmp_op(0, length_loc.value, 0, imm=True)
-                jz_location = self.mc.currpos()
-                self.mc.trap()
-                length_loc = self._multiply_by_constant(length_loc,
-                                                        repeat_factor,
-                                                        r.SCRATCH)
-            self.mc.mtctr(length_loc.value)
-            self.mc.li(r.SCRATCH.value, 0)
+            self.mc.add(r.SCRATCH2.value, startindex_loc.value, ofs_loc.value)
+        ofs_loc = r.SCRATCH2
+        assert base_loc.is_core_reg()
+        self.mc.add(ofs_loc.value, ofs_loc.value, base_loc.value)
+        # ofs_loc is now the real address pointing to the first
+        # byte to be zeroed
 
-            self.eza_stXux(r.SCRATCH.value, ofs_loc.value, base_loc.value,
-                           itemsize)
-            bdz_location = self.mc.currpos()
-            self.mc.trap()
+        prev_length_loc = length_loc
+        if length_loc.is_imm():
+            self.mc.load_imm(r.SCRATCH, length_loc.value)
+            length_loc = r.SCRATCH
 
-            loop_location = self.mc.currpos()
-            self.eza_stXu(r.SCRATCH.value, ofs_loc.value, stepsize,
-                          itemsize)
-            self.mc.bdnz(loop_location - self.mc.currpos())
+        self.mc.cmp_op(0, length_loc.value, stepsize, imm=True)
+        jlt_location = self.mc.currpos()
+        self.mc.trap()
 
-            pmc = OverwritingBuilder(self.mc, bdz_location, 1)
-            pmc.bdz(self.mc.currpos() - bdz_location)
-            pmc.overwrite()
+        self.mc.sradi(r.SCRATCH.value, length_loc.value, 0, shift_by)
+        self.mc.mtctr(r.SCRATCH.value) # store the length in count register
 
-            if jz_location != -1:
-                pmc = OverwritingBuilder(self.mc, jz_location, 1)
-                pmc.ble(self.mc.currpos() - jz_location)    # !GT
-                pmc.overwrite()
+        self.mc.li(r.SCRATCH.value, 0)
+
+        # NOTE the following assumes that bytes have been passed to both startindex
+        # and length. Thus we zero 4/8 bytes in a loop in 1) and every remaining
+        # byte is zeroed in another loop in 2)
+
+        self.mc.subi(ofs_loc.value, ofs_loc.value, stepsize)
+
+        # first store of case 1)
+        # 1) The next loop copies WORDS into the memory chunk starting at startindex
+        # ending at startindex + length. These are bytes
+        loop_location = self.mc.currpos()
+        self.eza_stXu(r.SCRATCH.value, ofs_loc.value, stepsize, stepsize)
+        self.mc.bdnz(loop_location - self.mc.currpos())
+
+        self.mc.addi(ofs_loc.value, ofs_loc.value, stepsize)
+
+        pmc = OverwritingBuilder(self.mc, jlt_location, 1)
+        pmc.blt(self.mc.currpos() - jlt_location)    # jump if length < WORD
+        pmc.overwrite()
+
+        # 2) There might be some bytes left to be written.
+        # following scenario: length_loc == 3 bytes, stepsize == 4!
+        # need to write the last bytes.
+
+        # move the last bytes to the count register
+        length_loc = prev_length_loc
+        if length_loc.is_imm():
+            self.mc.load_imm(r.SCRATCH, length_loc.value & (stepsize-1))
+        else:
+            self.mc.andix(r.SCRATCH.value, length_loc.value, (stepsize-1) & 0xff)
+
+        self.mc.cmp_op(0, r.SCRATCH.value, 0, imm=True)
+        jle_location = self.mc.currpos()
+        self.mc.trap()
+
+        self.mc.mtctr(r.SCRATCH.value)
+        self.mc.li(r.SCRATCH.value, 0)
+
+        self.mc.subi(ofs_loc.value, ofs_loc.value, 1)
+
+        loop_location = self.mc.currpos()
+        self.eza_stXu(r.SCRATCH.value, ofs_loc.value, 1, 1)
+        self.mc.bdnz(loop_location - self.mc.currpos())
+
+        pmc = OverwritingBuilder(self.mc, jle_location, 1)
+        pmc.ble(self.mc.currpos() - jle_location)    # !GT
+        pmc.overwrite()
+
 
 class StrOpAssembler(object):
 
