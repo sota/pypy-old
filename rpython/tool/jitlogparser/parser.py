@@ -27,7 +27,7 @@ class Op(object):
     asm = None
     failargs = ()
 
-    def __init__(self, name, args, res, descr, failargs=None):
+    def __init__(self, name, args, res, descr):
         self.name = name
         self.args = args
         self.res = res
@@ -35,21 +35,6 @@ class Op(object):
         self._is_guard = name.startswith('guard_')
         if self._is_guard:
             self.guard_no = int(self.descr[len('<Guard0x'):-1], 16)
-        self.failargs = failargs
-
-    def as_json(self):
-        d = {
-            'name': self.name,
-            'args': self.args,
-            'res': self.res,
-        }
-        if self.descr is not None:
-            d['descr'] = self.descr
-        if self.bridge is not None:
-            d['bridge'] = self.bridge.as_json()
-        if self.asm is not None:
-            d['asm'] = self.asm
-        return d
 
     def setfailargs(self, failargs):
         self.failargs = failargs
@@ -156,16 +141,10 @@ class SimpleParser(OpParser):
     def box_for_var(self, res):
         return res
 
-    def create_op(self, opnum, args, res, descr, fail_args):
-        return self.Op(intern(opname[opnum].lower()), args, res,
-                       descr, fail_args)
+    def create_op(self, opnum, args, res, descr):
+        return self.Op(intern(opname[opnum].lower()), args, res, descr)
 
-    def create_op_no_result(self, opnum, args, descr, fail_args):
-        return self.Op(intern(opname[opnum].lower()), args, None,
-                       descr, fail_args)
 
-    def update_memo(self, val, name):
-        pass
 
 class NonCodeError(Exception):
     pass
@@ -223,7 +202,7 @@ class TraceForOpcode(object):
     line_starts_here = property(getline_starts_here)
 
     def __repr__(self):
-        return "[%s\n]" % "\n    ".join([repr(op) for op in self.operations])
+        return "[%s]" % ", ".join([repr(op) for op in self.operations])
 
     def pretty_print(self, out):
         pass
@@ -382,37 +361,24 @@ def adjust_bridges(loop, bridges):
             i += 1
     return res
 
-def parse_addresses(part, callback=None):
-    hex_re = '0x(-?[\da-f]+)'
-    addrs = {}
-    if callback is None:
-        def callback(addr, stop_addr, bootstrap_addr, name, code_name):
-            addrs.setdefault(bootstrap_addr, []).append(name)
-    for entry in part:
-        m = re.search('has address %(hex)s to %(hex)s \(bootstrap %(hex)s' %
-                      {'hex': hex_re}, entry)
-        if not m:
-            # a bridge
-            m = re.search('has address ' + hex_re + ' to ' + hex_re, entry)
-            addr = int(m.group(1), 16)
-            bootstrap_addr = addr
-            stop_addr = int(m.group(2), 16)
-            entry = entry.lower()
-            m = re.search('guard ' + hex_re, entry)
-            name = 'guard ' + m.group(1)
-            code_name = 'bridge'
-        else:
-            name = entry[:entry.find('(') - 1].lower()
-            addr = int(m.group(1), 16)
-            stop_addr = int(m.group(2), 16)
-            bootstrap_addr = int(m.group(3), 16)
-            code_name = entry[entry.find('(') + 1:m.span(0)[0] - 2]
-        callback(addr, stop_addr, bootstrap_addr, name, code_name)
-    return addrs
 
 def import_log(logname, ParserCls=SimpleParser):
     log = parse_log_file(logname)
-    addrs = parse_addresses(extract_category(log, 'jit-backend-addr'))
+    hex_re = '0x(-?[\da-f]+)'
+    addrs = {}
+    for entry in extract_category(log, 'jit-backend-addr'):
+        m = re.search('bootstrap ' + hex_re, entry)
+        if not m:
+            # a bridge
+            m = re.search('has address ' + hex_re, entry)
+            addr = int(m.group(1), 16)
+            entry = entry.lower()
+            m = re.search('guard ' + hex_re, entry)
+            name = 'guard ' + m.group(1)
+        else:
+            name = entry[:entry.find('(') - 1].lower()
+            addr = int(m.group(1), 16)
+        addrs.setdefault(addr, []).append(name)
     from rpython.jit.backend.tool.viewcode import World
     world = World()
     for entry in extract_category(log, 'jit-backend-dump'):
@@ -426,9 +392,9 @@ def import_log(logname, ParserCls=SimpleParser):
     loops = []
     cat = extract_category(log, 'jit-log-opt')
     if not cat:
-        cat = extract_category(log, 'jit-log-rewritten')
+        extract_category(log, 'jit-log-rewritten')
     if not cat:
-        cat = extract_category(log, 'jit-log-noopt')        
+        extract_category(log, 'jit-log-noopt')        
     for entry in cat:
         parser = ParserCls(entry, None, {}, 'lltype', None,
                            nonstrict=True)

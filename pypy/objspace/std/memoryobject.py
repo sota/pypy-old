@@ -5,7 +5,7 @@ import operator
 
 from rpython.rlib.buffer import Buffer, SubBuffer
 from pypy.interpreter.baseobjspace import W_Root
-from pypy.interpreter.error import OperationError, oefmt
+from pypy.interpreter.error import OperationError
 from pypy.interpreter.gateway import interp2app
 from pypy.interpreter.typedef import TypeDef, GetSetProperty
 
@@ -61,6 +61,15 @@ class W_MemoryView(W_Root):
     def getlength(self):
         return self.buf.getlength()
 
+    def getslice(self, start, stop):
+        if start < 0:
+            start = 0
+        size = stop - start
+        if size < 0:
+            size = 0
+        buf = SubBuffer(self.buf, start, size)
+        return W_MemoryView(buf)
+
     def descr_tobytes(self, space):
         return space.wrap(self.as_str())
 
@@ -72,25 +81,25 @@ class W_MemoryView(W_Root):
         return space.newlist(result)
 
     def descr_getitem(self, space, w_index):
-        start, stop, step, size = space.decode_index4(w_index, self.getlength())
+        start, stop, step = space.decode_index(w_index, self.getlength())
         if step not in (0, 1):
-            raise oefmt(space.w_NotImplementedError, "")
+            raise OperationError(space.w_NotImplementedError, space.wrap(""))
         if step == 0:  # index only
             return space.wrap(self.buf.getitem(start))
-        else:
-            buf = SubBuffer(self.buf, start, size)
-            return W_MemoryView(buf)
+        res = self.getslice(start, stop)
+        return space.wrap(res)
 
     def descr_setitem(self, space, w_index, w_obj):
         if self.buf.readonly:
-            raise oefmt(space.w_TypeError, "cannot modify read-only memory")
-        start, stop, step, size = space.decode_index4(w_index, self.getlength())
+            raise OperationError(space.w_TypeError, space.wrap(
+                "cannot modify read-only memory"))
+        start, stop, step, size = space.decode_index4(w_index, self.buf.getlength())
         if step not in (0, 1):
-            raise oefmt(space.w_NotImplementedError, "")
+            raise OperationError(space.w_NotImplementedError, space.wrap(""))
         value = space.buffer_w(w_obj, space.BUF_CONTIG_RO)
         if value.getlength() != size:
-            raise oefmt(space.w_ValueError,
-                        "cannot modify size of memoryview object")
+            raise OperationError(space.w_ValueError, space.wrap(
+                "cannot modify size of memoryview object"))
         if step == 0:  # index only
             self.buf.setitem(start, value.getitem(0))
         elif step == 1:
@@ -121,17 +130,6 @@ class W_MemoryView(W_Root):
         # I've never seen anyone filling this field
         return space.w_None
 
-    def descr_pypy_raw_address(self, space):
-        from rpython.rtyper.lltypesystem import lltype, rffi
-        try:
-            ptr = self.buf.get_raw_address()
-        except ValueError:
-            # report the error using the RPython-level internal repr of self.buf
-            msg = ("cannot find the underlying address of buffer that "
-                   "is internally %r" % (self.buf,))
-            raise OperationError(space.w_ValueError, space.wrap(msg))
-        return space.wrap(rffi.cast(lltype.Signed, ptr))
-
 W_MemoryView.typedef = TypeDef(
     "memoryview",
     __doc__ = """\
@@ -156,6 +154,5 @@ Create a new memoryview object which references the given object.
     shape       = GetSetProperty(W_MemoryView.w_get_shape),
     strides     = GetSetProperty(W_MemoryView.w_get_strides),
     suboffsets  = GetSetProperty(W_MemoryView.w_get_suboffsets),
-    _pypy_raw_address = interp2app(W_MemoryView.descr_pypy_raw_address),
     )
 W_MemoryView.typedef.acceptable_as_base_class = False

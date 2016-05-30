@@ -5,7 +5,6 @@ from rpython.tool.jitlogparser.parser import (SimpleParser, TraceForOpcode,
 from rpython.tool.jitlogparser.storage import LoopStorage
 import py, sys
 from rpython.jit.backend.detect_cpu import autodetect
-from rpython.jit.backend.tool.viewcode import ObjdumpNotFound
 
 def parse(input, **kwds):
     return SimpleParser.parse_from_input(input, **kwds)
@@ -16,7 +15,7 @@ def test_parse():
     [i7]
     i9 = int_lt(i7, 1003)
     guard_true(i9, descr=<Guard0x2>) []
-    i13 = getfield_raw_i(151937600, descr=<SignedFieldDescr pypysig_long_struct.c_value 0>)
+    i13 = getfield_raw(151937600, descr=<SignedFieldDescr pypysig_long_struct.c_value 0>)
     ''').operations
     assert len(ops) == 3
     assert ops[0].name == 'int_lt'
@@ -26,7 +25,7 @@ def test_parse():
     assert ops[0].repr() == 'i9 = int_lt(i7, 1003)'
     assert ops[2].descr is not None
     assert len(ops[2].args) == 1
-    assert ops[-1].repr() == 'i13 = getfield_raw_i(151937600, descr=<SignedFieldDescr pypysig_long_struct.c_value 0>)'
+    assert ops[-1].repr() == 'i13 = getfield_raw(151937600, descr=<SignedFieldDescr pypysig_long_struct.c_value 0>)'
 
 def test_parse_non_code():
     ops = parse('''
@@ -60,7 +59,7 @@ def test_inlined_call():
     ops = parse("""
     []
     debug_merge_point(0, 0, '<code object inlined_call. file 'source.py'. line 12> #28 CALL_FUNCTION')
-    i18 = getfield_gc_i(p0, descr=<BoolFieldDescr pypy.interpreter.pyframe.PyFrame.inst_is_being_profiled 89>)
+    i18 = getfield_gc(p0, descr=<BoolFieldDescr pypy.interpreter.pyframe.PyFrame.inst_is_being_profiled 89>)
     debug_merge_point(1, 1, '<code object inner. file 'source.py'. line 9> #0 LOAD_FAST')
     debug_merge_point(1, 1, '<code object inner. file 'source.py'. line 9> #3 LOAD_CONST')
     debug_merge_point(1, 1, '<code object inner. file 'source.py'. line 9> #7 RETURN_VALUE')
@@ -146,8 +145,8 @@ def test_linerange_notstarts():
 
 def test_reassign_loops():
     main = parse('''
-    [i0]
-    guard_false(i0, descr=<Guard0x18>) []
+    [v0]
+    guard_false(v0, descr=<Guard0x18>) []
     ''')
     main.count = 10
     bridge = parse('''
@@ -168,9 +167,9 @@ def test_reassign_loops():
 
 def test_adjust_bridges():
     main = parse('''
-    [i0]
-    guard_false(i0, descr=<Guard0x1a>)
-    guard_true(i0, descr=<Guard0x5>)
+    [v0]
+    guard_false(v0, descr=<Guard0x1a>)
+    guard_true(v0, descr=<Guard0x5>)
     ''')
     bridge = parse('''
     # bridge out of Guard 0x1a
@@ -194,8 +193,7 @@ def test_parsing_assembler():
         py.test.skip('x86 only test')
     backend_dump = "554889E5534154415541564157488DA500000000488B042590C5540148C7042590C554010000000048898570FFFFFF488B042598C5540148C7042598C554010000000048898568FFFFFF488B0425A0C5540148C70425A0C554010000000048898560FFFFFF488B0425A8C5540148C70425A8C554010000000048898558FFFFFF4C8B3C2550525B0149BB30E06C96FC7F00004D8B334983C60149BB30E06C96FC7F00004D89334981FF102700000F8D000000004983C7014C8B342580F76A024983EE014C89342580F76A024983FE000F8C00000000E9AEFFFFFF488B042588F76A024829E0483B042580EC3C01760D49BB05F30894FC7F000041FFD3554889E5534154415541564157488DA550FFFFFF4889BD70FFFFFF4889B568FFFFFF48899560FFFFFF48898D58FFFFFF4D89C7E954FFFFFF49BB00F00894FC7F000041FFD34440484C3D030300000049BB00F00894FC7F000041FFD34440484C3D070304000000"
     dump_start = 0x7f3b0b2e63d5
-    try:
-        loop = parse("""
+    loop = parse("""
     # Loop 0 : loop with 19 ops
     [p0, p1, p2, p3, i4]
     debug_merge_point(0, 0, '<code object f. file 'x.py'. line 2> #15 COMPARE_OP')
@@ -204,7 +202,7 @@ def test_parsing_assembler():
     debug_merge_point(0, 0, '<code object f. file 'x.py'. line 2> #27 INPLACE_ADD')
     +179: i8 = int_add(i4, 1)
     debug_merge_point(0, 0, '<code object f. file 'x.py'. line 2> #31 JUMP_ABSOLUTE')
-    +183: i10 = getfield_raw_i(40564608, descr=<SignedFieldDescr pypysig_long_struct.c_value 0>)
+    +183: i10 = getfield_raw(40564608, descr=<SignedFieldDescr pypysig_long_struct.c_value 0>)
     +191: i12 = int_sub(i10, 1)
     +195: setfield_raw(40564608, i12, descr=<SignedFieldDescr pypysig_long_struct.c_value 0>)
     +203: i14 = int_lt(i12, 0)
@@ -214,8 +212,6 @@ def test_parsing_assembler():
     +218: --end of the loop--""", backend_dump=backend_dump,
                  dump_start=dump_start,
                  backend_tp='x86_64')
-    except ObjdumpNotFound:
-        py.test.skip('no objdump found on path')
     cmp = loop.operations[1]
     assert 'jge' in cmp.asm
     assert '0x2710' in cmp.asm
@@ -233,7 +229,7 @@ def test_parsing_arm_assembler():
 debug_merge_point(0, 're StrMatchIn at 92 [17. 4. 0. 20. 393237. 21. 0. 29. 9. 1. 65535. 15. 4. 9. 3. 0. 1. 21. 1. 29. 9. 1. 65535. 15. 4. 9. 2. 0. 1. 1...')
 +116: i3 = int_lt(i0, i1)
 guard_true(i3, descr=<Guard0x86>) [i1, i0, p2]
-+124: p4 = getfield_gc_r(p2, descr=<FieldP rpython.rlib.rsre.rsre_core.StrMatchContext.inst__string 36>)
++124: p4 = getfield_gc(p2, descr=<FieldP rpython.rlib.rsre.rsre_core.StrMatchContext.inst__string 36>)
 +128: i5 = strgetitem(p4, i0)
 +136: i7 = int_eq(40, i5)
 +152: i9 = int_eq(41, i5)
@@ -280,11 +276,8 @@ def test_import_log():
         py.test.skip('x86 only test')
     _, loops = import_log(str(py.path.local(__file__).join('..',
                                                            'logtest.log')))
-    try:
-        for loop in loops:
-            loop.force_asm()
-    except ObjdumpNotFound:
-        py.test.skip('no objdump found on path')
+    for loop in loops:
+        loop.force_asm()
     assert 'jge' in loops[0].operations[3].asm
 
 def test_import_log_2():
@@ -292,11 +285,8 @@ def test_import_log_2():
         py.test.skip('x86 only test')
     _, loops = import_log(str(py.path.local(__file__).join('..',
                                                            'logtest2.log')))
-    try:
-        for loop in loops:
-            loop.force_asm()
-    except ObjdumpNotFound:
-        py.test.skip('no objdump found on path')
+    for loop in loops:
+        loop.force_asm()
     assert 'cmp' in loops[1].operations[2].asm
 
 def test_Op_repr_is_pure():
@@ -311,11 +301,11 @@ def test_split_trace():
     i9 = int_lt(i7, 1003)
     label(i9, descr=grrr)
     guard_true(i9, descr=<Guard0x2>) []
-    i13 = getfield_raw_i(151937600, descr=<SignedFieldDescr pypysig_long_struct.c_value 0>)
+    i13 = getfield_raw(151937600, descr=<SignedFieldDescr pypysig_long_struct.c_value 0>)
     label(i13, descr=asb)
     i19 = int_lt(i13, 1003)
     guard_true(i19, descr=<Guard0x2>) []
-    i113 = getfield_raw_i(151937600, descr=<SignedFieldDescr pypysig_long_struct.c_value 0>)
+    i113 = getfield_raw(151937600, descr=<SignedFieldDescr pypysig_long_struct.c_value 0>)
     ''')
     loop.comment = 'Loop 0'
     parts = split_trace(loop)
@@ -332,11 +322,11 @@ def test_parse_log_counts():
     i9 = int_lt(i7, 1003)
     label(i9, descr=grrr)
     guard_true(i9, descr=<Guard0xaf>) []
-    i13 = getfield_raw_i(151937600, descr=<SignedFieldDescr pypysig_long_struct.c_value 0>)
+    i13 = getfield_raw(151937600, descr=<SignedFieldDescr pypysig_long_struct.c_value 0>)
     label(i13, descr=asb)
     i19 = int_lt(i13, 1003)
     guard_true(i19, descr=<Guard0x3>) []
-    i113 = getfield_raw_i(151937600, descr=<SignedFieldDescr pypysig_long_struct.c_value 0>)
+    i113 = getfield_raw(151937600, descr=<SignedFieldDescr pypysig_long_struct.c_value 0>)
     ''')
     bridge = parse('''
     # bridge out of Guard 0xaf with 1 ops

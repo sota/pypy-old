@@ -48,6 +48,7 @@ def fix_permissions(basedir):
 def package(basedir, name='pypy-nightly', rename_pypy_c='pypy',
             copy_to_dir=None, override_pypy_c=None, nostrip=False,
             withouttk=False):
+    assert '/' not in rename_pypy_c
     basedir = py.path.local(basedir)
     if override_pypy_c is None:
         basename = 'pypy-c'
@@ -114,10 +115,11 @@ add --without-tk option to skip packaging binary CFFI extension."""
                     continue
             print "Picking %s" % p
             binaries.append((p, p.basename))
-        if pypy_c.dirpath().join("libpypy-c.lib").check():
-            shutil.copyfile(str(pypy_c.dirpath().join("libpypy-c.lib")),
+        importlib_name = 'python27.lib'    
+        if pypy_c.dirpath().join(importlib_name).check():
+            shutil.copyfile(str(pypy_c.dirpath().join(importlib_name)),
                         str(pypydir.join('include/python27.lib')))
-            print "Picking %s as %s" % (pypy_c.dirpath().join("libpypy-c.lib"),
+            print "Picking %s as %s" % (pypy_c.dirpath().join(importlib_name),
                         pypydir.join('include/python27.lib'))
         else:
             pass
@@ -149,6 +151,9 @@ directory next to the dlls, as per build instructions."""
                                            '*.c', '*.o'))
     for file in ['LICENSE', 'README.rst']:
         shutil.copy(str(basedir.join(file)), str(pypydir))
+    for file in ['_testcapimodule.c', '_ctypes_test.c']:
+        shutil.copyfile(str(basedir.join('lib_pypy', file)), 
+                        str(pypydir.join('lib_pypy', file)))
     #
     spdir = pypydir.ensure('site-packages', dir=True)
     shutil.copy(str(basedir.join('site-packages', 'README')), str(spdir))
@@ -231,12 +236,6 @@ if __name__ == '__main__':
             break
         else:
             print_usage()
-
-    if os.environ.has_key("PYPY_PACKAGE_NOSTRIP"):
-        kw['nostrip'] = True
-
-    if os.environ.has_key("PYPY_PACKAGE_WITHOUTTK"):
-        kw['withouttk'] = True
 
     if os.environ.has_key("PYPY_PACKAGE_NOSTRIP"):
         kw['nostrip'] = True

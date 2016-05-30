@@ -93,7 +93,7 @@ for more information see `whats-new`_:
 * Fix handling of tp_name for type objects
 
 .. _`HippyVM`: http://www.hippyvm.com
-.. _`whats-new`: http://doc.pypy.org/en/latest/whatsnew-2.3.0.html
+.. _`whats-new`: :http://doc.pypy.org/en/latest/whatsnew-2.3.0.html
 
 
 New Platforms and Features
@@ -113,14 +113,11 @@ New Platforms and Features
 NumPy
 -----
 NumPy support has been split into a builtin ``_numpy`` module and a
-fork of the NumPy code base adapted to PyPy at
-``https://bitbucket.org/pypy/numpy``.
+fork of the NumPy code base adapted to PyPy at 
+  ``https://bitbucket.org/pypy/numpy``.
 You need to install NumPy separately with a virtualenv:
-
   ``pip install git+https://bitbucket.org/pypy/numpy.git``;
-
-or directly:
-
+  or directly:
   ``git clone https://bitbucket.org/pypy/numpy.git``;
   ``cd numpy``; ``pypy setup.py install``.
 

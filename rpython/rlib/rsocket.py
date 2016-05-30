@@ -18,6 +18,7 @@ a drop-in replacement for the 'socket' module.
 from rpython.rlib.objectmodel import instantiate, keepalive_until_here
 from rpython.rlib import _rsocket_rffi as _c
 from rpython.rlib.rarithmetic import intmask, r_uint
+from rpython.rlib.rthread import dummy_lock
 from rpython.rtyper.lltypesystem import lltype, rffi
 from rpython.rtyper.lltypesystem.rffi import sizeof, offsetof
 INVALID_SOCKET = _c.INVALID_SOCKET
@@ -33,14 +34,16 @@ if _c.WIN32:
     from rpython.rlib import rwin32
     def rsocket_startup():
         wsadata = lltype.malloc(_c.WSAData, flavor='raw', zero=True)
-        res = _c.WSAStartup(1, wsadata)
-        lltype.free(wsadata, flavor='raw')
-        assert res == 0
+        try:
+            res = _c.WSAStartup(0x0101, wsadata)
+            assert res == 0
+        finally:
+            lltype.free(wsadata, flavor='raw')
 else:
     def rsocket_startup():
         pass
- 
- 
+
+
 def ntohs(x):
     return rffi.cast(lltype.Signed, _c.ntohs(x))
 
@@ -500,7 +503,7 @@ class RSocket(object):
         self.type = type
         self.proto = proto
         self.timeout = defaults.timeout
-        
+
     def __del__(self):
         fd = self.fd
         if fd != _c.INVALID_SOCKET:
@@ -575,8 +578,8 @@ class RSocket(object):
             if n == 0:
                 return 1
             return 0
-        
-        
+
+
     def error_handler(self):
         return last_error()
 
@@ -696,7 +699,7 @@ class RSocket(object):
             if res < 0:
                 res = errno
             return (res, False)
-        
+
     def connect(self, address):
         """Connect the socket to a remote address."""
         err, timeout = self._connect(address)
@@ -704,7 +707,7 @@ class RSocket(object):
             raise SocketTimeout
         if err:
             raise CSocketError(err)
-        
+
     def connect_ex(self, address):
         """This is like connect(address), but returns an error code (the errno
         value) instead of raising an exception when an error occurs."""
@@ -720,7 +723,7 @@ class RSocket(object):
                 raise self.error_handler()
             return make_socket(fd, self.family, self.type, self.proto,
                                SocketClass=SocketClass)
-        
+
     def getpeername(self):
         """Return the address of the remote endpoint."""
         address, addr_p, addrlen_p = self._addrbuf()
@@ -790,7 +793,7 @@ class RSocket(object):
         """Return the timeout of the socket. A timeout < 0 means that
         timeouts are disabled in the socket."""
         return self.timeout
-    
+
     def listen(self, backlog):
         """Enable a server to accept connections.  The backlog argument
         must be at least 1; it specifies the number of unaccepted connections
@@ -857,7 +860,7 @@ class RSocket(object):
     def recvfrom_into(self, rwbuffer, nbytes, flags=0):
         buf, addr = self.recvfrom(nbytes, flags)
         rwbuffer.setslice(0, buf)
-        return len(buf), addr        
+        return len(buf), addr
 
     def send_raw(self, dataptr, length, flags=0):
         """Send data from a CCHARP buffer."""
@@ -898,8 +901,8 @@ class RSocket(object):
                 except CSocketError, e:
                     if e.errno != _c.EINTR:
                         raise
-                if signal_checker:
-                    signal_checker.check()
+                if signal_checker is not None:
+                    signal_checker()
         finally:
             rffi.free_nonmovingbuffer(data, dataptr)
 
@@ -951,7 +954,7 @@ class RSocket(object):
         else:
             self.timeout = timeout
         self._setblocking(self.timeout < 0.0)
-            
+
     def shutdown(self, how):
         """Shut down the reading side of the socket (flag == SHUT_RD), the
         writing side of the socket (flag == SHUT_WR), or both ends
@@ -995,12 +998,8 @@ class CSocketError(SocketErrorWithErrno):
     def get_msg(self):
         return _c.socket_strerror_str(self.errno)
 
-if _c.WIN32:
-    def last_error():
-        return CSocketError(rwin32.GetLastError())
-else:
-    def last_error():
-        return CSocketError(_c.geterrno())
+def last_error():
+    return CSocketError(_c.geterrno())
 
 class GAIError(SocketErrorWithErrno):
     applevelerrcls = 'gaierror'
@@ -1126,28 +1125,33 @@ def gethost_common(hostname, hostent, addr=None):
         paddr = h_addr_list[i]
     return (rffi.charp2str(hostent.c_h_name), aliases, address_list)
 
-def gethostbyname_ex(name):
-    # XXX use gethostbyname_r() if available, and/or use locks if not
+def gethostbyname_ex(name, lock=dummy_lock):
+    # XXX use gethostbyname_r() if available instead of locks
     addr = gethostbyname(name)
-    hostent = _c.gethostbyname(name)
-    return gethost_common(name, hostent, addr)
+    with lock:
+        hostent = _c.gethostbyname(name)
+        return gethost_common(name, hostent, addr)
 
-def gethostbyaddr(ip):
-    # XXX use gethostbyaddr_r() if available, and/or use locks if not
+def gethostbyaddr(ip, lock=dummy_lock):
+    # XXX use gethostbyaddr_r() if available, instead of locks
     addr = makeipaddr(ip)
     assert isinstance(addr, IPAddress)
-    p, size = addr.lock_in_addr()
-    try:
-        hostent = _c.gethostbyaddr(p, size, addr.family)
-    finally:
-        addr.unlock()
-    return gethost_common(ip, hostent, addr)
+    with lock:
+        p, size = addr.lock_in_addr()
+        try:
+            hostent = _c.gethostbyaddr(p, size, addr.family)
+        finally:
+            addr.unlock()
+        return gethost_common(ip, hostent, addr)
 
 def getaddrinfo(host, port_or_service,
                 family=AF_UNSPEC, socktype=0, proto=0, flags=0,
                 address_to_fill=None):
     # port_or_service is a string, not an int (but try str(port_number)).
     assert port_or_service is None or isinstance(port_or_service, str)
+    if _c._MACOSX and flags & AI_NUMERICSERV and \
+            (port_or_service is None or port_or_service == '0'):
+        port_or_service = '00'
     hints = lltype.malloc(_c.addrinfo, flavor='raw', zero=True)
     rffi.setintfield(hints, 'c_ai_family',   family)
     rffi.setintfield(hints, 'c_ai_socktype', socktype)
