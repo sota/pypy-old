@@ -3,6 +3,7 @@ from rpython.tool.udir import udir
 from rpython.rlib import rvmprof
 from rpython.translator.c.test.test_genc import compile
 from rpython.rlib.objectmodel import we_are_translated
+from rpython.rlib.nonconst import NonConstant
 
 
 def test_vmprof_execute_code_1():
@@ -100,13 +101,16 @@ def test_enable():
         s = 0
         for i in range(num):
             s += (i << 1)
-            if s % 32423423423 == 0:
+            if s % 2123423423 == 0:
                 print s
         return s
 
     tmpfilename = str(udir.join('test_rvmprof'))
 
     def f():
+        if NonConstant(False):
+            # Hack to give os.open() the correct annotation
+            os.open('foo', 1, 1)
         code = MyCode()
         rvmprof.register_code(code, get_name)
         fd = os.open(tmpfilename, os.O_WRONLY | os.O_CREAT, 0666)
@@ -143,4 +147,3 @@ def test_enable():
     finally:
         assert os.path.exists(tmpfilename)
         os.unlink(tmpfilename)
-       
