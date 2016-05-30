@@ -1,8 +1,7 @@
 from rpython.jit.metainterp.history import (VECTOR, FLOAT, INT,
         ConstInt, ConstFloat, TargetToken)
 from rpython.jit.metainterp.resoperation import (rop, ResOperation,
-        GuardResOp, VecOperation, OpHelpers, VecOperationNew,
-        VectorizationInfo)
+        GuardResOp, VecOperation, OpHelpers, VecOperationNew)
 from rpython.jit.metainterp.optimizeopt.dependency import (DependencyGraph,
         MemoryRef, Node, IndexVar)
 from rpython.jit.metainterp.optimizeopt.renamer import Renamer
@@ -14,16 +13,6 @@ from rpython.jit.metainterp.jitexc import NotAVectorizeableLoop, NotAProfitableL
 from rpython.rtyper.lltypesystem.lloperation import llop
 from rpython.rtyper.lltypesystem import lltype
 
-
-def forwarded_vecinfo(op):
-    fwd = op.get_forwarded()
-    if fwd is None or not isinstance(fwd, VectorizationInfo):
-        # the optimizer clears getforwarded AFTER
-        # vectorization, it happens that this is not clean
-        fwd = VectorizationInfo(op)
-        if not op.is_constant():
-            op.set_forwarded(fwd)
-    return fwd
 
 class SchedulerState(object):
     def __init__(self, graph):
@@ -238,29 +227,28 @@ class TypeRestrict(object):
         return self.count == TypeRestrict.ANY_COUNT
 
     def check(self, value):
-        vecinfo = forwarded_vecinfo(value)
-        assert vecinfo.datatype != '\x00'
+        assert value.datatype != '\x00'
         if self.type != TypeRestrict.ANY_TYPE:
-            if self.type != vecinfo.datatype:
+            if self.type != value.datatype:
                 msg = "type mismatch %s != %s" % \
-                        (self.type, vecinfo.datatype)
+                        (self.type, value.datatype)
                 failnbail_transformation(msg)
-        assert vecinfo.bytesize > 0
+        assert value.bytesize > 0
         if not self.any_size():
-            if self.bytesize != vecinfo.bytesize:
+            if self.bytesize != value.bytesize:
                 msg = "bytesize mismatch %s != %s" % \
-                        (self.bytesize, vecinfo.bytesize)
+                        (self.bytesize, value.bytesize)
                 failnbail_transformation(msg)
-        assert vecinfo.count > 0
+        assert value.count > 0
         if self.count != TypeRestrict.ANY_COUNT:
-            if vecinfo.count < self.count:
+            if value.count < self.count:
                 msg = "count mismatch %s < %s" % \
-                        (self.count, vecinfo.count)
+                        (self.count, value.count)
                 failnbail_transformation(msg)
         if self.sign != TypeRestrict.ANY_SIGN:
-            if bool(self.sign) == vecinfo.sign:
+            if bool(self.sign) == value.sign:
                 msg = "sign mismatch %s < %s" % \
-                        (self.sign, vecinfo.sign)
+                        (self.sign, value.sign)
                 failnbail_transformation(msg)
 
     def max_input_count(self, count):
@@ -281,8 +269,7 @@ class OpRestrict(object):
 
     def must_crop_vector(self, op, index):
         restrict = self.argument_restrictions[index]
-        vecinfo = forwarded_vecinfo(op.getarg(index))
-        size = vecinfo.bytesize
+        size = op.getarg(index).bytesize
         newsize = self.crop_to_size(op, index)
         return not restrict.any_size() and newsize != size
 
@@ -301,14 +288,12 @@ class OpRestrict(object):
                 return size // op.cast_from_bytesize()
             else:
                 return vec_reg_size // op.cast_to_bytesize()
-        vecinfo = forwarded_vecinfo(op)
-        return  vec_reg_size // vecinfo.bytesize
+        return  vec_reg_size // op.bytesize
 
 class GuardRestrict(OpRestrict):
     def opcount_filling_vector_register(self, op, vec_reg_size):
         arg = op.getarg(0)
-        vecinfo = forwarded_vecinfo(arg)
-        return vec_reg_size // vecinfo.bytesize
+        return vec_reg_size // arg.bytesize
 
 class LoadRestrict(OpRestrict):
     def opcount_filling_vector_register(self, op, vec_reg_size):
@@ -321,9 +306,8 @@ class StoreRestrict(OpRestrict):
         self.argument_restrictions = argument_restris
 
     def must_crop_vector(self, op, index):
-        vecinfo = forwarded_vecinfo(op.getarg(index))
-        bytesize = vecinfo.bytesize
-        return self.crop_to_size(op, index) != bytesize
+        size = op.getarg(index).bytesize
+        return self.crop_to_size(op, index) != size
 
     @always_inline
     def crop_to_size(self, op, index):
@@ -339,22 +323,19 @@ class StoreRestrict(OpRestrict):
 class OpMatchSizeTypeFirst(OpRestrict):
     def check_operation(self, state, pack, op):
         i = 0
-        infos = [forwarded_vecinfo(o) for o in op.getarglist()]
         arg0 = op.getarg(i)
         while arg0.is_constant() and i < op.numargs():
             i += 1
             arg0 = op.getarg(i)
-        vecinfo = forwarded_vecinfo(arg0)
-        bytesize = vecinfo.bytesize
-        datatype = vecinfo.datatype
+        bytesize = arg0.bytesize
+        datatype = arg0.datatype
 
         for arg in op.getarglist():
             if arg.is_constant():
                 continue
-            curvecinfo = forwarded_vecinfo(arg)
-            if curvecinfo.bytesize != bytesize:
+            if arg.bytesize != bytesize:
                 raise NotAVectorizeableLoop()
-            if curvecinfo.datatype != datatype:
+            if arg.datatype != datatype:
                 raise NotAVectorizeableLoop()
 
 class trans(object):
@@ -401,8 +382,8 @@ class trans(object):
         rop.VEC_GETARRAYITEM_GC_I:  LOAD_RESTRICT,
         rop.VEC_GETARRAYITEM_GC_F:  LOAD_RESTRICT,
 
-        rop.VEC_GUARD_TRUE:             GUARD_RESTRICT,
-        rop.VEC_GUARD_FALSE:            GUARD_RESTRICT,
+        rop.GUARD_TRUE:             GUARD_RESTRICT,
+        rop.GUARD_FALSE:            GUARD_RESTRICT,
 
         ## irregular
         rop.VEC_INT_SIGNEXT:        OpRestrict([TR_ANY_INTEGER]),
@@ -447,7 +428,6 @@ def turn_into_vector(state, pack):
     if left.is_guard():
         prepare_fail_arguments(state, pack, left, vecop)
     state.oplist.append(vecop)
-    assert vecop.count >= 1
 
 def prepare_arguments(state, pack, args):
     # Transforming one argument to a vector box argument
@@ -504,16 +484,15 @@ def prepare_fail_arguments(state, pack, left, vecop):
 def crop_vector(state, oprestrict, restrict, pack, args, i):
     # convert size i64 -> i32, i32 -> i64, ...
     arg = args[i]
-    vecinfo = forwarded_vecinfo(arg)
-    size = vecinfo.bytesize
+    size = arg.bytesize
     left = pack.leftmost()
     if oprestrict.must_crop_vector(left, i):
         newsize = oprestrict.crop_to_size(left, i)
         assert arg.type == 'i'
         state._prevent_signext(newsize, size)
-        count = vecinfo.count
+        count = arg.count
         vecop = VecOperationNew(rop.VEC_INT_SIGNEXT, [arg, ConstInt(newsize)],
-                                'i', newsize, vecinfo.signed, count)
+                                'i', newsize, arg.signed, count)
         state.oplist.append(vecop)
         state.costmodel.record_cast_int(size, newsize, count)
         args[i] = vecop
@@ -534,19 +513,15 @@ def gather(state, vectors, count): # packed < packable and packed < stride:
     i = 1
     while i < len(vectors):
         (newarg_pos, newarg) = vectors[i]
-        vecinfo = forwarded_vecinfo(arg)
-        newvecinfo = forwarded_vecinfo(newarg)
-        if vecinfo.count + newvecinfo.count <= count:
-            arg = pack_into_vector(state, arg, vecinfo.count, newarg, newarg_pos, newvecinfo.count)
+        if arg.count + newarg.count <= count:
+            arg = pack_into_vector(state, arg, arg.count, newarg, newarg_pos, newarg.count)
         i += 1
     return arg
 
 @always_inline
 def position_values(state, restrict, pack, args, index, position):
     arg = args[index]
-    vecinfo = forwarded_vecinfo(arg)
-    count = vecinfo.count
-    newcount = restrict.count
+    newcount, count = restrict.count, arg.count
     if not restrict.any_count() and newcount != count:
         if position == 0:
             pass
@@ -555,15 +530,13 @@ def position_values(state, restrict, pack, args, index, position):
         # The vector box is at a position != 0 but it
         # is required to be at position 0. Unpack it!
         arg = args[index]
-        vecinfo = forwarded_vecinfo(arg)
-        count = restrict.max_input_count(vecinfo.count)
+        count = restrict.max_input_count(arg.count)
         args[index] = unpack_from_vector(state, arg, position, count)
         state.remember_args_in_vector(pack, index, args[index])
 
 def check_if_pack_supported(state, pack):
     left = pack.leftmost()
-    vecinfo = forwarded_vecinfo(left)
-    insize = vecinfo.bytesize
+    insize = left.bytesize
     if left.is_typecast():
         # prohibit the packing of signext calls that
         # cast to int16/int8.
@@ -577,11 +550,10 @@ def check_if_pack_supported(state, pack):
 def unpack_from_vector(state, arg, index, count):
     """ Extract parts of the vector box into another vector box """
     assert count > 0
-    vecinfo = forwarded_vecinfo(arg)
-    assert index + count <= vecinfo.count
+    assert index + count <= arg.count
     args = [arg, ConstInt(index), ConstInt(count)]
-    vecop = OpHelpers.create_vec_unpack(arg.type, args, vecinfo.bytesize,
-                                        vecinfo.signed, count)
+    vecop = OpHelpers.create_vec_unpack(arg.type, args, arg.bytesize,
+                                        arg.signed, count)
     state.costmodel.record_vector_unpack(arg, index, count)
     state.oplist.append(vecop)
     return vecop
@@ -592,10 +564,9 @@ def pack_into_vector(state, tgt, tidx, src, sidx, scount):
         new_box = [1,2,3,4,5,6,_,_] after the operation, tidx=4, scount=2
     """
     assert sidx == 0 # restriction
-    vecinfo = forwarded_vecinfo(tgt)
-    newcount = vecinfo.count + scount
+    newcount = tgt.count + scount
     args = [tgt, src, ConstInt(tidx), ConstInt(scount)]
-    vecop = OpHelpers.create_vec_pack(tgt.type, args, vecinfo.bytesize, vecinfo.signed, newcount)
+    vecop = OpHelpers.create_vec_pack(tgt.type, args, tgt.bytesize, tgt.signed, newcount)
     state.oplist.append(vecop)
     state.costmodel.record_vector_pack(src, sidx, scount)
     if not we_are_translated():
@@ -611,16 +582,14 @@ def _check_vec_pack(op):
     assert arg0.is_vector()
     assert index.is_constant()
     assert isinstance(count, ConstInt)
-    vecinfo = forwarded_vecinfo(op)
-    argvecinfo = forwarded_vecinfo(arg0)
-    assert argvecinfo.bytesize == vecinfo.bytesize
+    assert arg0.bytesize == op.bytesize
     if arg1.is_vector():
-        assert argvecinfo.bytesize == vecinfo.bytesize
+        assert arg1.bytesize == op.bytesize
     else:
         assert count.value == 1
-    assert index.value < vecinfo.count
-    assert index.value + count.value <= vecinfo.count
-    assert vecinfo.count > argvecinfo.count
+    assert index.value < op.count
+    assert index.value + count.value <= op.count
+    assert op.count > arg0.count
 
 def expand(state, pack, args, arg, index):
     """ Expand a value into a vector box. useful for arith metic
@@ -649,8 +618,7 @@ def expand(state, pack, args, arg, index):
             args[index] = vecop
             return vecop
         left = pack.leftmost()
-        vecinfo = forwarded_vecinfo(left)
-        vecop = OpHelpers.create_vec_expand(arg, vecinfo.bytesize, vecinfo.signed, pack.numops())
+        vecop = OpHelpers.create_vec_expand(arg, left.bytesize, left.signed, pack.numops())
         ops.append(vecop)
         if variables is not None:
             variables.append(vecop)
@@ -665,16 +633,15 @@ def expand(state, pack, args, arg, index):
         args[index] = vecop
         return vecop
 
-    arg_vecinfo = forwarded_vecinfo(arg)
-    vecop = OpHelpers.create_vec(arg.type, arg_vecinfo.bytesize, arg_vecinfo.signed, pack.opnum())
+    
+    vecop = OpHelpers.create_vec(arg.type, arg.bytesize, arg.signed, pack.opnum())
     ops.append(vecop)
     for i,node in enumerate(pack.operations):
         op = node.getoperation()
         arg = op.getarg(index)
         arguments = [vecop, arg, ConstInt(i), ConstInt(1)]
-        vecinfo = forwarded_vecinfo(vecop)
-        vecop = OpHelpers.create_vec_pack(arg.type, arguments, vecinfo.bytesize,
-                                          vecinfo.signed, vecinfo.count+1)
+        vecop = OpHelpers.create_vec_pack(arg.type, arguments, vecop.bytesize,
+                                          vecop.signed, vecop.count+1)
         ops.append(vecop)
     state.expand(expandargs, vecop)
 
@@ -826,9 +793,8 @@ class VecScheduleState(SchedulerState):
             if arg in self.accumulation:
                 return arg
             args = [var, ConstInt(pos), ConstInt(1)]
-            vecinfo = forwarded_vecinfo(var)
-            vecop = OpHelpers.create_vec_unpack(var.type, args, vecinfo.bytesize,
-                                                vecinfo.signed, 1)
+            vecop = OpHelpers.create_vec_unpack(var.type, args, var.bytesize,
+                                                var.signed, 1)
             self.renamer.start_renaming(arg, vecop)
             self.seen[vecop] = None
             self.costmodel.record_vector_unpack(var, pos, 1)
@@ -847,16 +813,14 @@ class VecScheduleState(SchedulerState):
     def setvector_of_box(self, var, off, vector):
         if var.returns_void():
             assert 0, "not allowed to rename void resop"
-        vecinfo = forwarded_vecinfo(vector)
-        assert off < vecinfo.count
+        assert off < vector.count
         assert not var.is_vector()
         self.box_to_vbox[var] = (off, vector)
 
     def remember_args_in_vector(self, pack, index, box):
         arguments = [op.getoperation().getarg(index) for op in pack.operations]
         for i,arg in enumerate(arguments):
-            vecinfo = forwarded_vecinfo(arg)
-            if i >= vecinfo.count:
+            if i >= box.count:
                 break
             self.setvector_of_box(arg, i, box)
 
@@ -930,8 +894,7 @@ class Pack(object):
             else:
                 assert left.is_guard() and left.getopnum() in \
                        (rop.GUARD_TRUE, rop.GUARD_FALSE)
-                vecinfo = forwarded_vecinfo(left.getarg(0))
-                bytesize = vecinfo.bytesize
+                bytesize = left.getarg(0).bytesize
                 return bytesize * self.numops() - vec_reg_size
             return 0
         if self.numops() == 0:
@@ -946,8 +909,7 @@ class Pack(object):
                 # size is increased
                 #size = left.cast_input_bytesize(vec_reg_size)
                 return left.cast_to_bytesize() * self.numops() - vec_reg_size
-        vecinfo = forwarded_vecinfo(left)
-        return vecinfo.bytesize * self.numops() - vec_reg_size
+        return left.bytesize * self.numops() - vec_reg_size
 
     def is_full(self, vec_reg_size):
         """ If one input element times the opcount is equal
@@ -1072,13 +1034,11 @@ class AccumPack(Pack):
 
     def getdatatype(self):
         accum = self.leftmost().getarg(self.position)
-        vecinfo = forwarded_vecinfo(accum)
-        return vecinfo.datatype
+        return accum.datatype
 
     def getbytesize(self):
         accum = self.leftmost().getarg(self.position)
-        vecinfo = forwarded_vecinfo(accum)
-        return vecinfo.bytesize
+        return accum.bytesize
 
     def getleftmostseed(self):
         return self.leftmost().getarg(self.position)

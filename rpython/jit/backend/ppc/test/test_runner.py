@@ -24,11 +24,11 @@ class TestPPC(LLtypeBackendTest):
     assert not IS_PPC_32
     load_imm_instructions = (
         "(li|lis(; ori)?)(; rldicr(; oris)?(; ori)?)?")
-    add_loop_instructions = "ld; add; cmpdi; beq-?; b;"
+    add_loop_instructions = "ld; add; cmpdi; beq-?; b;$"
     bridge_loop_instructions = (
         "ld; cmpdi; bge.; "
         "li; %s; mtctr; %s; bctrl; "
-        "%s; mtctr; bctr;" % (
+        "%s; mtctr; bctr;$" % (
             load_imm_instructions, load_imm_instructions,
             load_imm_instructions))
 
@@ -134,7 +134,7 @@ class TestPPC(LLtypeBackendTest):
 
     def test_debugger_on(self):
         py.test.skip("XXX")
-        from rpython.rlib import debug
+        from pypy.rlib import debug
 
         targettoken, preambletoken = TargetToken(), TargetToken()
         loop = """
