@@ -18,9 +18,7 @@ def execfile(filename, glob):
     # __init__.py files may already try to import the file that
     # we are generating.
     with open(filename) as f:
-        src = f.read()
-    src += '\n'      # Python 2.6 compatibility
-    code = compile(src, filename, 'exec')
+        code = compile(f.read(), filename, 'exec')
     exec(code, glob, glob)
 
 
@@ -81,16 +79,10 @@ def _add_c_module(dist, ffi, module_name, source, source_extension, kwds):
     allsources.extend(kwds.pop('sources', []))
     ext = Extension(name=module_name, sources=allsources, **kwds)
 
-    def make_mod(tmpdir, pre_run=None):
+    def make_mod(tmpdir):
         c_file = os.path.join(tmpdir, module_name + source_extension)
         log.info("generating cffi module %r" % c_file)
         mkpath(tmpdir)
-        # a setuptools-only, API-only hook: called with the "ext" and "ffi"
-        # arguments just before we turn the ffi into C code.  To use it,
-        # subclass the 'distutils.command.build_ext.build_ext' class and
-        # add a method 'def pre_run(self, ext, ffi)'.
-        if pre_run is not None:
-            pre_run(ext, ffi)
         updated = recompiler.make_c_source(ffi, module_name, source, c_file)
         if not updated:
             log.info("already up-to-date")
@@ -104,8 +96,7 @@ def _add_c_module(dist, ffi, module_name, source, source_extension, kwds):
     class build_ext_make_mod(base_class):
         def run(self):
             if ext.sources[0] == '$PLACEHOLDER':
-                pre_run = getattr(self, 'pre_run', None)
-                ext.sources[0] = make_mod(self.build_temp, pre_run)
+                ext.sources[0] = make_mod(self.build_temp)
             base_class.run(self)
     dist.cmdclass['build_ext'] = build_ext_make_mod
     # NB. multiple runs here will create multiple 'build_ext_make_mod'
