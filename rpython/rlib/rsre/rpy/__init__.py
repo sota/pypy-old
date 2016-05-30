@@ -1,1 +1,1 @@
-from ._sre import get_code, VERSION
+from ._sre import get_code

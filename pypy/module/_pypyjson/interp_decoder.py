@@ -1,10 +1,13 @@
 import sys
+import math
 from rpython.rlib.rstring import StringBuilder
 from rpython.rlib.objectmodel import specialize
-from rpython.rlib import rfloat, runicode
+from rpython.rlib import rfloat
 from rpython.rtyper.lltypesystem import lltype, rffi
-from pypy.interpreter.error import OperationError, oefmt
+from pypy.interpreter.error import OperationError, operationerrfmt
+from pypy.interpreter.gateway import unwrap_spec
 from pypy.interpreter import unicodehelper
+from rpython.rtyper.annlowlevel import llstr, hlunicode
 
 OVF_DIGITS = len(str(sys.maxint))
 
@@ -27,7 +30,7 @@ def strslice2unicode_latin1(s, start, end):
 
     Internally it's implemented at the level of low-level helpers, to avoid
     the extra copy we would need if we take the actual slice first.
-
+    
     No bound checking is done, use carefully.
     """
     from rpython.rtyper.annlowlevel import llstr, hlunicode
@@ -77,7 +80,7 @@ class JSONDecoder(object):
 
     @specialize.arg(1)
     def _raise(self, msg, *args):
-        raise oefmt(self.space.w_ValueError, msg, *args)
+        raise operationerrfmt(self.space.w_ValueError, msg, *args)
 
     def decode_any(self, i):
         i = self.skip_whitespace(i)
@@ -223,6 +226,7 @@ class JSONDecoder(object):
     def decode_array(self, i):
         w_list = self.space.newlist([])
         start = i
+        count = 0
         i = self.skip_whitespace(start)
         if self.ll_chars[i] == ']':
             self.pos = i+1
@@ -311,8 +315,8 @@ class JSONDecoder(object):
                 content_so_far = self.getslice(start, i-1)
                 self.pos = i-1
                 return self.decode_string_escaped(start, content_so_far)
-            elif ch < '\x20':
-                self._raise("Invalid control character at char %d", self.pos-1)
+            elif ch == '\0':
+                self._raise("Unterminated string starting at char %d", start)
 
 
     def decode_string_escaped(self, start, content_so_far):
@@ -369,7 +373,7 @@ class JSONDecoder(object):
             return # help the annotator to know that we'll never go beyond
                    # this point
         #
-        uchr = runicode.code_to_unichr(val)     # may be a surrogate pair again
+        uchr = unichr(val)
         utf8_ch = unicodehelper.encode_utf8(self.space, uchr)
         builder.append(utf8_ch)
         return i
@@ -394,8 +398,7 @@ def loads(space, w_s):
         if i < len(s):
             start = i
             end = len(s) - 1
-            raise oefmt(space.w_ValueError,
-                        "Extra data: char %d - %d", start, end)
+            raise operationerrfmt(space.w_ValueError, "Extra data: char %d - %d", start, end)
         return w_res
     finally:
         decoder.close()

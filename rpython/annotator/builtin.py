@@ -3,20 +3,16 @@ Built-in functions.
 """
 import sys
 
-from rpython.annotator.model import SomeInteger, SomeObject, SomeChar, SomeBool
-from rpython.annotator.model import SomeString, SomeTuple, s_Bool
-from rpython.annotator.model import SomeUnicodeCodePoint, SomeAddress
-from rpython.annotator.model import SomeFloat, unionof, SomeUnicodeString
-from rpython.annotator.model import SomePBC, SomeInstance, SomeDict, SomeList
-from rpython.annotator.model import SomeWeakRef, SomeIterator
-from rpython.annotator.model import SomeOOObject, SomeByteArray
-from rpython.annotator.model import annotation_to_lltype, lltype_to_annotation, ll_to_annotation
-from rpython.annotator.model import add_knowntypedata
-from rpython.annotator.model import s_ImpossibleValue
+from rpython.annotator.model import (
+    SomeInteger, SomeObject, SomeChar, SomeBool, SomeString, SomeTuple, s_Bool,
+    SomeUnicodeCodePoint, SomeAddress, SomeFloat, unionof, SomeUnicodeString,
+    SomePBC, SomeInstance, SomeDict, SomeList, SomeWeakRef, SomeIterator,
+    SomeOrderedDict,
+    SomeByteArray, annotation_to_lltype, lltype_to_annotation,
+    ll_to_annotation, add_knowntypedata, s_ImpossibleValue,)
 from rpython.annotator.bookkeeper import getbookkeeper
 from rpython.annotator import description
 from rpython.flowspace.model import Constant
-from rpython.tool.error import AnnotatorError
 import rpython.rlib.rarithmetic
 import rpython.rlib.objectmodel
 
@@ -99,7 +95,7 @@ def builtin_reversed(s_obj):
 
 
 def builtin_bool(s_obj):
-    return s_obj.is_true()
+    return s_obj.bool()
 
 def builtin_int(s_obj, s_base=None):
     if isinstance(s_obj, SomeInteger):
@@ -177,8 +173,8 @@ def builtin_isinstance(s_obj, s_type, variables=None):
                 r.const = isinstance(s_obj.const, typ)
             elif our_issubclass(s_obj.knowntype, typ):
                 if not s_obj.can_be_none():
-                    r.const = True 
-            elif not our_issubclass(typ, s_obj.knowntype): 
+                    r.const = True
+            elif not our_issubclass(typ, s_obj.knowntype):
                 r.const = False
             elif s_obj.knowntype == int and typ == bool: # xxx this will explode in case of generalisation
                                                    # from bool to int, notice that isinstance( , bool|int)
@@ -207,16 +203,14 @@ def builtin_hasattr(s_obj, s_attr):
         r.const = hasattr(s_obj.const, s_attr.const)
     elif (isinstance(s_obj, SomePBC)
           and s_obj.getKind() is description.FrozenDesc):
-       answers = {}    
-       for d in s_obj.descriptions:
-           answer = (d.s_read_attribute(s_attr.const) != s_ImpossibleValue)
-           answers[answer] = True
-       if len(answers) == 1:
-           r.const, = answers
+        answers = {}
+        for d in s_obj.descriptions:
+            answer = (d.s_read_attribute(s_attr.const) != s_ImpossibleValue)
+            answers[answer] = True
+        if len(answers) == 1:
+            r.const, = answers
     return r
 
-##def builtin_callable(s_obj):
-##    return SomeBool()
 
 def builtin_tuple(s_iterable):
     if isinstance(s_iterable, SomeTuple):
@@ -305,6 +299,10 @@ def robjmodel_r_dict(s_eqfn, s_hashfn, s_force_non_null=None):
     dictdef.dictkey.update_rdict_annotations(s_eqfn, s_hashfn)
     return SomeDict(dictdef)
 
+def robjmodel_r_ordereddict(s_eqfn, s_hashfn):
+    dictdef = getbookkeeper().getdictdef(is_r_dict=True)
+    dictdef.dictkey.update_rdict_annotations(s_eqfn, s_hashfn)
+    return SomeOrderedDict(dictdef)
 
 def robjmodel_hlinvoke(s_repr, s_llcallable, *args_s):
     from rpython.rtyper import rmodel
@@ -344,7 +342,7 @@ def llmemory_cast_int_to_adr(s):
     return SomeAddress()
 
 def unicodedata_decimal(s_uchr):
-    raise TypeError, "unicodedate.decimal() calls should not happen at interp-level"    
+    raise TypeError("unicodedate.decimal() calls should not happen at interp-level")
 
 def test(*args):
     return s_Bool
@@ -364,6 +362,8 @@ BUILTIN_ANALYZERS[rpython.rlib.rarithmetic.intmask] = rarith_intmask
 BUILTIN_ANALYZERS[rpython.rlib.rarithmetic.longlongmask] = rarith_longlongmask
 BUILTIN_ANALYZERS[rpython.rlib.objectmodel.instantiate] = robjmodel_instantiate
 BUILTIN_ANALYZERS[rpython.rlib.objectmodel.r_dict] = robjmodel_r_dict
+BUILTIN_ANALYZERS[rpython.rlib.objectmodel.r_ordereddict] = robjmodel_r_ordereddict
+BUILTIN_ANALYZERS[SomeOrderedDict.knowntype] = lambda : SomeOrderedDict(getbookkeeper().getdictdef())
 BUILTIN_ANALYZERS[rpython.rlib.objectmodel.hlinvoke] = robjmodel_hlinvoke
 BUILTIN_ANALYZERS[rpython.rlib.objectmodel.keepalive_until_here] = robjmodel_keepalive_until_here
 BUILTIN_ANALYZERS[rpython.rtyper.lltypesystem.llmemory.cast_ptr_to_adr] = llmemory_cast_ptr_to_adr
@@ -395,7 +395,7 @@ else:
 if hasattr(object.__init__, 'im_func'):
     BUILTIN_ANALYZERS[object.__init__.im_func] = object_init
 else:
-    BUILTIN_ANALYZERS[object.__init__] = object_init    
+    BUILTIN_ANALYZERS[object.__init__] = object_init
 
 # import
 BUILTIN_ANALYZERS[__import__] = import_func
@@ -490,7 +490,7 @@ def cast_int_to_ptr(PtrT, s_int):
     return SomePtr(ll_ptrtype=PtrT.const)
 
 def identityhash(s_obj):
-    assert isinstance(s_obj, (SomePtr, SomeOOObject, SomeOOInstance))
+    assert isinstance(s_obj, SomePtr)
     return SomeInteger()
 
 def getRuntimeTypeInfo(T):
@@ -522,92 +522,6 @@ BUILTIN_ANALYZERS[lltype.identityhash] = identityhash
 BUILTIN_ANALYZERS[lltype.getRuntimeTypeInfo] = getRuntimeTypeInfo
 BUILTIN_ANALYZERS[lltype.runtime_type_info] = runtime_type_info
 BUILTIN_ANALYZERS[lltype.Ptr] = constPtr
-
-# ootype
-from rpython.annotator.model import SomeOOInstance, SomeOOClass, SomeOOStaticMeth
-from rpython.rtyper.ootypesystem import ootype
-
-def new(I):
-    assert I.is_constant()
-    i = ootype.new(I.const)
-    r = SomeOOInstance(ootype.typeOf(i))
-    return r
-
-def oonewarray(s_type, length):
-    assert s_type.is_constant()
-    return SomeOOInstance(s_type.const)
-
-def null(I_OR_SM):
-    assert I_OR_SM.is_constant()
-    null = ootype.null(I_OR_SM.const)
-    r = lltype_to_annotation(ootype.typeOf(null))
-    return r
-
-def instanceof(i, I):
-    assert I.is_constant()
-    assert isinstance(I.const, ootype.Instance)
-    return s_Bool
-
-def classof(i):
-    assert isinstance(i, SomeOOInstance) 
-    return SomeOOClass(i.ootype)
-
-def subclassof(class1, class2):
-    assert isinstance(class1, SomeOOClass) 
-    assert isinstance(class2, SomeOOClass) 
-    return s_Bool
-
-def runtimenew(c):
-    assert isinstance(c, SomeOOClass)
-    if c.ootype is None:
-        return s_ImpossibleValue   # can't call runtimenew(NULL)
-    else:
-        return SomeOOInstance(c.ootype)
-
-def ooupcast(I, i):
-    assert isinstance(I.const, ootype.Instance)
-    if ootype.isSubclass(i.ootype, I.const):
-        return SomeOOInstance(I.const)
-    else:
-        raise AnnotatorError, 'Cannot cast %s to %s' % (i.ootype, I.const)
-
-def oodowncast(I, i):
-    assert isinstance(I.const, ootype.Instance)
-    if ootype.isSubclass(I.const, i.ootype):
-        return SomeOOInstance(I.const)
-    else:
-        raise AnnotatorError, 'Cannot cast %s to %s' % (i.ootype, I.const)
-
-def cast_to_object(obj):
-    assert isinstance(obj, SomeOOStaticMeth) or \
-           (isinstance(obj, SomeOOClass) and obj.ootype is None) or \
-           isinstance(obj.ootype, ootype.OOType)
-    return SomeOOObject()
-
-def cast_from_object(T, obj):
-    TYPE = T.const
-    if TYPE is ootype.Object:
-        return SomeOOObject()
-    elif TYPE is ootype.Class:
-        return SomeOOClass(ootype.ROOT) # ???
-    elif isinstance(TYPE, ootype.StaticMethod):
-        return SomeOOStaticMeth(TYPE)
-    elif isinstance(TYPE, ootype.OOType):
-        return SomeOOInstance(TYPE)
-    else:
-        raise AnnotatorError, 'Cannot cast Object to %s' % TYPE
-
-BUILTIN_ANALYZERS[ootype.instanceof] = instanceof
-BUILTIN_ANALYZERS[ootype.new] = new
-BUILTIN_ANALYZERS[ootype.oonewarray] = oonewarray
-BUILTIN_ANALYZERS[ootype.null] = null
-BUILTIN_ANALYZERS[ootype.runtimenew] = runtimenew
-BUILTIN_ANALYZERS[ootype.classof] = classof
-BUILTIN_ANALYZERS[ootype.subclassof] = subclassof
-BUILTIN_ANALYZERS[ootype.ooupcast] = ooupcast
-BUILTIN_ANALYZERS[ootype.oodowncast] = oodowncast
-BUILTIN_ANALYZERS[ootype.cast_to_object] = cast_to_object
-BUILTIN_ANALYZERS[ootype.cast_from_object] = cast_from_object
 
 #________________________________
 # weakrefs

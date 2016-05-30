@@ -66,15 +66,15 @@ Highlights
   ``https://bitbucket.org/pypy/numpy`` and ``numpypy`` disappeared.
   You need to install NumPy separately with a virtualenv:
   ``pip install git+https://bitbucket.org/pypy/numpy.git``;
-  or directly:
-  ``git clone https://bitbucket.org/pypy/numpy.git``;
-  ``cd numpy``; ``pypy setup.py install``.
+  or by directly doing
+  ``git clone https://bitbucket.org/pypy/numpy.git``,
+  ``cd numpy``, ``python setup.py install``.
 
 * non-inlined calls have less overhead
 
 * Things that use ``sys.set_trace`` are now JITted (like coverage)
 
-* JSON decoding is now very fast (JSON encoding was already very fast)
+* JSON encoding used to be very fast, now decoding is as well
 
 * various buffer copying methods experience speedups (like list-of-ints to
   ``int[]`` buffer from cffi)
