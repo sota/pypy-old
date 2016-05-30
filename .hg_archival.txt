@@ -1,4 +1,4 @@
 repo: 45eff22199974f85fd96138d25510f4660aba5a1
-node: 295ee98b69288471b0fcf2e0ede82ce5209eb90b
+node: f3ad1e1e1d6215e20d34bb65ab85ff9188c9f559
 branch: release-2.6.x
-tag: release-2.6.0
+tag: release-2.6.1
