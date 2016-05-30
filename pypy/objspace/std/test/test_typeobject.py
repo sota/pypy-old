@@ -1,16 +1,17 @@
-from pypy.interpreter.baseobjspace import W_Root
+from pypy.objspace.std.model import W_Object
+from pypy.objspace.std.stdtypedef import StdTypeDef
+
 from pypy.interpreter.gateway import interp2app
-from pypy.interpreter.typedef import TypeDef
 
 
 class TestTypeObject:
     def test_not_acceptable_as_base_class(self):
         space = self.space
-        class W_Stuff(W_Root):
+        class W_Stuff(W_Object):
             pass
         def descr__new__(space, w_subtype):
             return space.allocate_instance(W_Stuff, w_subtype)
-        W_Stuff.typedef = TypeDef("stuff",
+        W_Stuff.typedef = StdTypeDef("stuff",
                                      __new__ = interp2app(descr__new__))
         W_Stuff.typedef.acceptable_as_base_class = False
         w_stufftype = space.gettypeobject(W_Stuff.typedef)
@@ -59,6 +60,7 @@ class TestTypeObject:
 
 
 class AppTestTypeObject:
+
     def test_abstract_methods(self):
         class X(object):
             pass
@@ -68,13 +70,6 @@ class AppTestTypeObject:
         X()
         raises(AttributeError, getattr, type, "__abstractmethods__")
         raises(TypeError, "int.__abstractmethods__ = ('abc', )")
-
-    def test_attribute_error(self):
-        class X(object):
-            __module__ = 'test'
-        x = X()
-        exc = raises(AttributeError, "x.a")
-        assert str(exc.value) == "'X' object has no attribute 'a'"
 
     def test_call_type(self):
         assert type(42) is int
@@ -432,7 +427,8 @@ class AppTestTypeObject:
         assert f.__call__() == ((), {})
         assert f.__call__("hello", "world") == (("hello", "world"), {})
         assert f.__call__(5, bla=6) == ((5,), {"bla": 6})
-        assert f.__call__(a=1, b=2, c=3) == ((), {"a": 1, "b": 2, "c": 3})
+        assert f.__call__(a=1, b=2, c=3) == ((), {"a": 1, "b": 2,
+                                                           "c": 3})
 
     def test_multipleinheritance_fail(self):
         try:
@@ -543,6 +539,7 @@ class AppTestTypeObject:
         assert ImmutableDoc.__doc__ == 'foo'
 
     def test_metaclass_conflict(self):
+
         class T1(type):
             pass
         class T2(type):
@@ -558,7 +555,7 @@ class AppTestTypeObject:
 
     def test_metaclass_choice(self):
         events = []
-
+        
         class T1(type):
             def __new__(*args):
                 events.append(args)
@@ -580,7 +577,7 @@ class AppTestTypeObject:
         assert type(D1) is T1
         assert type(C) is T1
         assert type(G) is T1
-
+    
     def test_descr_typecheck(self):
         raises(TypeError,type.__dict__['__name__'].__get__,1)
         raises(TypeError,type.__dict__['__mro__'].__get__,1)
@@ -700,9 +697,7 @@ class AppTestTypeObject:
         class A(object):
             pass
         assert repr(A) == "<class 'a.A'>"
-        A.__module__ = 123
-        assert repr(A) == "<class 'A'>"
-        assert repr(type(type)) == "<type 'type'>"
+        assert repr(type(type)) == "<type 'type'>" 
         assert repr(complex) == "<type 'complex'>"
         assert repr(property) == "<type 'property'>"
         assert repr(TypeError) == "<type 'exceptions.TypeError'>"
@@ -811,7 +806,7 @@ class AppTestTypeObject:
         z2 = Z2()
         z2.__class__ = Z1
         assert z2.__class__ == Z1
-
+        
         class I(int):
             pass
         class F(float):
@@ -830,12 +825,13 @@ class AppTestTypeObject:
             pass
 
         i = I()
+        
         i2 = I()
         i.__class__ = I2
         i2.__class__ = I
         assert i.__class__ ==  I2
         assert i2.__class__ == I
-
+        
         i3 = I3()
         raises(TypeError, "i3.__class__ = I2")
         i3.__class__ = I4
@@ -886,12 +882,6 @@ class AppTestTypeObject:
         Abc.__name__ = 'Def'
         assert Abc.__name__ == 'Def'
         raises(TypeError, "Abc.__name__ = 42")
-        try:
-            Abc.__name__ = 'G\x00hi'
-        except ValueError as e:
-            assert str(e) == "__name__ must not contain null bytes"
-        else:
-            assert False
 
     def test_compare(self):
         class A(object):
@@ -1031,48 +1021,6 @@ class AppTestTypeObject:
         A.__dict__['x'] = 5
         assert A.x == 5
 
-    def test_we_already_got_one_1(self):
-        # Issue #2079: highly obscure: CPython complains if we say
-        # ``__slots__="__dict__"`` and there is already a __dict__...
-        # but from the "best base" only.  If the __dict__ comes from
-        # another base, it doesn't complain.  Shrug and copy the logic.
-        class A(object):
-            __slots__ = ()
-        class B(object):
-            pass
-        class C(A, B):     # "best base" is A
-            __slots__ = ("__dict__",)
-        class D(A, B):     # "best base" is A
-            __slots__ = ("__weakref__",)
-        try:
-            class E(B, A):   # "best base" is B
-                __slots__ = ("__dict__",)
-        except TypeError, e:
-            assert 'we already got one' in str(e)
-        else:
-            raise AssertionError("TypeError not raised")
-        try:
-            class F(B, A):   # "best base" is B
-                __slots__ = ("__weakref__",)
-        except TypeError, e:
-            assert 'we already got one' in str(e)
-        else:
-            raise AssertionError("TypeError not raised")
-
-    def test_we_already_got_one_2(self):
-        class A(object):
-            __slots__ = ()
-        class B:
-            pass
-        class C(A, B):     # "best base" is A
-            __slots__ = ("__dict__",)
-        class D(A, B):     # "best base" is A
-            __slots__ = ("__weakref__",)
-        class C(B, A):     # "best base" is A
-            __slots__ = ("__dict__",)
-        class D(B, A):     # "best base" is A
-            __slots__ = ("__weakref__",)
-
 
 class AppTestWithMethodCacheCounter:
     spaceconfig = {"objspace.std.withmethodcachecounter": True}
@@ -1207,17 +1155,3 @@ class AppTestNewShortcut:
                 return x + 1
         a = A()
         assert a.f(1) == 2
-
-    def test_eq_returns_notimplemented(self):
-        assert type.__eq__(int, 42) is NotImplemented
-        assert type.__ne__(dict, 42) is NotImplemented
-        assert type.__eq__(int, int) is True
-        assert type.__eq__(int, dict) is False
-
-    def test_cmp_on_types(self):
-        class X(type):
-            def __cmp__(self, other):
-                return -1
-        class Y:
-            __metaclass__ = X
-        assert (Y < Y) is True

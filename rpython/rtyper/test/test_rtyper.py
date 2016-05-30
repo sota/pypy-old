@@ -22,8 +22,9 @@ def test_reprkeys_dont_clash():
                                 annmodel.SomeInteger()))
     stup2 = annmodel.SomeTuple((annmodel.SomeString(),
                                 annmodel.SomeInteger()))
-    key1 = stup1.rtyper_makekey()
-    key2 = stup2.rtyper_makekey()
+    rtyper = RPythonTyper(annrpython.RPythonAnnotator(None))
+    key1 = rtyper.makekey(stup1)
+    key2 = rtyper.makekey(stup2)
     assert key1 != key2
 
 def test_simple():
@@ -91,6 +92,8 @@ def test_getgcflavor():
     class R:
         _alloc_flavor_ = "raw"
 
+    NDF = object()
+
     class DummyClsDescDef:
         def __init__(self, cls):
             self._cls = cls
@@ -100,9 +103,33 @@ def test_getgcflavor():
         def getmro(self):
             return [self]
 
-        def get_param(self, name, default=None, inherit=True):
-            return getattr(self._cls, name, default)
+        def read_attribute(self, attr, default=NDF):
+            try:
+                return Constant(getattr(self._cls, attr))
+            except AttributeError:
+                if default is NDF:
+                    raise
+                else:
+                    return default
 
     assert rmodel.getgcflavor(DummyClsDescDef(A)) == 'gc'
     assert rmodel.getgcflavor(DummyClsDescDef(B)) == 'gc'
     assert rmodel.getgcflavor(DummyClsDescDef(R)) == 'raw'
+
+def test_missing_gvflavor_bug():
+    class MyClass:
+        def set_x(self):
+            self.x = create_tuple()
+    def create_tuple():
+        return MyClass(), 42
+    def fn():
+        obj = MyClass()
+        obj.set_x()
+        create_tuple()
+    t = TranslationContext()
+    t.buildannotator().build_types(fn, [])
+    t.buildrtyper(type_system='ootype').specialize()
+    #t.view()
+    t.checkgraphs()
+    graph = graphof(t, fn)
+    assert graph.getreturnvar().concretetype == Void

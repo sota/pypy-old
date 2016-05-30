@@ -19,8 +19,6 @@
 #include "src/address.h"
 #include "src/unichar.h"
 #include "src/llgroup.h"
-#include "src/stack.h"
-#include "src/threadlocal.h"
 
 #include "src/instrument.h"
 #include "src/asm.h"
@@ -35,6 +33,7 @@
 #  include "src/debug_traceback.h"
 #endif
 
+#  include "src/allocator.h"
 #ifdef PYPY_STANDALONE
 #  include "src/entrypoint.h"
 #endif

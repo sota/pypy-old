@@ -1,52 +1,47 @@
 import py
-
-from pypy.objspace.std.celldict import ModuleDictStrategy
-from pypy.objspace.std.dictmultiobject import W_DictObject, W_ModuleDictObject
-from pypy.objspace.std.test.test_dictmultiobject import (
-    BaseTestRDictImplementation, BaseTestDevolvedDictImplementation, FakeSpace,
-    FakeString)
+from pypy.objspace.std.dictmultiobject import W_DictMultiObject
+from pypy.objspace.std.celldict import ModuleCell, ModuleDictStrategy
+from pypy.objspace.std.test.test_dictmultiobject import FakeSpace, \
+        BaseTestRDictImplementation, BaseTestDevolvedDictImplementation
+from pypy.interpreter import gateway
 
 space = FakeSpace()
 
 class TestCellDict(object):
-    FakeString = FakeString
-
     def test_basic_property_cells(self):
         strategy = ModuleDictStrategy(space)
         storage = strategy.get_empty_storage()
-        d = W_ModuleDictObject(space, strategy, storage)
+        d = W_DictMultiObject(space, strategy, storage)
 
         v1 = strategy.version
-        key = "a"
-        w_key = self.FakeString(key)
-        d.setitem(w_key, 1)
+        d.setitem("a", 1)
         v2 = strategy.version
         assert v1 is not v2
-        assert d.getitem(w_key) == 1
-        assert d.get_strategy().getdictvalue_no_unwrapping(d, key) == 1
+        assert d.getitem("a") == 1
+        assert d.strategy.getdictvalue_no_unwrapping(d, "a") == 1
 
-        d.setitem(w_key, 2)
+        d.setitem("a", 2)
         v3 = strategy.version
         assert v2 is not v3
-        assert d.getitem(w_key) == 2
-        assert d.get_strategy().getdictvalue_no_unwrapping(d, key).w_value == 2
+        assert d.getitem("a") == 2
+        assert d.strategy.getdictvalue_no_unwrapping(d, "a").w_value == 2
 
-        d.setitem(w_key, 3)
+        d.setitem("a", 3)
         v4 = strategy.version
         assert v3 is v4
-        assert d.getitem(w_key) == 3
-        assert d.get_strategy().getdictvalue_no_unwrapping(d, key).w_value == 3
+        assert d.getitem("a") == 3
+        assert d.strategy.getdictvalue_no_unwrapping(d, "a").w_value == 3
 
-        d.delitem(w_key)
+        d.delitem("a")
         v5 = strategy.version
         assert v5 is not v4
-        assert d.getitem(w_key) is None
-        assert d.get_strategy().getdictvalue_no_unwrapping(d, key) is None
+        assert d.getitem("a") is None
+        assert d.strategy.getdictvalue_no_unwrapping(d, "a") is None
 
     def test_same_key_set_twice(self):
         strategy = ModuleDictStrategy(space)
         storage = strategy.get_empty_storage()
-        d = W_ModuleDictObject(space, strategy, storage)
+        d = W_DictMultiObject(space, strategy, storage)
 
         v1 = strategy.version
         x = object()
@@ -108,11 +103,22 @@ class AppTestModuleDict(object):
 
 class TestModuleDictImplementation(BaseTestRDictImplementation):
     StrategyClass = ModuleDictStrategy
-    setdefault_hash_count = 2
+
+class TestModuleDictImplementationWithBuiltinNames(BaseTestRDictImplementation):
+    StrategyClass = ModuleDictStrategy
+
+    string = "int"
+    string2 = "isinstance"
+
 
 class TestDevolvedModuleDictImplementation(BaseTestDevolvedDictImplementation):
     StrategyClass = ModuleDictStrategy
-    setdefault_hash_count = 2
+
+class TestDevolvedModuleDictImplementationWithBuiltinNames(BaseTestDevolvedDictImplementation):
+    StrategyClass = ModuleDictStrategy
+
+    string = "int"
+    string2 = "isinstance"
 
 
 class AppTestCellDict(object):
@@ -123,7 +129,7 @@ class AppTestCellDict(object):
             py.test.skip("__repr__ doesn't work on appdirect")
         strategy = ModuleDictStrategy(cls.space)
         storage = strategy.get_empty_storage()
-        cls.w_d = W_ModuleDictObject(cls.space, strategy, storage)
+        cls.w_d = W_DictMultiObject(cls.space, strategy, storage)
 
     def test_popitem(self):
         import __pypy__

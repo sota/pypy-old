@@ -3,14 +3,11 @@ import random
 import py
 
 from rpython.flowspace.model import summary
-from rpython.annotator.model import AnnotatorError
 from rpython.rtyper.lltypesystem.lltype import typeOf, Signed, malloc
 from rpython.rtyper.lltypesystem.rstr import LLHelpers, STR
 from rpython.rtyper.rstr import AbstractLLHelpers
 from rpython.rtyper.rtyper import TyperError
-from rpython.rtyper.test.tool import BaseRtypingTest
-from rpython.rtyper.annlowlevel import llstr, hlstr
-from rpython.rtyper.llinterp import LLAssertFailure
+from rpython.rtyper.test.tool import BaseRtypingTest, LLRtypeMixin, OORtypeMixin
 
 
 def test_parse_fmt():
@@ -116,16 +113,6 @@ class AbstractTestRstr(BaseRtypingTest):
             return i
         res = self.interpret(fn, [1])
         assert res == 1 + ord('a') + 10000
-
-    def test_str_iterator_reversed_unsupported(self):
-        const = self.const
-        def fn():
-            total = 0
-            t = const('foo')
-            for x in reversed(t):
-                total += ord(x)
-            return total
-        py.test.raises(TyperError, self.interpret, fn, [])
 
     def test_char_constant(self):
         const = self.const
@@ -374,16 +361,16 @@ class AbstractTestRstr(BaseRtypingTest):
             res = self.interpret(fn, [i, j])
             assert res == fn(i, j)
 
-    def test_find_AnnotatorError(self):
+    def test_find_TyperError(self):
         const = self.const
         def f():
             s = const('abc')
             s.find(s, 0, -10)
-        py.test.raises(AnnotatorError, self.interpret, f, ())
+        py.test.raises(TyperError, self.interpret, f, ())
         def f():
             s = const('abc')
             s.find(s, -10)
-        py.test.raises(AnnotatorError, self.interpret, f, ())
+        py.test.raises(TyperError, self.interpret, f, ())
 
     def test_find_empty_string(self):
         const = self.const
@@ -429,13 +416,6 @@ class AbstractTestRstr(BaseRtypingTest):
             res = self.interpret(f, [i])
             assert res == expected
 
-    def test_rfind_error_message(self):
-        const = self.const
-        def f(i):
-            return const("abc").rfind(const(''), i)
-        e = py.test.raises(AnnotatorError, self.interpret, f, [-5])
-        assert "rfind: not proven to have non-negative start" in str(e.value)
-
     def test_find_char(self):
         const = self.const
         def fn(ch):
@@ -460,29 +440,6 @@ class AbstractTestRstr(BaseRtypingTest):
             return const('a  ').strip(' ')
         res = self.interpret(both, [])
         assert self.ll_to_string(res) == const('ab')
-        res = self.interpret(left, [])
-        assert self.ll_to_string(res) == const('ab!')
-        res = self.interpret(right, [])
-        assert self.ll_to_string(res) == const('!ab')
-        res = self.interpret(empty, [])
-        assert self.ll_to_string(res) == const('')
-        res = self.interpret(left2, [])
-        assert self.ll_to_string(res) == const('a')
-
-    def test_strip_multiple_chars(self):
-        const = self.const
-        def both():
-            return const('!ab!').strip(const('!a'))
-        def left():
-            return const('!+ab!').lstrip(const('!+'))
-        def right():
-            return const('!ab!+').rstrip(const('!+'))
-        def empty():
-            return const(' \t\t   ').strip('\t ')
-        def left2():
-            return const('a  ').strip(' \t')
-        res = self.interpret(both, [])
-        assert self.ll_to_string(res) == const('b')
         res = self.interpret(left, [])
         assert self.ll_to_string(res) == const('ab!')
         res = self.interpret(right, [])
@@ -742,32 +699,6 @@ class AbstractTestRstr(BaseRtypingTest):
             res = self.interpret(fn, [i])
             assert res == fn(i)
 
-    def test_split_multichar(self):
-        l = ["abc::z", "abc", "abc::def:::x"]
-        exp = [["abc", "z"], ["abc"], ["abc", "def", ":x"]]
-        exp2 = [["abc", "z"], ["abc"], ["abc", "def:::x"]]
-
-        def f(i):
-            s = l[i]
-            return s.split("::") == exp[i] and s.split("::", 1) == exp2[i]
-
-        for i in range(3):
-            res = self.interpret(f, [i])
-            assert res == True
-
-    def test_rsplit_multichar(self):
-        l = ["abc::z", "abc", "abc::def:::x"]
-        exp = [["abc", "z"], ["abc"], ["abc", "def:", "x"]]
-        exp2 = [["abc", "z"], ["abc"], ["abc::def:", "x"]]
-
-        def f(i):
-            s = l[i]
-            return s.rsplit("::") == exp[i] and s.rsplit("::", 1) == exp2[i]
-
-        for i in range(3):
-            res = self.interpret(f, [i])
-            assert res == True
-
     def test_rsplit(self):
         fn = self._make_split_test('rsplit')
         for i in range(5):
@@ -961,16 +892,16 @@ class AbstractTestRstr(BaseRtypingTest):
         res = self.interpret(fn, [])
         assert res == 1
 
-    def test_count_AnnotatorError(self):
+    def test_count_TyperError(self):
         const = self.const
         def f():
             s = const('abc')
             s.count(s, 0, -10)
-        py.test.raises(AnnotatorError, self.interpret, f, ())
+        py.test.raises(TyperError, self.interpret, f, ())
         def f():
             s = const('abc')
             s.count(s, -10)
-        py.test.raises(AnnotatorError, self.interpret, f, ())
+        py.test.raises(TyperError, self.interpret, f, ())
 
     def test_getitem_exc(self):
         const = self.const
@@ -980,8 +911,12 @@ class AbstractTestRstr(BaseRtypingTest):
 
         res = self.interpret(f, [0])
         assert res == 'z'
-        with py.test.raises(LLAssertFailure):
-            self.interpret(f, [1])
+        try:
+            self.interpret_raises(IndexError, f, [1])
+        except (AssertionError,), e:
+            pass
+        else:
+            assert False
 
         def f(x):
             s = const("z")
@@ -1018,8 +953,12 @@ class AbstractTestRstr(BaseRtypingTest):
 
         res = self.interpret(f, [0])
         assert res == 'z'
-        with py.test.raises(LLAssertFailure):
-            self.interpret(f, [1])
+        try:
+            self.interpret_raises(IndexError, f, [1])
+        except (AssertionError,), e:
+            pass
+        else:
+            assert False
 
     def test_fold_concat(self):
         const = self.const
@@ -1134,7 +1073,7 @@ def FIXME_test_str_to_pystringobj():
     res = interpret(g, [-2])
     assert res._obj.value == 42
 
-class TestRstr(AbstractTestRstr):
+class BaseTestRstr(AbstractTestRstr):
     const = str
     constchar = chr
 
@@ -1149,6 +1088,9 @@ class TestRstr(AbstractTestRstr):
             return chr(i).upper()
         for c in ["a", "A", "1"]:
             assert self.interpret(fn, [ord(c)]) == c.upper()
+
+
+class TestLLtype(BaseTestRstr, LLRtypeMixin):
 
     def test_ll_find_rfind(self):
         llstr = self.string_to_ll
@@ -1176,36 +1118,6 @@ class TestRstr(AbstractTestRstr):
         res = self.interpret(f, [5])
         assert res == 0
 
-    def test_copy_string_to_raw(self):
-        from rpython.rtyper.lltypesystem import lltype, llmemory
-        from rpython.rtyper.annlowlevel import llstr
-        from rpython.rtyper.lltypesystem.rstr import copy_string_to_raw
 
-        def f(buf, n):
-            s = 'abc' * n
-            ll_s = llstr(s)
-            copy_string_to_raw(ll_s, buf, 0, n*3)
-
-        TP = lltype.Array(lltype.Char)
-        array = lltype.malloc(TP, 12, flavor='raw')
-        f(array, 4)
-        assert list(array) == list('abc'*4)
-        lltype.free(array, flavor='raw')
-
-        array = lltype.malloc(TP, 12, flavor='raw')
-        self.interpret(f, [array, 4])
-        assert list(array) == list('abc'*4)
-        lltype.free(array, flavor='raw')
-
-    def test_strip_no_arg(self):
-        strings = ["  xyz  ", "", "\t\vx"]
-
-        def f(i):
-            return strings[i].strip()
-
-        res = self.interpret(f, [0])
-        assert hlstr(res) == "xyz"
-        res = self.interpret(f, [1])
-        assert hlstr(res) == ""
-        res = self.interpret(f, [2])
-        assert hlstr(res) == "x"
+class TestOOtype(BaseTestRstr, OORtypeMixin):
+    pass

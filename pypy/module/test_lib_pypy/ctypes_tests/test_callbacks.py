@@ -138,7 +138,6 @@ class TestSampleCallbacks(BaseCTypesTestChecker):
         integrate.restype = c_double
 
         def func(x):
-            print 'calculating x**2 of',x
             return x**2
 
         result = integrate(0.0, 1.0, CALLBACK(func), 10)

@@ -1,6 +1,6 @@
 
 import _rawffi
-from _rawffi import alt as _ffi
+import _ffi
 from _ctypes.basics import _CData, _CDataMeta, cdata_from_address, ArgumentError
 from _ctypes.basics import keepalive_key, store_reference, ensure_objects
 from _ctypes.basics import sizeof, byref, as_ffi_pointer
@@ -21,9 +21,9 @@ class PointerType(_CDataMeta):
             size       = _rawffi.sizeof('P'),
             align      = _rawffi.alignment('P'),
             length     = 1,
-            _ffiargshape_ = 'P',
-            _ffishape_  = 'P',
-            _fficompositesize_ = None,
+            _ffiargshape = 'P',
+            _ffishape  = 'P',
+            _fficompositesize = None,
         )
         # XXX check if typedict['_type_'] is any sane
         # XXX remember about paramfunc
@@ -120,7 +120,6 @@ class _Pointer(_CData):
         return self._buffer[0] != 0
 
     contents = property(getcontents, setcontents)
-    _obj = property(getcontents) # byref interface
 
     def _as_ffi_pointer_(self, ffitype):
         return as_ffi_pointer(self, ffitype)

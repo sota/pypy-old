@@ -7,15 +7,14 @@ from rpython.jit.metainterp.history import AbstractDescr
 from rpython.flowspace.model import Variable, Constant, SpaceOperation
 from rpython.flowspace.model import FunctionGraph, Block, Link
 from rpython.flowspace.model import c_last_exception
-from rpython.rtyper.lltypesystem import lltype, llmemory
-from rpython.rtyper import rclass
+from rpython.rtyper.lltypesystem import lltype, llmemory, rclass
 from rpython.rlib.rarithmetic import ovfcheck
 
 
 class TestRegAlloc:
 
-    def make_graphs(self, func, values):
-        self.rtyper = support.annotate(func, values)
+    def make_graphs(self, func, values, type_system='lltype'):
+        self.rtyper = support.annotate(func, values, type_system=type_system)
         return self.rtyper.annotator.translator.graphs
 
     def check_assembler(self, graph, expected, transform=False,
@@ -63,8 +62,8 @@ class TestRegAlloc:
         self.check_assembler(graph, """
             L1:
             int_gt %i0, $0 -> %i2
-            -live-
             goto_if_not %i2, L2
+            -live- L2
             int_add %i1, %i0 -> %i1
             int_sub %i0, $1 -> %i0
             goto L1
@@ -82,8 +81,8 @@ class TestRegAlloc:
         self.check_assembler(graph, """
             L1:
             int_gt %i0, $0 -> %i2
-            -live-
             goto_if_not %i2, L2
+            -live- L2
             int_push %i1
             int_copy %i0 -> %i1
             int_pop -> %i0
@@ -102,8 +101,8 @@ class TestRegAlloc:
         self.check_assembler(graph, """
             L1:
             int_gt %i0, $0 -> %i0
-            -live-
             goto_if_not %i0, L2
+            -live- L2
             int_copy %i1 -> %i0
             int_copy $2 -> %i1
             goto L1
@@ -121,8 +120,8 @@ class TestRegAlloc:
         self.check_assembler(graph, """
             L1:
             int_gt %i0, $0 -> %i3
-            -live-
             goto_if_not %i3, L2
+            -live- L2
             int_push %i1
             int_copy %i2 -> %i1
             int_copy %i0 -> %i2
@@ -142,8 +141,8 @@ class TestRegAlloc:
         self.check_assembler(graph, """
             L1:
             int_gt %i0, $0 -> %i3
-            -live-
             goto_if_not %i3, L2
+            -live- L2
             int_copy %i2 -> %i1
             goto L1
             ---
@@ -236,8 +235,8 @@ class TestRegAlloc:
         self.check_assembler(graph, """
             int_lshift %i0, %i1 -> %i2
             int_rshift %i2, %i1 -> %i1
-            -live-
             goto_if_not_int_ne %i1, %i0, L1
+            -live- L1
             raise $<* struct object>
             ---
             L1:
@@ -251,7 +250,7 @@ class TestRegAlloc:
         class FakeCallControl:
             def guess_call_kind(self, op):
                 return 'residual'
-            def getcalldescr(self, op, **kwds):
+            def getcalldescr(self, op):
                 return FakeDescr()
             def calldescr_canraise(self, calldescr):
                 return True

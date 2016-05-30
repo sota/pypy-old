@@ -2,13 +2,12 @@
 """
 
 from rpython.rtyper.tool import rffi_platform
-from rpython.rtyper.lltypesystem import rffi, lltype
-from rpython.rlib.objectmodel import we_are_translated
+from rpython.rtyper.lltypesystem import rffi
 from rpython.rlib.rarithmetic import r_uint
 from rpython.translator.tool.cbuild import ExternalCompilationInfo
 from rpython.translator.platform import platform
 
-import sys, os, string
+import sys
 
 # maaaybe isinstance here would be better. Think
 _MSVC = platform.name == "msvc"
@@ -69,7 +68,7 @@ class DLOpenError(Exception):
 
 if not _WIN32:
     c_dlopen = external('dlopen', [rffi.CCHARP, rffi.INT], rffi.VOIDP)
-    c_dlclose = external('dlclose', [rffi.VOIDP], rffi.INT, releasegil=False)
+    c_dlclose = external('dlclose', [rffi.VOIDP], rffi.INT, threadsafe=False)
     c_dlerror = external('dlerror', [], rffi.CCHARP)
     c_dlsym = external('dlsym', [rffi.VOIDP, rffi.CCHARP], rffi.VOIDP)
 
@@ -84,66 +83,10 @@ if not _WIN32:
         # XXX this would never work on top of ll2ctypes, because
         # ctypes are calling dlerror itself, unsure if I can do much in this
         # area (nor I would like to)
-        if not we_are_translated():
-            return "error info not available, not translated"
         res = c_dlerror()
         if not res:
             return ""
         return rffi.charp2str(res)
-
-    def _dlerror_on_dlopen_untranslated(name):
-        "NOT_RPYTHON: aaargh"
-        import ctypes
-        name = rffi.charp2str(name)
-        try:
-            ctypes.CDLL(name)
-        except OSError, e:
-            return str(e)
-        else:
-            return ("opening %r with ctypes.CDLL() works, "
-                    "but not with c_dlopen()??" % (name,))
-
-    def _retry_as_ldscript(err, mode):
-        """ ld scripts are fairly straightforward to parse (the library we want
-        is in a form like 'GROUP ( <actual-filepath.so>'. A simple state machine
-        can parse that out (avoids regexes)."""
-
-        parts = err.split(":")
-        if len(parts) != 2:
-            return lltype.nullptr(rffi.VOIDP.TO)
-        fullpath = parts[0]
-        actual = ""
-        last_five = "     "
-        state = 0
-        ldscript = os.open(fullpath, os.O_RDONLY, 0777)
-        c = os.read(ldscript, 1)
-        while c != "":
-            if state == 0:
-                last_five += c
-                last_five = last_five[1:6]
-                if last_five == "GROUP":
-                    state = 1
-            elif state == 1:
-                if c == "(":
-                    state = 2
-            elif state == 2:
-                if c not in string.whitespace:
-                    actual += c
-                    state = 3
-            elif state == 3:
-                if c in string.whitespace or c == ")":
-                    break
-                else:
-                    actual += c
-            c = os.read(ldscript, 1)
-        os.close(ldscript)
-        if actual != "":
-            a = rffi.str2charp(actual)
-            lib = c_dlopen(a, rffi.cast(rffi.INT, mode))
-            rffi.free_charp(a)
-            return lib
-        else:
-            return lltype.nullptr(rffi.VOIDP.TO)
 
     def dlopen(name, mode=-1):
         """ Wrapper around C-level dlopen
@@ -157,21 +100,8 @@ if not _WIN32:
             mode |= RTLD_NOW
         res = c_dlopen(name, rffi.cast(rffi.INT, mode))
         if not res:
-            if not we_are_translated():
-                err = _dlerror_on_dlopen_untranslated(name)
-            else:
-                err = dlerror()
-            if platform.name == "linux" and 'invalid ELF header' in err:
-                # some linux distros put ld linker scripts in .so files
-                # to load libraries more dynamically. The error contains the
-                # full path to something that is probably a script to load
-                # the library we want.
-                res = _retry_as_ldscript(err, mode)
-                if not res:
-                    raise DLOpenError(err)
-                return res
-            else:
-                raise DLOpenError(err)
+            err = dlerror()
+            raise DLOpenError(err)
         return res
 
     dlclose = c_dlclose
@@ -197,16 +127,16 @@ else:  # _WIN32
         # mode is unused on windows, but a consistant signature
         res = rwin32.LoadLibrary(name)
         if not res:
-            err = rwin32.GetLastError_saved()
+            err = rwin32.GetLastError()
             raise DLOpenError(rwin32.FormatError(err))
         return res
 
     def dlclose(handle):
         res = rwin32.FreeLibrary(handle)
         if res:
-            return 0    # success
+            return -1
         else:
-            return -1   # error
+            return 0
 
     def dlsym(handle, name):
         res = rwin32.GetProcAddress(handle, name)
@@ -225,4 +155,3 @@ else:  # _WIN32
         return res
 
     LoadLibrary = rwin32.LoadLibrary
-    GetModuleHandle = rwin32.GetModuleHandle

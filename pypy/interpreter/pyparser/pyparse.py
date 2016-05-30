@@ -1,15 +1,17 @@
+from pypy.interpreter import gateway
 from pypy.interpreter.error import OperationError
 from pypy.interpreter.pyparser import future, parser, pytokenizer, pygram, error
 from pypy.interpreter.astcompiler import consts
 
-def recode_to_utf8(space, bytes, encoding):
-    w_text = space.call_method(space.wrap(bytes), "decode",
-                               space.wrap(encoding))
-    if not space.isinstance_w(w_text, space.w_unicode):
-        raise error.SyntaxError("codec did not return a unicode object")
-    w_recoded = space.call_method(w_text, "encode", space.wrap("utf-8"))
-    return space.str_w(w_recoded)
 
+_recode_to_utf8 = gateway.applevel(r'''
+    def _recode_to_utf8(text, encoding):
+        return unicode(text, encoding).encode("utf-8")
+''').interphook('_recode_to_utf8')
+
+def recode_to_utf8(space, text, encoding):
+    return space.str_w(_recode_to_utf8(space, space.wrap(text),
+                                          space.wrap(encoding)))
 def _normalize_encoding(encoding):
     """returns normalized name for <encoding>
 
@@ -34,14 +36,14 @@ def _normalize_encoding(encoding):
 def _check_for_encoding(s):
     eol = s.find('\n')
     if eol < 0:
-        return _check_line_for_encoding(s)[0]
-    enc, again = _check_line_for_encoding(s[:eol])
-    if enc or not again:
+        return _check_line_for_encoding(s)
+    enc = _check_line_for_encoding(s[:eol])
+    if enc:
         return enc
     eol2 = s.find('\n', eol + 1)
     if eol2 < 0:
-        return _check_line_for_encoding(s[eol + 1:])[0]
-    return _check_line_for_encoding(s[eol + 1:eol2])[0]
+        return _check_line_for_encoding(s[eol + 1:])
+    return _check_line_for_encoding(s[eol + 1:eol2])
 
 
 def _check_line_for_encoding(line):
@@ -51,8 +53,8 @@ def _check_line_for_encoding(line):
         if line[i] == '#':
             break
         if line[i] not in ' \t\014':
-            return None, False  # Not a comment, don't read the second line.
-    return pytokenizer.match_encoding_declaration(line[i:]), True
+            return None
+    return pytokenizer.match_encoding_declaration(line[i:])
 
 
 class CompileInfo(object):
@@ -106,7 +108,7 @@ class PythonParser(parser.Parser):
             # If an encoding is explicitly given check that it is utf-8.
             decl_enc = _check_for_encoding(textsrc)
             if decl_enc and decl_enc != "utf-8":
-                raise error.SyntaxError("UTF-8 BOM with %s coding cookie" % decl_enc,
+                raise error.SyntaxError("UTF-8 BOM with non-utf8 coding cookie",
                                         filename=compile_info.filename)
         elif compile_info.flags & consts.PyCF_SOURCE_IS_UTF8:
             enc = 'utf-8'
@@ -133,7 +135,16 @@ class PythonParser(parser.Parser):
                         raise error.SyntaxError(space.str_w(w_message))
                     raise
 
+        f_flags, future_info = future.get_futures(self.future_flags, textsrc)
+        compile_info.last_future_import = future_info
+        compile_info.flags |= f_flags
+
         flags = compile_info.flags
+
+        if flags & consts.CO_FUTURE_PRINT_FUNCTION:
+            self.grammar = pygram.python_grammar_no_print
+        else:
+            self.grammar = pygram.python_grammar
 
         # The tokenizer is very picky about how it wants its input.
         source_lines = textsrc.splitlines(True)
@@ -146,21 +157,7 @@ class PythonParser(parser.Parser):
         tp = 0
         try:
             try:
-                # Note: we no longer pass the CO_FUTURE_* to the tokenizer,
-                # which is expected to work independently of them.  It's
-                # certainly the case for all futures in Python <= 2.7.
                 tokens = pytokenizer.generate_tokens(source_lines, flags)
-
-                newflags, last_future_import = (
-                    future.add_future_flags(self.future_flags, tokens))
-                compile_info.last_future_import = last_future_import
-                compile_info.flags |= newflags
-
-                if compile_info.flags & consts.CO_FUTURE_PRINT_FUNCTION:
-                    self.grammar = pygram.python_grammar_no_print
-                else:
-                    self.grammar = pygram.python_grammar
-
                 for tp, value, lineno, column, line in tokens:
                     if self.add_token(tp, value, lineno, column, line):
                         break

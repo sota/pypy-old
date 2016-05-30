@@ -8,7 +8,6 @@ import operator
 import random
 import fractions
 import sys
-import time
 
 INF = float("inf")
 NAN = float("nan")
@@ -102,7 +101,7 @@ class GeneralFloatCases(unittest.TestCase):
         # it still has to accept the normal python syntax
         import locale
         if not locale.localeconv()['decimal_point'] == ',':
-            self.skipTest('decimal_point is not ","')
+            return
 
         self.assertEqual(float("  3.14  "), 3.14)
         self.assertEqual(float("+3.14  "), 3.14)
@@ -164,11 +163,6 @@ class GeneralFloatCases(unittest.TestCase):
         self.assertRaises(TypeError, float, Foo4(42))
         self.assertAlmostEqual(float(FooUnicode('8')), 9.)
         self.assertAlmostEqual(float(FooStr('8')), 9.)
-
-        class Foo5:
-            def __float__(self):
-                return ""
-        self.assertRaises(TypeError, time.sleep, Foo5())
 
     def test_is_integer(self):
         self.assertFalse((1.1).is_integer())

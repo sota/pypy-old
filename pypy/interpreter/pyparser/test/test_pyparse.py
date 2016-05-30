@@ -55,7 +55,7 @@ stuff = "nothing"
         assert exc.msg == "coding declaration in unicode string"
         input = "\xEF\xBB\xBF# coding: latin-1\nx"
         exc = py.test.raises(SyntaxError, self.parse, input).value
-        assert exc.msg == "UTF-8 BOM with latin-1 coding cookie"
+        assert exc.msg == "UTF-8 BOM with non-utf8 coding cookie"
         input = "# coding: not-here"
         exc = py.test.raises(SyntaxError, self.parse, input).value
         assert exc.msg == "Unknown encoding: not-here"
@@ -63,13 +63,6 @@ stuff = "nothing"
         exc = py.test.raises(SyntaxError, self.parse, input).value
         assert exc.msg == ("'ascii' codec can't decode byte 0xc3 "
                            "in position 16: ordinal not in range(128)")
-
-    def test_non_unicode_codec(self):
-        exc = py.test.raises(SyntaxError, self.parse, """\
-# coding: string-escape
-\x70\x72\x69\x6e\x74\x20\x32\x2b\x32\x0a
-""").value
-        assert exc.msg == "codec did not return a unicode object"
 
     def test_syntax_error(self):
         parse = self.parse
@@ -155,13 +148,3 @@ pass"""
         self.parse('0b1101')
         self.parse('0b0l')
         py.test.raises(SyntaxError, self.parse, "0b112")
-
-    def test_print_function(self):
-        self.parse("from __future__ import print_function\nx = print\n")
-
-    def test_universal_newlines(self):
-        fmt = 'stuff = """hello%sworld"""'
-        expected_tree = self.parse(fmt % '\n')
-        for linefeed in ["\r\n","\r"]:
-            tree = self.parse(fmt % linefeed)
-            assert expected_tree == tree

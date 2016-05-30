@@ -3,13 +3,14 @@ import sys
 import copy
 
 from rpython.rlib.rerased import *
-from rpython.rlib.rerased import _some_erased
 from rpython.annotator import model as annmodel
 from rpython.annotator.annrpython import RPythonAnnotator
-from rpython.rtyper.rclass import OBJECTPTR
+from rpython.rtyper.test.test_llinterp import interpret
+from rpython.rtyper.lltypesystem.rclass import OBJECTPTR
+from rpython.rtyper.ootypesystem.rclass import OBJECT
 from rpython.rtyper.lltypesystem import lltype, llmemory
 
-from rpython.rtyper.test.tool import BaseRtypingTest
+from rpython.rtyper.test.tool import BaseRtypingTest, LLRtypeMixin, OORtypeMixin
 
 def make_annotator():
     a = RPythonAnnotator()
@@ -72,7 +73,7 @@ def test_annotate_1():
         return eraseX(X())
     a = make_annotator()
     s = a.build_types(f, [])
-    assert s == _some_erased()
+    assert isinstance(s, SomeErased)
 
 def test_annotate_2():
     def f():
@@ -184,15 +185,10 @@ def test_annotate_prebuilt_int():
     s = a.build_types(f, [int])
     assert isinstance(s, annmodel.SomeInteger)
 
-class TestRErased(BaseRtypingTest):
-    ERASED_TYPE = llmemory.GCREF
-    UNERASED_TYPE = OBJECTPTR
-    def castable(self, TO, var):
-        return lltype.castable(TO, lltype.typeOf(var)) > 0
-
+class BaseTestRErased(BaseRtypingTest):
     def interpret(self, *args, **kwargs):
         kwargs["taggedpointers"] = True
-        return BaseRtypingTest.interpret(*args, **kwargs)
+        return BaseRtypingTest.interpret(self, *args, **kwargs)
     def test_rtype_1(self):
         def f():
             return eraseX(X())
@@ -300,28 +296,27 @@ class TestRErased(BaseRtypingTest):
         self.interpret(l, [1])
         self.interpret(l, [2])
 
-    def test_rtype_store_in_struct(self):
-        erase, unerase = new_erasing_pair("list of ints")
-        S = lltype.GcStruct('S', ('gcref', llmemory.GCREF))
-        def make_s(l):
-            s = lltype.malloc(S)
-            s.gcref = erase(l)
-            return s
-        def l(flag):
-            l = [flag]
-            if flag > 5:
-                s = make_s(l)
-                p = s.gcref
-            else:
-                p = erase(l)
-            assert unerase(p) is l
-        self.interpret(l, [3])
-        self.interpret(l, [8])
+class TestLLtype(BaseTestRErased, LLRtypeMixin):
+    ERASED_TYPE = llmemory.GCREF
+    UNERASED_TYPE = OBJECTPTR
+    def castable(self, TO, var):
+        return lltype.castable(TO, lltype.typeOf(var)) > 0
+
+from rpython.rtyper.ootypesystem.ootype import Object
+
+class TestOOtype(BaseTestRErased, OORtypeMixin):
+    ERASED_TYPE = Object
+    UNERASED_TYPE = OBJECT
+    def castable(self, TO, var):
+        return ootype.isSubclass(lltype.typeOf(var), TO)
+    @py.test.mark.xfail
+    def test_prebuilt_erased(self):
+        super(TestOOtype, self).test_prebuilt_erased()
 
 def test_union():
-    s_e1 = _some_erased()
+    s_e1 = SomeErased()
     s_e1.const = 1
-    s_e2 = _some_erased()
+    s_e2 = SomeErased()
     s_e2.const = 3
     assert not annmodel.pair(s_e1, s_e2).union().is_constant()
 

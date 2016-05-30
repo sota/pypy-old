@@ -6,7 +6,6 @@ from rpython.rtyper.error import TyperError
 from rpython.rtyper.test.test_llinterp import interpret
 from rpython.rtyper.lltypesystem import lltype
 from rpython.rtyper.normalizecalls import TotalOrderSymbolic, MAX
-from rpython.rtyper.normalizecalls import TooLateForNewSubclass
 
 
 def test_TotalOrderSymbolic():
@@ -21,49 +20,6 @@ def test_TotalOrderSymbolic():
     assert t3.value == 2
     assert t1 <= 5
     assert t1.value == 0
-
-def test_TotalOrderSymbolic_with_subclasses():
-    lst = []
-    t3 = TotalOrderSymbolic([3, 4, 2, MAX], lst)
-    t1 = TotalOrderSymbolic([3, 4], lst)
-    t2 = TotalOrderSymbolic([3, 4, 2], lst)
-    t4 = TotalOrderSymbolic([3, 4, MAX], lst)
-    assert t1.number_with_subclasses()
-    assert not t2.number_with_subclasses()
-    assert [t.compute_fn() for t in [t1, t2, t3, t4]] == range(4)
-    #
-    lst = []
-    t1 = TotalOrderSymbolic([3, 4], lst)
-    t3 = TotalOrderSymbolic([3, 4, 2, MAX], lst)
-    t4 = TotalOrderSymbolic([3, 4, MAX], lst)
-    t2 = TotalOrderSymbolic([3, 4, 2], lst)
-    assert not t2.number_with_subclasses()
-    assert t1.number_with_subclasses()
-    assert [t.compute_fn() for t in [t1, t2, t3, t4]] == range(4)
-    #
-    lst = []
-    t1 = TotalOrderSymbolic([3, 4], lst)
-    t4 = TotalOrderSymbolic([3, 4, MAX], lst)
-    assert not t1.number_with_subclasses()
-    t2 = TotalOrderSymbolic([3, 4, 2], lst)
-    t3 = TotalOrderSymbolic([3, 4, 2, MAX], lst)
-    py.test.raises(TooLateForNewSubclass, t2.compute_fn)
-    #
-    lst = []
-    t1 = TotalOrderSymbolic([3, 4], lst)
-    t4 = TotalOrderSymbolic([3, 4, MAX], lst)
-    assert not t1.number_with_subclasses()
-    t2 = TotalOrderSymbolic([1], lst)
-    t3 = TotalOrderSymbolic([1, MAX], lst)
-    assert [t.compute_fn() for t in [t2, t3, t1, t4]] == range(4)
-    #
-    lst = []
-    t1 = TotalOrderSymbolic([3, 4], lst)
-    t4 = TotalOrderSymbolic([3, 4, MAX], lst)
-    assert not t1.number_with_subclasses()
-    t2 = TotalOrderSymbolic([6], lst)
-    t3 = TotalOrderSymbolic([6, MAX], lst)
-    assert [t.compute_fn() for t in [t1, t4, t2, t3]] == range(4)
 
 # ____________________________________________________________
 
@@ -229,8 +185,7 @@ class TestNormalize(object):
     .+Sub1.fn
     .+Sub2.fn
 are called with inconsistent numbers of arguments
-\(and/or the argument names are different, which is not supported in this case\)
-sometimes with \d arguments, sometimes with \d
+sometimes with 2 arguments, sometimes with 1
 the callers of these functions are:
     .+otherfunc
     .+dummyfn"""
@@ -269,7 +224,7 @@ class TestNormalizeAfterTheFact(TestNormalize):
 
         from rpython.rtyper import annlowlevel
         # annotate, normalize and rtype fn after the fact
-        annhelper = annlowlevel.MixLevelHelperAnnotator(typer)
+        annhelper = annlowlevel.MixLevelHelperAnnotator(typer)               
         graph = annhelper.getgraph(fn, [a.typeannotation(argtype) for argtype in argtypes],
                                    s_result)
         annhelper.finish()
@@ -284,7 +239,7 @@ class TestNormalizeAfterTheFact(TestNormalize):
         assert res == 100
         res = llinterp.eval_graph(graphof(t, prefn), [2])
         assert res == 201
-
+        
         return t
 
     def test_mix_after_recursion(self):
@@ -293,7 +248,7 @@ class TestNormalizeAfterTheFact(TestNormalize):
                 return 2*prefn(n-1)
             else:
                 return 1
-
+        
         t = TranslationContext()
         a = t.buildannotator()
         a.build_types(prefn, [int])
@@ -305,13 +260,14 @@ class TestNormalizeAfterTheFact(TestNormalize):
             return 1
 
         from rpython.rtyper import annlowlevel
-        annhelper = annlowlevel.MixLevelHelperAnnotator(typer)
+        annhelper = annlowlevel.MixLevelHelperAnnotator(typer)               
         graph = annhelper.getgraph(f, [], annmodel.SomeInteger())
         annhelper.finish()
-
+        
     def test_add_more_subclasses(self):
         from rpython.rtyper import rclass
-        from rpython.rtyper.rclass import ll_issubclass, CLASSTYPE
+        from rpython.rtyper.lltypesystem.rclass import ll_issubclass
+        from rpython.rtyper.lltypesystem.rclass import CLASSTYPE
         class Sub3(PBase):
             def newmethod(self):
                 return 3

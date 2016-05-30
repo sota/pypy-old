@@ -1,21 +1,30 @@
 # base annotation policy for specialization
 from rpython.annotator.specialize import default_specialize as default
-from rpython.annotator.specialize import (
-    specialize_argvalue, specialize_argtype, specialize_arglistitemtype,
-    specialize_arg_or_var, memo, specialize_call_location)
-from rpython.flowspace.operation import op
-from rpython.flowspace.model import Constant
-from rpython.annotator.model import SomeTuple
+from rpython.annotator.specialize import specialize_argvalue, specialize_argtype, specialize_arglistitemtype, specialize_arg_or_var
+from rpython.annotator.specialize import memo, specialize_call_location
 
 
-class AnnotatorPolicy(object):
-    """
-    Possibly subclass and pass an instance to the annotator to control
-    special-casing during annotation
-    """
+class BasicAnnotatorPolicy(object):
 
     def event(pol, bookkeeper, what, *args):
         pass
+
+    def get_specializer(pol, tag):
+        return pol.no_specialization
+
+    def no_specialization(pol, funcdesc, args_s):
+        return funcdesc.cachedgraph(None)
+
+    def no_more_blocks_to_annotate(pol, annotator):
+        # hint to all pending specializers that we are done
+        for callback in annotator.bookkeeper.pending_specializations:
+            callback()
+        del annotator.bookkeeper.pending_specializations[:]
+
+class AnnotatorPolicy(BasicAnnotatorPolicy):
+    """
+    Possibly subclass and pass an instance to the annotator to control special casing during annotation
+    """
 
     def get_specializer(pol, directive):
         if directive is None:
@@ -33,7 +42,7 @@ class AnnotatorPolicy(object):
             except (KeyboardInterrupt, SystemExit):
                 raise
             except:
-                raise Exception("broken specialize directive parms: %s" % directive)
+                raise Exception, "broken specialize directive parms: %s" % directive
         name = name.replace(':', '__')
         try:
             specializer = getattr(pol, name)
@@ -65,36 +74,3 @@ class AnnotatorPolicy(object):
     def specialize__ll_and_arg(pol, *args):
         from rpython.rtyper.annlowlevel import LowLevelAnnotatorPolicy
         return LowLevelAnnotatorPolicy.specialize__ll_and_arg(*args)
-
-    def no_more_blocks_to_annotate(pol, annotator):
-        bk = annotator.bookkeeper
-        # hint to all pending specializers that we are done
-        for callback in bk.pending_specializations:
-            callback()
-        del bk.pending_specializations[:]
-        if annotator.added_blocks is not None:
-            all_blocks = annotator.added_blocks
-        else:
-            all_blocks = annotator.annotated
-        for block in list(all_blocks):
-            for i, instr in enumerate(block.operations):
-                if not isinstance(instr, (op.simple_call, op.call_args)):
-                    continue
-                v_func = instr.args[0]
-                s_func = annotator.annotation(v_func)
-                if not hasattr(s_func, 'needs_sandboxing'):
-                    continue
-                key = ('sandboxing', s_func.const)
-                if key not in bk.emulated_pbc_calls:
-                    params_s = s_func.args_s
-                    s_result = s_func.s_result
-                    from rpython.translator.sandbox.rsandbox import make_sandbox_trampoline
-                    sandbox_trampoline = make_sandbox_trampoline(
-                        s_func.name, params_s, s_result)
-                    sandbox_trampoline._signature_ = [SomeTuple(items=params_s)], s_result
-                    bk.emulate_pbc_call(key, bk.immutablevalue(sandbox_trampoline), params_s)
-                else:
-                    s_trampoline = bk.emulated_pbc_calls[key][0]
-                    sandbox_trampoline = s_trampoline.const
-                new = instr.replace({instr.args[0]: Constant(sandbox_trampoline)})
-                block.operations[i] = new

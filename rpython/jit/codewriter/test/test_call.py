@@ -1,13 +1,10 @@
 import py
-
 from rpython.flowspace.model import SpaceOperation, Constant, Variable
 from rpython.rtyper.lltypesystem import lltype, llmemory, rffi
 from rpython.translator.unsimplify import varoftype
 from rpython.rlib import jit
-from rpython.jit.codewriter import support, call
 from rpython.jit.codewriter.call import CallControl
-from rpython.jit.codewriter.effectinfo import EffectInfo
-
+from rpython.jit.codewriter import support
 
 class FakePolicy:
     def look_inside_graph(self, graph):
@@ -104,24 +101,20 @@ def test_guess_call_kind_and_calls_from_graphs():
                         Variable())
     assert cc.guess_call_kind(op) == 'recursive'
 
-    class fakeresidual:
-        _obj = object()
-    op = SpaceOperation('direct_call', [Constant(fakeresidual)],
+    op = SpaceOperation('direct_call', [Constant(object())],
                         Variable())
     assert cc.guess_call_kind(op) == 'residual'
 
     class funcptr:
-        class _obj:
-            class graph:
-                class func:
-                    oopspec = "spec"
+        class graph:
+            class func:
+                oopspec = "spec"
     op = SpaceOperation('direct_call', [Constant(funcptr)],
                         Variable())
     assert cc.guess_call_kind(op) == 'builtin'
 
     class funcptr:
-        class _obj:
-            graph = g
+        graph = g
     op = SpaceOperation('direct_call', [Constant(funcptr)],
                         Variable())
     res = cc.graphs_from(op)
@@ -129,8 +122,7 @@ def test_guess_call_kind_and_calls_from_graphs():
     assert cc.guess_call_kind(op) == 'regular'
 
     class funcptr:
-        class _obj:
-            graph = object()
+        graph = object()
     op = SpaceOperation('direct_call', [Constant(funcptr)],
                         Variable())
     res = cc.graphs_from(op)
@@ -154,17 +146,18 @@ def test_guess_call_kind_and_calls_from_graphs():
 
 # ____________________________________________________________
 
-def test_get_jitcode(monkeypatch):
+def test_get_jitcode():
     from rpython.jit.codewriter.test.test_flatten import FakeCPU
     class FakeRTyper:
         class annotator:
             translator = None
-
-    def getfunctionptr(graph):
-        F = lltype.FuncType([], lltype.Signed)
-        return lltype.functionptr(F, 'bar')
-
-    monkeypatch.setattr(call, 'getfunctionptr', getfunctionptr)
+        class type_system:
+            name = 'lltypesystem'
+            @staticmethod
+            def getcallable(graph):
+                F = lltype.FuncType([], lltype.Signed)
+                return lltype.functionptr(F, 'bar')
+    #
     cc = CallControl(FakeCPU(FakeRTyper()))
     class somegraph:
         name = "foo"
@@ -183,7 +176,7 @@ def test_releases_gil_analyzer():
     from rpython.jit.backend.llgraph.runner import LLGraphCPU
 
     T = rffi.CArrayPtr(rffi.TIME_T)
-    external = rffi.llexternal("time", [T], rffi.TIME_T, releasegil=True)
+    external = rffi.llexternal("time", [T], rffi.TIME_T, threadsafe=True)
 
     @jit.dont_look_inside
     def f():
@@ -205,8 +198,7 @@ def test_call_release_gil():
     from rpython.jit.backend.llgraph.runner import LLGraphCPU
 
     T = rffi.CArrayPtr(rffi.TIME_T)
-    external = rffi.llexternal("time", [T], rffi.TIME_T, releasegil=True,
-                               save_err=rffi.RFFI_SAVE_ERRNO)
+    external = rffi.llexternal("time", [T], rffi.TIME_T, threadsafe=True)
 
     # no jit.dont_look_inside in this test
     def f():
@@ -220,16 +212,12 @@ def test_call_release_gil():
     [llext_graph] = [x for x in res if x.func is external]
     [block, _] = list(llext_graph.iterblocks())
     [op] = block.operations
-    tgt_tuple = op.args[0].value._obj.graph.func._call_aroundstate_target_
-    assert type(tgt_tuple) is tuple and len(tgt_tuple) == 2
-    call_target, saveerr = tgt_tuple
-    assert saveerr == rffi.RFFI_SAVE_ERRNO
+    call_target = op.args[0].value._obj.graph.func._call_aroundstate_target_
     call_target = llmemory.cast_ptr_to_adr(call_target)
     call_descr = cc.getcalldescr(op)
     assert call_descr.extrainfo.has_random_effects()
     assert call_descr.extrainfo.is_call_release_gil() is True
-    assert call_descr.extrainfo.call_release_gil_target == (
-        call_target, rffi.RFFI_SAVE_ERRNO)
+    assert call_descr.extrainfo.call_release_gil_target == call_target
 
 def test_random_effects_on_stacklet_switch():
     from rpython.jit.backend.llgraph.runner import LLGraphCPU
@@ -255,82 +243,3 @@ def test_random_effects_on_stacklet_switch():
     op = block.operations[-1]
     call_descr = cc.getcalldescr(op)
     assert call_descr.extrainfo.has_random_effects()
-
-def test_no_random_effects_for_rotateLeft():
-    from rpython.jit.backend.llgraph.runner import LLGraphCPU
-    from rpython.rlib.rarithmetic import r_uint
-
-    if r_uint.BITS == 32:
-        py.test.skip("64-bit only")
-
-    from rpython.rlib.rmd5 import _rotateLeft
-    def f(n, m):
-        return _rotateLeft(r_uint(n), m)
-
-    rtyper = support.annotate(f, [7, 9])
-    jitdriver_sd = FakeJitDriverSD(rtyper.annotator.translator.graphs[0])
-    cc = CallControl(LLGraphCPU(rtyper), jitdrivers_sd=[jitdriver_sd])
-    res = cc.find_all_graphs(FakePolicy())
-
-    [f_graph] = [x for x in res if x.func is f]
-    [block, _] = list(f_graph.iterblocks())
-    op = block.operations[-1]
-    call_descr = cc.getcalldescr(op)
-    assert not call_descr.extrainfo.has_random_effects()
-    assert call_descr.extrainfo.check_is_elidable()
-
-def test_elidable_kinds():
-    from rpython.jit.backend.llgraph.runner import LLGraphCPU
-
-    @jit.elidable
-    def f1(n, m):
-        return n + m
-    @jit.elidable
-    def f2(n, m):
-        return [n, m]    # may raise MemoryError
-    @jit.elidable
-    def f3(n, m):
-        if n > m:
-            raise ValueError
-        return n + m
-
-    def f(n, m):
-        a = f1(n, m)
-        b = f2(n, m)
-        c = f3(n, m)
-        return a + len(b) + c
-
-    rtyper = support.annotate(f, [7, 9])
-    jitdriver_sd = FakeJitDriverSD(rtyper.annotator.translator.graphs[0])
-    cc = CallControl(LLGraphCPU(rtyper), jitdrivers_sd=[jitdriver_sd])
-    res = cc.find_all_graphs(FakePolicy())
-    [f_graph] = [x for x in res if x.func is f]
-
-    for index, expected in [
-            (0, EffectInfo.EF_ELIDABLE_CANNOT_RAISE),
-            (1, EffectInfo.EF_ELIDABLE_OR_MEMORYERROR),
-            (2, EffectInfo.EF_ELIDABLE_CAN_RAISE)]:
-        call_op = f_graph.startblock.operations[index]
-        assert call_op.opname == 'direct_call'
-        call_descr = cc.getcalldescr(call_op)
-        assert call_descr.extrainfo.extraeffect == expected
-
-def test_raise_elidable_no_result():
-    from rpython.jit.backend.llgraph.runner import LLGraphCPU
-    l = []
-    @jit.elidable
-    def f1(n, m):
-        l.append(n)
-    def f(n, m):
-        f1(n, m)
-        return n + m
-
-    rtyper = support.annotate(f, [7, 9])
-    jitdriver_sd = FakeJitDriverSD(rtyper.annotator.translator.graphs[0])
-    cc = CallControl(LLGraphCPU(rtyper), jitdrivers_sd=[jitdriver_sd])
-    res = cc.find_all_graphs(FakePolicy())
-    [f_graph] = [x for x in res if x.func is f]
-    call_op = f_graph.startblock.operations[0]
-    assert call_op.opname == 'direct_call'
-    with py.test.raises(Exception):
-        call_descr = cc.getcalldescr(call_op)

@@ -6,20 +6,20 @@ from pypy.objspace.std import StdObjSpace
 from rpython.tool.udir import udir
 from pypy.tool.pytest.objspace import gettestobjspace
 from pypy.conftest import pypydir
+from rpython.rtyper.module.ll_os import RegisterOs
 from rpython.translator.c.test.test_extfunc import need_sparse_files
-from rpython.rlib import rposix
 import os
 import py
 import sys
 import signal
 
 def setup_module(mod):
-    usemodules = ['binascii', 'posix', 'struct', 'time']
+    usemodules = ['binascii', 'posix', 'struct', 'rctime']
     if os.name != 'nt':
         usemodules += ['fcntl']
     else:
         # On windows, os.popen uses the subprocess module
-        usemodules += ['_rawffi', 'thread', 'signal']
+        usemodules += ['_rawffi', 'thread']
     mod.space = gettestobjspace(usemodules=usemodules)
     mod.path = udir.join('posixtestfile.txt')
     mod.path.write("this is a test")
@@ -52,7 +52,6 @@ class AppTestPosix:
 
     def setup_class(cls):
         cls.space = space
-        cls.w_runappdirect = space.wrap(cls.runappdirect)
         cls.w_posix = space.appexec([], GET_POSIX)
         cls.w_path = space.wrap(str(path))
         cls.w_path2 = space.wrap(str(path2))
@@ -79,11 +78,6 @@ class AppTestPosix:
             cls.w_sysconf_name = space.wrap(sysconf_name)
             cls.w_sysconf_value = space.wrap(os.sysconf_names[sysconf_name])
             cls.w_sysconf_result = space.wrap(os.sysconf(sysconf_name))
-        if hasattr(os, 'confstr'):
-            confstr_name = os.confstr_names.keys()[0]
-            cls.w_confstr_name = space.wrap(confstr_name)
-            cls.w_confstr_value = space.wrap(os.confstr_names[confstr_name])
-            cls.w_confstr_result = space.wrap(os.confstr(confstr_name))
         cls.w_SIGABRT = space.wrap(signal.SIGABRT)
         cls.w_python = space.wrap(sys.executable)
         if hasattr(os, 'major'):
@@ -93,16 +87,10 @@ class AppTestPosix:
 
     def setup_method(self, meth):
         if getattr(meth, 'need_sparse_files', False):
-            if sys.maxsize < 2**32 and not self.runappdirect:
-                # this fails because it uses ll2ctypes to call the posix
-                # functions like 'open' and 'lseek', whereas a real compiled
-                # C program would macro-define them to their longlong versions
-                py.test.skip("emulation of files can't use "
-                             "larger-than-long offsets")
             need_sparse_files()
 
     def test_posix_is_pypy_s(self):
-        assert hasattr(self.posix, '_statfields')
+        assert self.posix.__file__
 
     def test_some_posix_basic_operation(self):
         path = self.path
@@ -181,22 +169,19 @@ class AppTestPosix:
         assert stat.S_ISDIR(st.st_mode)
 
     def test_stat_exception(self):
-        import sys
-        import errno
+        import sys, errno
         for fn in [self.posix.stat, self.posix.lstat]:
-            exc = raises(OSError, fn, "nonexistentdir/nonexistentfile")
-            assert exc.value.errno == errno.ENOENT
-            assert exc.value.filename == "nonexistentdir/nonexistentfile"
-
-    if hasattr(__import__(os.name), "statvfs"):
-        def test_statvfs(self):
-            st = self.posix.statvfs(".")
-            assert isinstance(st, self.posix.statvfs_result)
-            for field in [
-                'f_bsize', 'f_frsize', 'f_blocks', 'f_bfree', 'f_bavail',
-                'f_files', 'f_ffree', 'f_favail', 'f_flag', 'f_namemax',
-            ]:
-                assert hasattr(st, field)
+            try:
+                fn("nonexistentdir/nonexistentfile")
+            except OSError, e:
+                assert e.errno == errno.ENOENT
+                assert e.filename == "nonexistentdir/nonexistentfile"
+                # On Windows, when the parent directory does not exist,
+                # the winerror is 3 (cannot find the path specified)
+                # instead of 2 (cannot find the file specified)
+                if sys.platform == 'win32':
+                    assert isinstance(e, WindowsError)
+                    assert e.winerror == 3
 
     def test_pickle(self):
         import pickle, os
@@ -288,8 +273,13 @@ class AppTestPosix:
         f = posix.fdopen(fd, "r")
         f.close()
 
-        # There used to be code here to ensure that fcntl is not faked
-        # but we can't do that cleanly any more
+        # Ensure that fcntl is not faked
+        try:
+            import fcntl
+        except ImportError:
+            pass
+        else:
+            assert fcntl.__file__.endswith('pypy/module/fcntl')
         exc = raises(OSError, posix.fdopen, fd)
         assert exc.value.errno == errno.EBADF
 
@@ -305,25 +295,6 @@ class AppTestPosix:
             f.close()
         finally:
             __builtins__.file = _file
-
-    def test_fdopen_directory(self):
-        import errno
-        os = self.posix
-        try:
-            fd = os.open('.', os.O_RDONLY)
-        except OSError as e:
-            assert e.errno == errno.EACCES
-            skip("system cannot open directories")
-        exc = raises(IOError, os.fdopen, fd, 'r')
-        assert exc.value.errno == errno.EISDIR
-
-    def test_fdopen_keeps_fd_open_on_errors(self):
-        path = self.path
-        posix = self.posix
-        fd = posix.open(path, posix.O_RDONLY)
-        exc = raises(OSError, posix.fdopen, fd, 'w')
-        assert str(exc.value) == "[Errno 22] Invalid argument"
-        posix.close(fd)  # fd should not be closed
 
     def test_getcwd(self):
         assert isinstance(self.posix.getcwd(), str)
@@ -360,6 +331,7 @@ class AppTestPosix:
         else:
             assert (unicode, u) in typed_result
 
+
     def test_access(self):
         pdir = self.pdir + '/file1'
         posix = self.posix
@@ -369,6 +341,7 @@ class AppTestPosix:
         import sys
         if sys.platform != "win32":
             assert not posix.access(pdir, posix.X_OK)
+
 
     def test_times(self):
         """
@@ -582,7 +555,7 @@ class AppTestPosix:
         raises(TypeError, "os.utime('xxx', 3)")
         raises(OSError, "os.utime('somefilewhichihopewouldneverappearhere', None)")
 
-    for name in rposix.WAIT_MACROS:
+    for name in RegisterOs.w_star:
         if hasattr(os, name):
             values = [0, 1, 127, 128, 255]
             code = py.code.Source("""
@@ -632,30 +605,6 @@ class AppTestPosix:
             os = self.posix
             assert os.getgroups() == self.getgroups
 
-    if hasattr(os, 'setgroups'):
-        def test_os_setgroups(self):
-            os = self.posix
-            raises(TypeError, os.setgroups, [2, 5, "hello"])
-            try:
-                os.setgroups(os.getgroups())
-            except OSError:
-                pass
-
-    if hasattr(os, 'initgroups'):
-        def test_os_initgroups(self):
-            os = self.posix
-            raises(OSError, os.initgroups, "crW2hTQC", 100)
-
-    if hasattr(os, 'tcgetpgrp'):
-        def test_os_tcgetpgrp(self):
-            os = self.posix
-            raises(OSError, os.tcgetpgrp, 9999)
-
-    if hasattr(os, 'tcsetpgrp'):
-        def test_os_tcsetpgrp(self):
-            os = self.posix
-            raises(OSError, os.tcsetpgrp, 9999, 1)
-
     if hasattr(os, 'getpgid'):
         def test_os_getpgid(self):
             os = self.posix
@@ -674,30 +623,6 @@ class AppTestPosix:
             assert os.getsid(0) == self.getsid0
             raises(OSError, os.getsid, -100000)
 
-    if hasattr(os, 'getresuid'):
-        def test_os_getresuid(self):
-            os = self.posix
-            res = os.getresuid()
-            assert len(res) == 3
-
-    if hasattr(os, 'getresgid'):
-        def test_os_getresgid(self):
-            os = self.posix
-            res = os.getresgid()
-            assert len(res) == 3
-
-    if hasattr(os, 'setresuid'):
-        def test_os_setresuid(self):
-            os = self.posix
-            a, b, c = os.getresuid()
-            os.setresuid(a, b, c)
-
-    if hasattr(os, 'setresgid'):
-        def test_os_setresgid(self):
-            os = self.posix
-            a, b, c = os.getresgid()
-            os.setresgid(a, b, c)
-
     if hasattr(os, 'sysconf'):
         def test_os_sysconf(self):
             os = self.posix
@@ -715,25 +640,6 @@ class AppTestPosix:
             assert os.fpathconf(1, "PC_PIPE_BUF") >= 128
             raises(OSError, os.fpathconf, -1, "PC_PIPE_BUF")
             raises(ValueError, os.fpathconf, 1, "##")
-
-    if hasattr(os, 'pathconf'):
-        def test_os_pathconf(self):
-            os = self.posix
-            assert os.pathconf("/tmp", "PC_NAME_MAX") >= 31
-            # Linux: the following gets 'No such file or directory'
-            raises(OSError, os.pathconf, "", "PC_PIPE_BUF")
-            raises(ValueError, os.pathconf, "/tmp", "##")
-
-    if hasattr(os, 'confstr'):
-        def test_os_confstr(self):
-            os = self.posix
-            assert os.confstr(self.confstr_value) == self.confstr_result
-            assert os.confstr(self.confstr_name) == self.confstr_result
-            assert os.confstr_names[self.confstr_name] == self.confstr_value
-
-        def test_os_confstr_error(self):
-            os = self.posix
-            raises(ValueError, os.confstr, "!@#$%!#$!@#")
 
     if hasattr(os, 'wait'):
         def test_os_wait(self):
@@ -772,7 +678,6 @@ class AppTestPosix:
             assert os.minor(12345) == self.expected_minor_12345
             assert os.makedev(self.expected_major_12345,
                               self.expected_minor_12345) == 12345
-            raises((ValueError, OverflowError), os.major, -1)
 
     if hasattr(os, 'fsync'):
         def test_fsync(self):
@@ -1120,28 +1025,6 @@ class AppTestPosix:
             assert False, "urandom() always returns the same string"
             # Or very unlucky
 
-    if hasattr(os, 'startfile'):
-        def test_startfile(self):
-            if not self.runappdirect:
-                skip("should not try to import cffi at app-level")
-            startfile = self.posix.startfile
-            for t1 in [str, unicode]:
-                for t2 in [str, unicode]:
-                    e = raises(WindowsError, startfile, t1("\\"), t2("close"))
-                    assert e.value.args[0] == 1155
-                    assert e.value.args[1] == (
-                        "No application is associated with the "
-                        "specified file for this operation")
-                    if len(e.value.args) > 2:
-                        assert e.value.args[2] == t1("\\")
-            #
-            e = raises(WindowsError, startfile, "\\foo\\bar\\baz")
-            assert e.value.args[0] == 2
-            assert e.value.args[1] == (
-                "The system cannot find the file specified")
-            if len(e.value.args) > 2:
-                assert e.value.args[2] == "\\foo\\bar\\baz"
-
 
 class AppTestEnvironment(object):
     def setup_class(cls):
@@ -1175,8 +1058,8 @@ class AppTestEnvironment(object):
             res = os.system(cmd)
             assert res == 0
 
-
 class AppTestPosixUnicode:
+
     def setup_class(cls):
         cls.space = space
         cls.w_posix = space.appexec([], GET_POSIX)
@@ -1216,7 +1099,6 @@ class AppTestPosixUnicode:
             self.posix.remove(u"ą")
         except OSError:
             pass
-
 
 class AppTestUnicodeFilename:
     def setup_class(cls):

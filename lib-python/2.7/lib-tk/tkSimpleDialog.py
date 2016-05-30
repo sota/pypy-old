@@ -200,7 +200,7 @@ class _QueryDialog(Dialog):
         self.entry = Entry(master, name="entry")
         self.entry.grid(row=1, padx=5, sticky=W+E)
 
-        if self.initialvalue is not None:
+        if self.initialvalue:
             self.entry.insert(0, self.initialvalue)
             self.entry.select_range(0, END)
 

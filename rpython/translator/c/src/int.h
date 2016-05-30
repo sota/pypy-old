@@ -48,8 +48,6 @@
 #define OP_INT_BETWEEN(a,b,c,r)   r = (((Unsigned)b - (Unsigned)a) \
                                      < ((Unsigned)c - (Unsigned)a))
 
-#define OP_INT_FORCE_GE_ZERO(a,r)   r = (0 > a) ? 0 : (a)
-
 /* addition, subtraction */
 
 #define OP_INT_ADD(x,y,r)     r = (x) + (y)
@@ -231,26 +229,14 @@
 #define OP_TRUNCATE_LONGLONG_TO_INT(x,r) r = (Signed)(x)
 #define OP_TRUNCATE_LONGLONGLONG_TO_INT(x,r) r = (Signed)(x)
 
-/* Casting from UniChar to int goes first via "unsigned int".
-   On 64-bit platforms, this forces a signed 32-bit wchar_t
-   to an unsigned integer, which is also what CPython's ord()
-   does. */
-#define OP_CAST_UNICHAR_TO_INT(x,r)    r = ((unsigned int)(x))
-#define OP_CAST_INT_TO_UNICHAR(x,r)    r = (x)
+#define OP_CAST_UNICHAR_TO_INT(x,r)    r = (Signed)((Unsigned)(x)) /*?*/
+#define OP_CAST_INT_TO_UNICHAR(x,r)    r = (unsigned int)(x)
 
 /* bool operations */
 
 #define OP_BOOL_NOT(x, r) r = !(x)
 
-#ifdef __GNUC__
-#  define OP_LIKELY(x, r)    r = __builtin_expect((x), 1)
-#  define OP_UNLIKELY(x, r)  r = __builtin_expect((x), 0)
-#else
-#  define OP_LIKELY(x, r)    r = (x)
-#  define OP_UNLIKELY(x, r)  r = (x)
-#endif
-
-RPY_EXTERN long long op_llong_mul_ovf(long long a, long long b);
+long long op_llong_mul_ovf(long long a, long long b);
 
 /* The definitions above can be used with various types */ 
 

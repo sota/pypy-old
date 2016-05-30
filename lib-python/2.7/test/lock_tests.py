@@ -39,12 +39,8 @@ class Bunch(object):
                 self.finished.append(tid)
                 while not self._can_exit:
                     _wait()
-        try:
-            for i in range(n):
-                start_new_thread(task, ())
-        except:
-            self._can_exit = True
-            raise
+        for i in range(n):
+            start_new_thread(task, ())
 
     def wait_for_started(self):
         while len(self.started) < self.n:

@@ -1,8 +1,8 @@
 """
 Type inference for user-defined classes.
 """
-from rpython.annotator.model import (
-    SomePBC, s_ImpossibleValue, unionof, s_None, AnnotatorError)
+from rpython.annotator.model import SomePBC, s_ImpossibleValue, unionof
+from rpython.annotator.model import SomeInteger, SomeTuple, SomeString
 from rpython.annotator import description
 
 
@@ -105,17 +105,22 @@ class Attribute(object):
         # check for method demotion and after-the-fact method additions
         if isinstance(s_newvalue, SomePBC):
             attr = self.name
-            if s_newvalue.getKind() == description.MethodDesc:
+            if (not s_newvalue.isNone() and
+                s_newvalue.getKind() == description.MethodDesc):
                 # is method
                 if homedef.classdesc.read_attribute(attr, None) is None:
                     if not homedef.check_missing_attribute_update(attr):
                         for desc in s_newvalue.descriptions:
                             if desc.selfclassdef is None:
                                 if homedef.classdesc.settled:
-                                    raise AnnotatorError(
-                                        "demoting method %s to settled class "
-                                        "%s not allowed" % (self.name, homedef)
-                                    )
+                                    raise Exception("demoting method %s "
+                                                    "to settled class %s not "
+                                                    "allowed" %
+                                                    (self.name, homedef)
+                                                    )
+                                #self.bookkeeper.warning("demoting method %s "
+                                #                        "to base class %s" %
+                                #                        (self.name, homedef))
                                 break
 
         # check for attributes forbidden by slots or _attrs_
@@ -124,8 +129,7 @@ class Attribute(object):
                 self.attr_allowed = False
                 if not self.readonly:
                     raise NoSuchAttrError(
-                        "the attribute %r goes here to %r, "
-                        "but it is forbidden here" % (
+                        "setting forbidden attribute %r on %r" % (
                         self.name, homedef))
 
     def modified(self, classdef='?'):
@@ -150,8 +154,6 @@ class ClassDef(object):
         self.subdefs = []
         self.attr_sources = {}   # {name: list-of-sources}
         self.read_locations_of__class__ = {}
-        self.repr = None
-        self.extra_access_sets = {}
 
         if classdesc.basedesc:
             self.basedef = classdesc.basedesc.getuniqueclassdef()
@@ -349,10 +351,8 @@ class ClassDef(object):
         if uplookup is not None:
             d.append(updesc.bind_self(self, flags))
 
-        if d:
+        if d or pbc.can_be_None:
             return SomePBC(d, can_be_None=pbc.can_be_None)
-        elif pbc.can_be_None:
-            return s_None
         else:
             return s_ImpossibleValue
 
@@ -394,7 +394,7 @@ class ClassDef(object):
         return SomePBC([subdef.classdesc for subdef in self.getallsubdefs()])
 
     def _freeze_(self):
-        raise Exception("ClassDefs are used as knowntype for instances but cannot be used as immutablevalue arguments directly")
+        raise Exception, "ClassDefs are used as knowntype for instances but cannot be used as immutablevalue arguments directly"
 
 # ____________________________________________________________
 
@@ -429,6 +429,28 @@ class InstanceSource(object):
                         result.extend(slots)
         return result
 
-class NoSuchAttrError(AnnotatorError):
+class NoSuchAttrError(Exception):
     """Raised when an attribute is found on a class where __slots__
      or _attrs_ forbits it."""
+
+# ____________________________________________________________
+
+FORCE_ATTRIBUTES_INTO_CLASSES = {
+    OSError: {'errno': SomeInteger()},
+    }
+
+try:
+    WindowsError
+except NameError:
+    pass
+else:
+    FORCE_ATTRIBUTES_INTO_CLASSES[WindowsError] = {'winerror': SomeInteger()}
+
+try:
+    import termios
+except ImportError:
+    pass
+else:
+    FORCE_ATTRIBUTES_INTO_CLASSES[termios.error] = \
+        {'args': SomeTuple([SomeInteger(), SomeString()])}
+

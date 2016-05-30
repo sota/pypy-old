@@ -20,8 +20,8 @@ class TestLocale(object):
 
     def test_setlocale_worked(self):
         assert u"Ą".isupper()
-        py.test.raises(LocaleError, setlocale, LC_ALL, "bla bla bla")
-        py.test.raises(LocaleError, setlocale, 1234455, None)
+        raises(LocaleError, setlocale, LC_ALL, "bla bla bla")
+        raises(LocaleError, setlocale, 1234455, None)
 
     def test_lower_upper(self):
         assert isupper(ord("A"))
@@ -37,11 +37,8 @@ def test_numeric_formatting():
     assert isinstance(grouping, str)
 
 def test_libintl():
-    if sys.platform != "darwin" and not sys.platform.startswith("linux"):
+    if sys.platform != "darwin" or not sys.platform.startswith("linux"):
         py.test.skip("there is (maybe) no libintl here")
     _gettext = external('gettext', [rffi.CCHARP], rffi.CCHARP)
-    p = rffi.str2charp("1234")
-    res = _gettext(p)
-    assert res == p
+    res = _gettext("1234")
     assert rffi.charp2str(res) == "1234"
-    rffi.free_charp(p)

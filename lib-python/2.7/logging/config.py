@@ -1,4 +1,4 @@
-# Copyright 2001-2014 by Vinay Sajip. All Rights Reserved.
+# Copyright 2001-2010 by Vinay Sajip. All Rights Reserved.
 #
 # Permission to use, copy, modify, and distribute this software and its
 # documentation for any purpose and without fee is hereby granted,
@@ -19,23 +19,13 @@ Configuration functions for the logging package for Python. The core package
 is based on PEP 282 and comments thereto in comp.lang.python, and influenced
 by Apache's log4j system.
 
-Copyright (C) 2001-2014 Vinay Sajip. All Rights Reserved.
+Copyright (C) 2001-2010 Vinay Sajip. All Rights Reserved.
 
 To use, simply 'import logging' and log away!
 """
 
-import cStringIO
-import errno
-import io
-import logging
-import logging.handlers
-import os
-import re
-import socket
-import struct
-import sys
-import traceback
-import types
+import sys, logging, logging.handlers, socket, struct, os, traceback, re
+import types, cStringIO
 
 try:
     import thread
@@ -48,7 +38,10 @@ from SocketServer import ThreadingTCPServer, StreamRequestHandler
 
 DEFAULT_LOGGING_CONFIG_PORT = 9030
 
-RESET_ERROR = errno.ECONNRESET
+if sys.platform == "win32":
+    RESET_ERROR = 10054   #WSAECONNRESET
+else:
+    RESET_ERROR = 104     #ECONNRESET
 
 #
 #   The following code implements a socket listener for on-the-fly
@@ -163,7 +156,7 @@ def _install_handlers(cp, formatters):
         h = klass(*args)
         if "level" in opts:
             level = cp.get(sectname, "level")
-            h.setLevel(level)
+            h.setLevel(logging._levelNames[level])
         if len(fmt):
             h.setFormatter(formatters[fmt])
         if issubclass(klass, logging.handlers.MemoryHandler):
@@ -194,7 +187,7 @@ def _install_loggers(cp, handlers, disable_existing_loggers):
     opts = cp.options(sectname)
     if "level" in opts:
         level = cp.get(sectname, "level")
-        log.setLevel(level)
+        log.setLevel(logging._levelNames[level])
     for h in root.handlers[:]:
         root.removeHandler(h)
     hlist = cp.get(sectname, "handlers")
@@ -244,7 +237,7 @@ def _install_loggers(cp, handlers, disable_existing_loggers):
             existing.remove(qn)
         if "level" in opts:
             level = cp.get(sectname, "level")
-            logger.setLevel(level)
+            logger.setLevel(logging._levelNames[level])
         for h in logger.handlers[:]:
             logger.removeHandler(h)
         logger.propagate = propagate
@@ -267,8 +260,8 @@ def _install_loggers(cp, handlers, disable_existing_loggers):
             logger.level = logging.NOTSET
             logger.handlers = []
             logger.propagate = 1
-        else:
-            logger.disabled = disable_existing_loggers
+        elif disable_existing_loggers:
+            logger.disabled = 1
 
 
 
@@ -282,30 +275,6 @@ def valid_ident(s):
     return True
 
 
-class ConvertingMixin(object):
-    """For ConvertingXXX's, this mixin class provides common functions"""
-
-    def convert_with_key(self, key, value, replace=True):
-        result = self.configurator.convert(value)
-        #If the converted value is different, save for next time
-        if value is not result:
-            if replace:
-                self[key] = result
-            if type(result) in (ConvertingDict, ConvertingList,
-                               ConvertingTuple):
-                result.parent = self
-                result.key = key
-        return result
-
-    def convert(self, value):
-        result = self.configurator.convert(value)
-        if value is not result:
-            if type(result) in (ConvertingDict, ConvertingList,
-                               ConvertingTuple):
-                result.parent = self
-        return result
-
-
 # The ConvertingXXX classes are wrappers around standard Python containers,
 # and they serve to convert any suitable values in the container. The
 # conversion converts base dicts, lists and tuples to their wrapped
@@ -315,37 +284,77 @@ class ConvertingMixin(object):
 # Each wrapper should have a configurator attribute holding the actual
 # configurator to use for conversion.
 
-class ConvertingDict(dict, ConvertingMixin):
+class ConvertingDict(dict):
     """A converting dictionary wrapper."""
 
     def __getitem__(self, key):
         value = dict.__getitem__(self, key)
-        return self.convert_with_key(key, value)
+        result = self.configurator.convert(value)
+        #If the converted value is different, save for next time
+        if value is not result:
+            self[key] = result
+            if type(result) in (ConvertingDict, ConvertingList,
+                                ConvertingTuple):
+                result.parent = self
+                result.key = key
+        return result
 
     def get(self, key, default=None):
         value = dict.get(self, key, default)
-        return self.convert_with_key(key, value)
+        result = self.configurator.convert(value)
+        #If the converted value is different, save for next time
+        if value is not result:
+            self[key] = result
+            if type(result) in (ConvertingDict, ConvertingList,
+                                ConvertingTuple):
+                result.parent = self
+                result.key = key
+        return result
 
     def pop(self, key, default=None):
         value = dict.pop(self, key, default)
-        return self.convert_with_key(key, value, replace=False)
+        result = self.configurator.convert(value)
+        if value is not result:
+            if type(result) in (ConvertingDict, ConvertingList,
+                                ConvertingTuple):
+                result.parent = self
+                result.key = key
+        return result
 
-class ConvertingList(list, ConvertingMixin):
+class ConvertingList(list):
     """A converting list wrapper."""
     def __getitem__(self, key):
         value = list.__getitem__(self, key)
-        return self.convert_with_key(key, value)
+        result = self.configurator.convert(value)
+        #If the converted value is different, save for next time
+        if value is not result:
+            self[key] = result
+            if type(result) in (ConvertingDict, ConvertingList,
+                                ConvertingTuple):
+                result.parent = self
+                result.key = key
+        return result
 
     def pop(self, idx=-1):
         value = list.pop(self, idx)
-        return self.convert(value)
+        result = self.configurator.convert(value)
+        if value is not result:
+            if type(result) in (ConvertingDict, ConvertingList,
+                                ConvertingTuple):
+                result.parent = self
+        return result
 
-class ConvertingTuple(tuple, ConvertingMixin):
+class ConvertingTuple(tuple):
     """A converting tuple wrapper."""
     def __getitem__(self, key):
         value = tuple.__getitem__(self, key)
-        # Can't replace a tuple entry.
-        return self.convert_with_key(key, value, replace=False)
+        result = self.configurator.convert(value)
+        if value is not result:
+            if type(result) in (ConvertingDict, ConvertingList,
+                                ConvertingTuple):
+                result.parent = self
+                result.key = key
+        return result
 
 class BaseConfigurator(object):
     """
@@ -370,12 +379,6 @@ class BaseConfigurator(object):
     def __init__(self, config):
         self.config = ConvertingDict(config)
         self.config.configurator = self
-        # Issue 12718: winpdb replaces __import__ with a Python function, which
-        # ends up being treated as a bound method. To avoid problems, we
-        # set the importer on the instance, but leave it defined in the class
-        # so existing code doesn't break
-        if type(__import__) == types.FunctionType:
-            self.importer = __import__
 
     def resolve(self, s):
         """
@@ -517,21 +520,21 @@ class DictConfigurator(BaseConfigurator):
                             level = handler_config.get('level', None)
                             if level:
                                 handler.setLevel(logging._checkLevel(level))
-                        except StandardError as e:
+                        except StandardError, e:
                             raise ValueError('Unable to configure handler '
                                              '%r: %s' % (name, e))
                 loggers = config.get('loggers', EMPTY_DICT)
                 for name in loggers:
                     try:
                         self.configure_logger(name, loggers[name], True)
-                    except StandardError as e:
+                    except StandardError, e:
                         raise ValueError('Unable to configure logger '
                                          '%r: %s' % (name, e))
                 root = config.get('root', None)
                 if root:
                     try:
                         self.configure_root(root, True)
-                    except StandardError as e:
+                    except StandardError, e:
                         raise ValueError('Unable to configure root '
                                          'logger: %s' % e)
             else:
@@ -546,7 +549,7 @@ class DictConfigurator(BaseConfigurator):
                     try:
                         formatters[name] = self.configure_formatter(
                                                             formatters[name])
-                    except StandardError as e:
+                    except StandardError, e:
                         raise ValueError('Unable to configure '
                                          'formatter %r: %s' % (name, e))
                 # Next, do filters - they don't refer to anything else, either
@@ -554,7 +557,7 @@ class DictConfigurator(BaseConfigurator):
                 for name in filters:
                     try:
                         filters[name] = self.configure_filter(filters[name])
-                    except StandardError as e:
+                    except StandardError, e:
                         raise ValueError('Unable to configure '
                                          'filter %r: %s' % (name, e))
 
@@ -562,29 +565,14 @@ class DictConfigurator(BaseConfigurator):
                 # As handlers can refer to other handlers, sort the keys
                 # to allow a deterministic order of configuration
                 handlers = config.get('handlers', EMPTY_DICT)
-                deferred = []
                 for name in sorted(handlers):
                     try:
                         handler = self.configure_handler(handlers[name])
                         handler.name = name
                         handlers[name] = handler
-                    except StandardError as e:
-                        if 'target not configured yet' in str(e):
-                            deferred.append(name)
-                        else:
-                            raise ValueError('Unable to configure handler '
-                                             '%r: %s' % (name, e))
-
-                # Now do any that were deferred
-                for name in deferred:
-                    try:
-                        handler = self.configure_handler(handlers[name])
-                        handler.name = name
-                        handlers[name] = handler
-                    except StandardError as e:
+                    except StandardError, e:
                         raise ValueError('Unable to configure handler '
                                          '%r: %s' % (name, e))
-
                 # Next, do loggers - they refer to handlers and filters
 
                 #we don't want to lose the existing loggers,
@@ -622,7 +610,7 @@ class DictConfigurator(BaseConfigurator):
                         existing.remove(name)
                     try:
                         self.configure_logger(name, loggers[name])
-                    except StandardError as e:
+                    except StandardError, e:
                         raise ValueError('Unable to configure logger '
                                          '%r: %s' % (name, e))
 
@@ -645,7 +633,7 @@ class DictConfigurator(BaseConfigurator):
                 if root:
                     try:
                         self.configure_root(root)
-                    except StandardError as e:
+                    except StandardError, e:
                         raise ValueError('Unable to configure root '
                                          'logger: %s' % e)
         finally:
@@ -657,7 +645,7 @@ class DictConfigurator(BaseConfigurator):
             factory = config['()'] # for use in exception handler
             try:
                 result = self.configure_custom(config)
-            except TypeError as te:
+            except TypeError, te:
                 if "'format'" not in str(te):
                     raise
                 #Name of parameter changed from fmt to format.
@@ -687,7 +675,7 @@ class DictConfigurator(BaseConfigurator):
         for f in filters:
             try:
                 filterer.addFilter(self.config['filters'][f])
-            except StandardError as e:
+            except StandardError, e:
                 raise ValueError('Unable to add filter %r: %s' % (f, e))
 
     def configure_handler(self, config):
@@ -696,7 +684,7 @@ class DictConfigurator(BaseConfigurator):
         if formatter:
             try:
                 formatter = self.config['formatters'][formatter]
-            except StandardError as e:
+            except StandardError, e:
                 raise ValueError('Unable to set formatter '
                                  '%r: %s' % (formatter, e))
         level = config.pop('level', None)
@@ -707,18 +695,13 @@ class DictConfigurator(BaseConfigurator):
                 c = self.resolve(c)
             factory = c
         else:
-            cname = config.pop('class')
-            klass = self.resolve(cname)
+            klass = self.resolve(config.pop('class'))
             #Special case for handler which refers to another handler
             if issubclass(klass, logging.handlers.MemoryHandler) and\
                 'target' in config:
                 try:
-                    th = self.config['handlers'][config['target']]
-                    if not isinstance(th, logging.Handler):
-                        config['class'] = cname # restore for deferred configuration
-                        raise StandardError('target not configured yet')
-                    config['target'] = th
-                except StandardError as e:
+                    config['target'] = self.config['handlers'][config['target']]
+                except StandardError, e:
                     raise ValueError('Unable to set target handler '
                                      '%r: %s' % (config['target'], e))
             elif issubclass(klass, logging.handlers.SMTPHandler) and\
@@ -731,7 +714,7 @@ class DictConfigurator(BaseConfigurator):
         kwargs = dict([(k, config[k]) for k in config if valid_ident(k)])
         try:
             result = factory(**kwargs)
-        except TypeError as te:
+        except TypeError, te:
             if "'stream'" not in str(te):
                 raise
             #The argument name changed from strm to stream
@@ -753,7 +736,7 @@ class DictConfigurator(BaseConfigurator):
         for h in handlers:
             try:
                 logger.addHandler(self.config['handlers'][h])
-            except StandardError as e:
+            except StandardError, e:
                 raise ValueError('Unable to add handler %r: %s' % (h, e))
 
     def common_logger_config(self, logger, config, incremental=False):
@@ -848,9 +831,13 @@ def listen(port=DEFAULT_LOGGING_CONFIG_PORT):
                             traceback.print_exc()
                     if self.server.ready:
                         self.server.ready.set()
-            except socket.error as e:
-                if e.errno != RESET_ERROR:
+            except socket.error, e:
+                if not isinstance(e.args, tuple):
                     raise
+                else:
+                    errcode = e.args[0]
+                    if errcode != RESET_ERROR:
+                        raise
 
     class ConfigSocketReceiver(ThreadingTCPServer):
         """

@@ -1,5 +1,5 @@
 import py
-from rpython.jit.metainterp.test.support import LLJitMixin
+from rpython.jit.metainterp.test.support import LLJitMixin, OOJitMixin
 from rpython.rlib.jit import JitDriver
 
 class ListTests(object):
@@ -33,7 +33,7 @@ class ListTests(object):
             return m
         res = self.interp_operations(f, [11], listops=True)
         assert res == 49
-        self.check_operations_history(call_i=1, call_n=2)
+        self.check_operations_history(call=3)
 
     def test_list_of_voids(self):
         myjitdriver = JitDriver(greens = [], reds = ['n', 'lst'])
@@ -94,6 +94,9 @@ class ListTests(object):
         assert res == 41
         self.check_resops(call=0, guard_value=0)
 
+# we don't support resizable lists on ootype
+#class TestOOtype(ListTests, OOJitMixin):
+#    pass
 
 class TestLLtype(ListTests, LLJitMixin):
     pass

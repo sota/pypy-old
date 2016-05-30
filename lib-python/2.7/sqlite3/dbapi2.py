@@ -1,4 +1,4 @@
-# -*- coding: iso-8859-1 -*-
+#-*- coding: ISO-8859-1 -*-
 # pysqlite2/dbapi2.py: the DB-API 2.0 interface
 #
 # Copyright (C) 2004-2005 Gerhard Häring <gh@ghaering.de>
@@ -21,7 +21,6 @@
 #    misrepresented as being the original software.
 # 3. This notice may not be removed or altered from any source distribution.
 
-import collections
 import datetime
 import time
 
@@ -52,7 +51,6 @@ version_info = tuple([int(x) for x in version.split(".")])
 sqlite_version_info = tuple([int(x) for x in sqlite_version.split(".")])
 
 Binary = buffer
-collections.Sequence.register(Row)
 
 def register_adapters_and_converters():
     def adapt_date(val):
@@ -70,7 +68,7 @@ def register_adapters_and_converters():
         timepart_full = timepart.split(".")
         hours, minutes, seconds = map(int, timepart_full[0].split(":"))
         if len(timepart_full) == 2:
-            microseconds = int('{:0<6.6}'.format(timepart_full[1].decode()))
+            microseconds = int(timepart_full[1])
         else:
             microseconds = 0
 

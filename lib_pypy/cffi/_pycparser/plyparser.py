@@ -4,7 +4,7 @@
 # PLYParser class and other utilites for simplifying programming
 # parsers with PLY
 #
-# Copyright (C) 2008-2015, Eli Bendersky
+# Copyright (C) 2008-2012, Eli Bendersky
 # License: BSD
 #-----------------------------------------------------------------
 
@@ -15,7 +15,6 @@ class Coord(object):
             - Line number
             - (optional) column number, for the Lexer
     """
-    __slots__ = ('file', 'line', 'column', '__weakref__')
     def __init__(self, file, line, column=None):
         self.file = file
         self.line = line
@@ -53,3 +52,4 @@ class PLYParser(object):
 
     def _parse_error(self, msg, coord):
         raise ParseError("%s: %s" % (coord, msg))
+

@@ -7,7 +7,6 @@ extern "C" {
 typedef struct {
     PyObject_HEAD
     PyObject *co_name;
-    PyObject *co_filename;
     int co_argcount;
     int co_flags;
 } PyCodeObject;

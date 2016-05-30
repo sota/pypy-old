@@ -1,5 +1,4 @@
 import py, sys
-from rpython.rtyper.lltypesystem import lltype
 from rpython.rlib.rarithmetic import r_longlong, r_ulonglong, r_uint, intmask
 from rpython.jit.metainterp.test.support import LLJitMixin
 
@@ -139,15 +138,6 @@ class LongLongTests:
         res = self.interp_operations(f, [1000000000])
         assert res == 12350000000000000000.0
 
-    def test_float_to_longlong(self):
-        from rpython.rtyper.lltypesystem import lltype, rffi
-        def f(x):
-            compare(r_longlong(x), 0x12, 0x34567800)
-            compare(rffi.cast(lltype.SignedLongLong, x), 0x12, 0x34567800)
-            return 1
-        res = self.interp_operations(f, [0x12345678 * 256.0])
-        assert res == 1
-
     def test_unsigned_compare_ops(self):
         def f(n1, n2):
             # n == 30002000000000
@@ -228,20 +218,6 @@ class LongLongTests:
         assert res == 0x56700000
         res = self.interp_operations(f, [0x56789ABC])
         assert intmask(res) == intmask(0xABC00000)
-
-    def test_cast_longlong_to_bool(self):
-        def f(n):
-            m = r_longlong(n) << 20
-            return lltype.cast_primitive(lltype.Bool, m)
-        res = self.interp_operations(f, [2**12])
-        assert res == 1
-
-    def test_cast_ulonglong_to_bool(self):
-        def f(n):
-            m = r_ulonglong(n) << 20
-            return lltype.cast_primitive(lltype.Bool, m)
-        res = self.interp_operations(f, [2**12])
-        assert res == 1
 
 
 class TestLLtype(LongLongTests, LLJitMixin):

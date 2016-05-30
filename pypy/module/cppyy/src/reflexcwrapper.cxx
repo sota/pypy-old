@@ -163,7 +163,7 @@ float cppyy_call_f(cppyy_method_t method, cppyy_object_t self, int nargs, void* 
 
 double cppyy_call_d(cppyy_method_t method, cppyy_object_t self, int nargs, void* args) {
     return cppyy_call_T<double>(method, self, nargs, args);
-}
+}   
 
 void* cppyy_call_r(cppyy_method_t method, cppyy_object_t self, int nargs, void* args) {
     return (void*)cppyy_call_T<long>(method, self, nargs, args);
@@ -175,8 +175,7 @@ char* cppyy_call_s(cppyy_method_t method, cppyy_object_t self, int nargs, void* 
     Reflex::StubFunction stub = (Reflex::StubFunction)method;
     stub(cppresult, (void*)self, arguments, NULL /* stub context */);
     char* cstr = cppstring_to_cstring(*cppresult);
-    cppresult->std::string::~string();
-    free((void*)cppresult);        // the stub will have performed a placement-new
+    delete cppresult;         // the stub will have performed a placement-new
     return cstr;
 }
 
@@ -212,9 +211,9 @@ cppyy_methptrgetter_t cppyy_get_methptr_getter(cppyy_type_t handle, cppyy_index_
 
 
 /* handling of function argument buffer ----------------------------------- */
-void* cppyy_allocate_function_args(int nargs) {
+void* cppyy_allocate_function_args(size_t nargs) {
     CPPYY_G__value* args = (CPPYY_G__value*)malloc(nargs*sizeof(CPPYY_G__value));
-    for (int i = 0; i < nargs; ++i)
+    for (size_t i = 0; i < nargs; ++i)
         args[i].type = 'l';
     return (void*)args;
 }
@@ -310,7 +309,7 @@ int cppyy_is_subtype(cppyy_type_t derived_handle, cppyy_type_t base_handle) {
     return (int)derived_type.HasBase(base_type);
 }
 
-ptrdiff_t cppyy_base_offset(cppyy_type_t derived_handle, cppyy_type_t base_handle,
+size_t cppyy_base_offset(cppyy_type_t derived_handle, cppyy_type_t base_handle,
                        cppyy_object_t address, int direction) {
     Reflex::Type derived_type = type_from_handle(derived_handle);
     Reflex::Type base_type = type_from_handle(base_handle);
@@ -336,8 +335,8 @@ ptrdiff_t cppyy_base_offset(cppyy_type_t derived_handle, cppyy_type_t base_handl
             if (ibase->first.ToType() == base_type) {
                 long offset = (long)ibase->first.Offset((void*)address);
                 if (direction < 0)
-                    return (ptrdiff_t) -offset;  // note negative; rolls over
-                return (ptrdiff_t)offset;
+                   return (size_t) -offset;  // note negative; rolls over
+                return (size_t)offset;
             }
         }
 
@@ -375,7 +374,7 @@ cppyy_index_t* cppyy_method_indices_from_name(cppyy_scope_t handle, const char* 
     }
     if (result.empty())
         return (cppyy_index_t*)0;
-    cppyy_index_t* llresult = (cppyy_index_t*)malloc(sizeof(cppyy_index_t)*(result.size()+1));
+    cppyy_index_t* llresult = (cppyy_index_t*)malloc(sizeof(cppyy_index_t)*result.size()+1);
     for (int i = 0; i < (int)result.size(); ++i) llresult[i] = result[i];
     llresult[result.size()] = -1;
     return llresult;
@@ -481,7 +480,7 @@ cppyy_method_t cppyy_get_method(cppyy_scope_t handle, cppyy_index_t method_index
     return (cppyy_method_t)m.Stubfunction();
 }
 
-cppyy_index_t cppyy_get_global_operator(cppyy_scope_t scope, cppyy_scope_t lc, cppyy_scope_t rc, const char* op) {
+cppyy_method_t cppyy_get_global_operator(cppyy_scope_t scope, cppyy_scope_t lc, cppyy_scope_t rc, const char* op) {
     Reflex::Type lct = type_from_handle(lc);
     Reflex::Type rct = type_from_handle(rc);
     Reflex::Scope nss = scope_from_handle(scope);
@@ -561,12 +560,12 @@ char* cppyy_datamember_type(cppyy_scope_t handle, int datamember_index) {
     return cppstring_to_cstring(name);
 }
 
-ptrdiff_t cppyy_datamember_offset(cppyy_scope_t handle, int datamember_index) {
+size_t cppyy_datamember_offset(cppyy_scope_t handle, int datamember_index) {
     Reflex::Scope s = scope_from_handle(handle);
     Reflex::Member m = s.DataMemberAt(datamember_index);
     if (m.IsArtificial() && m.TypeOf().IsEnum())
-        return (ptrdiff_t)&m.InterpreterOffset();
-    return (ptrdiff_t)m.Offset();
+        return (size_t)&m.InterpreterOffset();
+    return m.Offset();
 }
 
 int cppyy_datamember_index(cppyy_scope_t handle, const char* name) {
@@ -615,13 +614,17 @@ void cppyy_free(void* ptr) {
 }
 
 cppyy_object_t cppyy_charp2stdstring(const char* str) {
-    void* arena = new char[sizeof(std::string)];
-    new (arena) std::string(str);
-    return (cppyy_object_t)arena;
+    return (cppyy_object_t)new std::string(str);
 }
 
 cppyy_object_t cppyy_stdstring2stdstring(cppyy_object_t ptr) {
-    void* arena = new char[sizeof(std::string)];
-    new (arena) std::string(*(std::string*)ptr);
-    return (cppyy_object_t)arena;
+    return (cppyy_object_t)new std::string(*(std::string*)ptr);
+}
+
+void cppyy_assign2stdstring(cppyy_object_t ptr, const char* str) {
+    *((std::string*)ptr) = str;
+}
+
+void cppyy_free_stdstring(cppyy_object_t ptr) {
+    delete (std::string*)ptr;
 }

@@ -3,11 +3,12 @@ Arrays.
 """
 
 from pypy.interpreter.baseobjspace import W_Root
-from pypy.interpreter.error import OperationError, oefmt
+from pypy.interpreter.error import OperationError, operationerrfmt
 from pypy.interpreter.gateway import interp2app
 from pypy.interpreter.typedef import TypeDef
 
 from rpython.rtyper.lltypesystem import rffi
+from rpython.rlib.objectmodel import keepalive_until_here
 from rpython.rlib.rarithmetic import ovfcheck
 
 from pypy.module._cffi_backend import cdataobj
@@ -18,7 +19,6 @@ class W_CTypeArray(W_CTypePtrOrArray):
     _attrs_            = ['ctptr']
     _immutable_fields_ = ['ctptr']
     kind = "array"
-    is_nonfunc_pointer_or_array = True
 
     def __init__(self, space, ctptr, length, arraysize, extra):
         W_CTypePtrOrArray.__init__(self, space, arraysize, extra, 0,
@@ -29,26 +29,39 @@ class W_CTypeArray(W_CTypePtrOrArray):
     def _alignof(self):
         return self.ctitem.alignof()
 
-    def newp(self, w_init, allocator):
+    def newp(self, w_init):
         space = self.space
         datasize = self.size
         #
         if datasize < 0:
-            from pypy.module._cffi_backend import misc
-            w_init, length = misc.get_new_array_length(space, w_init)
+            if (space.isinstance_w(w_init, space.w_list) or
+                space.isinstance_w(w_init, space.w_tuple)):
+                length = space.int_w(space.len(w_init))
+            elif space.isinstance_w(w_init, space.w_basestring):
+                # from a string, we add the null terminator
+                length = space.int_w(space.len(w_init)) + 1
+            else:
+                length = space.getindex_w(w_init, space.w_OverflowError)
+                if length < 0:
+                    raise OperationError(space.w_ValueError,
+                                         space.wrap("negative array length"))
+                w_init = space.w_None
+            #
             try:
                 datasize = ovfcheck(length * self.ctitem.size)
             except OverflowError:
                 raise OperationError(space.w_OverflowError,
                     space.wrap("array size would overflow a ssize_t"))
-        else:
-            length = self.length
+            #
+            cdata = cdataobj.W_CDataNewOwningLength(space, datasize,
+                                                    self, length)
         #
-        cdata = allocator.allocate(space, datasize, self, length)
+        else:
+            cdata = cdataobj.W_CDataNewOwning(space, datasize, self)
         #
         if not space.is_w(w_init, space.w_None):
-            with cdata as ptr:
-                self.convert_from_object(ptr, w_init)
+            self.convert_from_object(cdata._cdata, w_init)
+            keepalive_until_here(cdata)
         return cdata
 
     def _check_subscript_index(self, w_cdata, i):
@@ -57,9 +70,9 @@ class W_CTypeArray(W_CTypePtrOrArray):
             raise OperationError(space.w_IndexError,
                                  space.wrap("negative index not supported"))
         if i >= w_cdata.get_array_length():
-            raise oefmt(space.w_IndexError,
-                        "index too large for cdata '%s' (expected %d < %d)",
-                        self.name, i, w_cdata.get_array_length())
+            raise operationerrfmt(space.w_IndexError,
+                "index too large for cdata '%s' (expected %d < %d)",
+                self.name, i, w_cdata.get_array_length())
         return self
 
     def _check_slice_index(self, w_cdata, start, stop):
@@ -68,9 +81,9 @@ class W_CTypeArray(W_CTypePtrOrArray):
             raise OperationError(space.w_IndexError,
                                  space.wrap("negative index not supported"))
         if stop > w_cdata.get_array_length():
-            raise oefmt(space.w_IndexError,
-                        "index too large (expected %d <= %d)",
-                        stop, w_cdata.get_array_length())
+            raise operationerrfmt(space.w_IndexError,
+                "index too large (expected %d <= %d)",
+                stop, w_cdata.get_array_length())
         return self.ctptr
 
     def convert_from_object(self, cdata, w_ob):
@@ -105,9 +118,6 @@ class W_CTypeArray(W_CTypePtrOrArray):
                 return self.space.w_None
         return W_CTypePtrOrArray._fget(self, attrchar)
 
-    def typeoffsetof_index(self, index):
-        return self.ctptr.typeoffsetof_index(index)
-
 
 class W_CDataIter(W_Root):
     _immutable_fields_ = ['ctitem', 'cdata', '_stop']    # but not '_next'
@@ -117,8 +127,8 @@ class W_CDataIter(W_Root):
         self.ctitem = ctitem
         self.cdata = cdata
         length = cdata.get_array_length()
-        self._next = cdata.unsafe_escaping_ptr()
-        self._stop = rffi.ptradd(self._next, length * ctitem.size)
+        self._next = cdata._cdata
+        self._stop = rffi.ptradd(cdata._cdata, length * ctitem.size)
 
     def iter_w(self):
         return self.space.wrap(self)
@@ -131,7 +141,8 @@ class W_CDataIter(W_Root):
         return self.ctitem.convert_to_object(result)
 
 W_CDataIter.typedef = TypeDef(
-    '_cffi_backend.CDataIter',
+    'CDataIter',
+    __module__ = '_cffi_backend',
     __iter__ = interp2app(W_CDataIter.iter_w),
     next = interp2app(W_CDataIter.next_w),
     )

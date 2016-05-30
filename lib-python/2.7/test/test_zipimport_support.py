@@ -29,8 +29,7 @@ verbose = test.test_support.verbose
 #  test_cmd_line_script (covers the zipimport support in runpy)
 
 # Retrieve some helpers from other test cases
-from test import (test_doctest, sample_doctest, sample_doctest_no_doctests,
-                  sample_doctest_no_docstrings)
+from test import test_doctest, sample_doctest
 from test.test_importhooks import ImportHooksBaseTestCase
 
 
@@ -100,26 +99,16 @@ class ZipSupportTests(ImportHooksBaseTestCase):
                                     "test_zipped_doctest")
         test_src = test_src.replace("test.sample_doctest",
                                     "sample_zipped_doctest")
-        # The sample doctest files rewritten to include in the zipped version.
-        sample_sources = {}
-        for mod in [sample_doctest, sample_doctest_no_doctests,
-                    sample_doctest_no_docstrings]:
-            src = inspect.getsource(mod)
-            src = src.replace("test.test_doctest", "test_zipped_doctest")
-            # Rewrite the module name so that, for example,
-            # "test.sample_doctest" becomes "sample_zipped_doctest".
-            mod_name = mod.__name__.split(".")[-1]
-            mod_name = mod_name.replace("sample_", "sample_zipped_")
-            sample_sources[mod_name] = src
-
+        sample_src = inspect.getsource(sample_doctest)
+        sample_src = sample_src.replace("test.test_doctest",
+                                        "test_zipped_doctest")
         with temp_dir() as d:
             script_name = make_script(d, 'test_zipped_doctest',
                                             test_src)
             zip_name, run_name = make_zip_script(d, 'test_zip',
                                                 script_name)
             z = zipfile.ZipFile(zip_name, 'a')
-            for mod_name, src in sample_sources.items():
-                z.writestr(mod_name + ".py", src)
+            z.writestr("sample_zipped_doctest.py", sample_src)
             z.close()
             if verbose:
                 zip_file = zipfile.ZipFile(zip_name, 'r')
@@ -179,10 +168,9 @@ class ZipSupportTests(ImportHooksBaseTestCase):
                 test_zipped_doctest.test_unittest_reportflags,
             ]
             # Needed for test_DocTestParser and test_debug
-            deprecations = []
-            if __debug__:
+            deprecations = [
                 # Ignore all warnings about the use of class Tester in this module.
-                deprecations.append(("class Tester is deprecated", DeprecationWarning))
+                ("class Tester is deprecated", DeprecationWarning)]
             if sys.py3kwarning:
                 deprecations += [
                     ("backquote not supported", SyntaxWarning),

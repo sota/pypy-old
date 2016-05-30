@@ -6,7 +6,6 @@ from pypy.module.cpyext import api
 from pypy.module.cpyext.test.test_cpyext import freeze_refcnts, LeakCheckingTest
 PyObject = api.PyObject
 from pypy.interpreter.error import OperationError
-from rpython.rlib import rawrefcount
 import os
 
 @api.cpython_api([PyObject], lltype.Void)
@@ -37,9 +36,6 @@ class BaseApiTest(LeakCheckingTest):
         cls.api = CAPI()
         CAPI.__dict__.update(api.INTERPLEVEL_API)
 
-        print 'DONT_FREE_ANY_MORE'
-        rawrefcount._dont_free_any_more()
-
     def raises(self, space, api, expected_exc, f, *args):
         if not callable(f):
             raise Exception("%s is not callable" % (f,))
@@ -50,7 +46,7 @@ class BaseApiTest(LeakCheckingTest):
             raise Exception("DID NOT RAISE")
         if getattr(space, 'w_' + expected_exc.__name__) is not operror.w_type:
             raise Exception("Wrong exception")
-        return state.clear_exception()
+        state.clear_exception()
 
     def setup_method(self, func):
         freeze_refcnts(self)
@@ -64,7 +60,7 @@ class BaseApiTest(LeakCheckingTest):
             raise
 
         try:
-            self.space.getexecutioncontext().cleanup_cpyext_threadstate()
+            del self.space.getexecutioncontext().cpyext_threadstate
         except AttributeError:
             pass
 
@@ -102,7 +98,7 @@ class TestConversion(BaseApiTest):
 
 
 def test_copy_header_files(tmpdir):
-    api.copy_header_files(tmpdir, True)
+    api.copy_header_files(tmpdir)
     def check(name):
         f = tmpdir.join(name)
         assert f.check(file=True)

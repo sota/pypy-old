@@ -25,6 +25,15 @@ typedef struct {
 
 static long _pypythread_stacksize = 0;
 
+/*
+ * Return the thread Id instead of an handle. The Id is said to uniquely
+   identify the thread in the system
+ */
+long RPyThreadGetIdent()
+{
+  return GetCurrentThreadId();
+}
+
 static void
 bootstrap(void *call)
 {
@@ -32,7 +41,7 @@ bootstrap(void *call)
 	/* copy callobj since other thread might free it before we're done */
 	void (*func)(void) = obj->func;
 
-	obj->id = GetCurrentThreadId();
+	obj->id = RPyThreadGetIdent();
 	ReleaseSemaphore(obj->done, 1, NULL);
 	func();
 }
@@ -93,14 +102,12 @@ long RPyThreadSetStackSize(long newsize)
 /************************************************************/
 
 
-static
 BOOL InitializeNonRecursiveMutex(PNRMUTEX mutex)
 {
     mutex->sem = CreateSemaphore(NULL, 1, 1, NULL);
     return !!mutex->sem;
 }
 
-static
 VOID DeleteNonRecursiveMutex(PNRMUTEX mutex)
 {
     /* No in-use check */
@@ -108,24 +115,11 @@ VOID DeleteNonRecursiveMutex(PNRMUTEX mutex)
     mutex->sem = NULL ; /* Just in case */
 }
 
-static
-DWORD EnterNonRecursiveMutex(PNRMUTEX mutex, RPY_TIMEOUT_T milliseconds)
+DWORD EnterNonRecursiveMutex(PNRMUTEX mutex, DWORD milliseconds)
 {
-    DWORD res;
-
-    if (milliseconds < 0)
-        return WaitForSingleObject(mutex->sem, INFINITE);
-
-    while (milliseconds >= (RPY_TIMEOUT_T)INFINITE) {
-        res = WaitForSingleObject(mutex->sem, INFINITE - 1);
-        if (res != WAIT_TIMEOUT)
-            return res;
-        milliseconds -= (RPY_TIMEOUT_T)(INFINITE - 1);
-    }
-    return WaitForSingleObject(mutex->sem, (DWORD)milliseconds);
+    return WaitForSingleObject(mutex->sem, milliseconds);
 }
 
-static
 BOOL LeaveNonRecursiveMutex(PNRMUTEX mutex)
 {
     return ReleaseSemaphore(mutex->sem, 1, NULL);
@@ -167,9 +161,17 @@ RPyThreadAcquireLockTimed(struct RPyOpaque_ThreadLock *lock,
         milliseconds = microseconds / 1000;
         if (microseconds % 1000 > 0)
             ++milliseconds;
+        if ((DWORD) milliseconds != milliseconds) {
+            fprintf(stderr, "Timeout too large for a DWORD, "
+                            "please check RPY_TIMEOUT_MAX");
+            abort();
+        }
     }
+    else
+        milliseconds = INFINITE;
 
-    if (lock && EnterNonRecursiveMutex(lock, milliseconds) == WAIT_OBJECT_0) {
+    if (lock && EnterNonRecursiveMutex(
+	    lock, (DWORD)milliseconds) == WAIT_OBJECT_0) {
         success = RPY_LOCK_ACQUIRED;
     }
     else {
@@ -184,69 +186,60 @@ int RPyThreadAcquireLock(struct RPyOpaque_ThreadLock *lock, int waitflag)
     return RPyThreadAcquireLockTimed(lock, waitflag ? -1 : 0, /*intr_flag=*/0);
 }
 
-long RPyThreadReleaseLock(struct RPyOpaque_ThreadLock *lock)
+void RPyThreadReleaseLock(struct RPyOpaque_ThreadLock *lock)
 {
-    if (LeaveNonRecursiveMutex(lock))
-        return 0;   /* success */
-    else
-        return -1;  /* failure: the lock was not previously acquired */
+	if (!LeaveNonRecursiveMutex(lock))
+		/* XXX complain? */;
 }
 
 /************************************************************/
 /* GIL code                                                 */
 /************************************************************/
 
-typedef HANDLE mutex2_t;   /* a semaphore, on Windows */
+static volatile LONG pending_acquires = -1;
+static CRITICAL_SECTION mutex_gil;
+static HANDLE cond_gil;
 
-static void gil_fatal(const char *msg) {
-    fprintf(stderr, "Fatal error in the GIL: %s\n", msg);
-    abort();
-}
-
-static inline void mutex2_init(mutex2_t *mutex) {
-    *mutex = CreateSemaphore(NULL, 1, 1, NULL);
-    if (*mutex == NULL)
-        gil_fatal("CreateSemaphore failed");
-}
-
-static inline void mutex2_lock(mutex2_t *mutex) {
-    WaitForSingleObject(*mutex, INFINITE);
-}
-
-static inline void mutex2_unlock(mutex2_t *mutex) {
-    ReleaseSemaphore(*mutex, 1, NULL);
-}
-
-static inline void mutex2_init_locked(mutex2_t *mutex) {
-    mutex2_init(mutex);
-    mutex2_lock(mutex);
-}
-
-static inline void mutex2_loop_start(mutex2_t *mutex) { }
-static inline void mutex2_loop_stop(mutex2_t *mutex) { }
-
-static inline int mutex2_lock_timeout(mutex2_t *mutex, double delay)
+long RPyGilAllocate(void)
 {
-    DWORD result = WaitForSingleObject(*mutex, (DWORD)(delay * 1000.0 + 0.999));
-    return (result != WAIT_TIMEOUT);
+    pending_acquires = 0;
+    InitializeCriticalSection(&mutex_gil);
+    EnterCriticalSection(&mutex_gil);
+    cond_gil = CreateEvent (NULL, FALSE, FALSE, NULL);
+    return 1;
 }
 
-typedef CRITICAL_SECTION mutex1_t;
+long RPyGilYieldThread(void)
+{
+    /* can be called even before RPyGilAllocate(), but in this case,
+       pending_acquires will be -1 */
+    if (pending_acquires <= 0)
+        return 0;
+    InterlockedIncrement(&pending_acquires);
+    PulseEvent(cond_gil);
 
-static inline void mutex1_init(mutex1_t *mutex) {
-    InitializeCriticalSection(mutex);
+    /* hack: the three following lines do a pthread_cond_wait(), and
+       normally specifying a timeout of INFINITE would be fine.  But the
+       first and second operations are not done atomically, so there is a
+       (small) risk that PulseEvent misses the WaitForSingleObject().
+       In this case the process will just sleep a few milliseconds. */
+    LeaveCriticalSection(&mutex_gil);
+    WaitForSingleObject(cond_gil, 15);
+    EnterCriticalSection(&mutex_gil);
+
+    InterlockedDecrement(&pending_acquires);
+    return 1;
 }
 
-static inline void mutex1_lock(mutex1_t *mutex) {
-    EnterCriticalSection(mutex);
+void RPyGilRelease(void)
+{
+    LeaveCriticalSection(&mutex_gil);
+    PulseEvent(cond_gil);
 }
 
-static inline void mutex1_unlock(mutex1_t *mutex) {
-    LeaveCriticalSection(mutex);
+void RPyGilAcquire(void)
+{
+    InterlockedIncrement(&pending_acquires);
+    EnterCriticalSection(&mutex_gil);
+    InterlockedDecrement(&pending_acquires);
 }
-
-//#define lock_test_and_set(ptr, value)  see thread_nt.h
-#define atomic_increment(ptr)          InterlockedIncrement(ptr)
-#define atomic_decrement(ptr)          InterlockedDecrement(ptr)
-
-#include "src/thread_gil.c"

@@ -1,25 +1,23 @@
-from pypy.interpreter.error import OperationError, oefmt, wrap_oserror
+from pypy.interpreter.baseobjspace import ObjSpace, W_Root
+from pypy.interpreter.error import OperationError, wrap_oserror
 from pypy.interpreter.gateway import unwrap_spec
-from pypy.interpreter.pycode import CodeHookCache
-from pypy.interpreter.pyframe import PyFrame
-from pypy.interpreter.mixedmodule import MixedModule
 from rpython.rlib.objectmodel import we_are_translated
-from pypy.objspace.std.dictmultiobject import W_DictMultiObject
 from pypy.objspace.std.listobject import W_ListObject
-from pypy.objspace.std.setobject import W_BaseSetObject
 from pypy.objspace.std.typeobject import MethodCache
-from pypy.objspace.std.mapdict import MapAttrCache
-from rpython.rlib import rposix, rgc
+from pypy.objspace.std.mapdict import IndexCache
+from rpython.rlib import rposix
 
 
 def internal_repr(space, w_object):
     return space.wrap('%r' % (w_object,))
 
 
-def attach_gdb(space):
-    """Run an interp-level gdb (or pdb when untranslated)"""
-    from rpython.rlib.debug import attach_gdb
-    attach_gdb()
+def interp_pdb(space):
+    """Run an interp-level pdb.
+    This is not available in translated versions of PyPy."""
+    assert not we_are_translated()
+    import pdb
+    pdb.set_trace()
 
 
 @unwrap_spec(name=str)
@@ -38,7 +36,7 @@ def reset_method_cache_counter(space):
     cache.misses = {}
     cache.hits = {}
     if space.config.objspace.std.withmapdict:
-        cache = space.fromcache(MapAttrCache)
+        cache = space.fromcache(IndexCache)
         cache.misses = {}
         cache.hits = {}
 
@@ -48,7 +46,7 @@ def mapdict_cache_counter(space, name):
     in the mapdict cache with the given attribute name."""
     assert space.config.objspace.std.withmethodcachecounter
     assert space.config.objspace.std.withmapdict
-    cache = space.fromcache(MapAttrCache)
+    cache = space.fromcache(IndexCache)
     return space.newtuple([space.newint(cache.hits.get(name, 0)),
                            space.newint(cache.misses.get(name, 0))])
 
@@ -58,21 +56,7 @@ def builtinify(space, w_func):
     bltn = BuiltinFunction(func)
     return space.wrap(bltn)
 
-def hidden_applevel(space, w_func):
-    """Decorator that hides a function's frame from app-level"""
-    from pypy.interpreter.function import Function
-    func = space.interp_w(Function, w_func)
-    func.getcode().hidden_applevel = True
-    return w_func
-
-def get_hidden_tb(space):
-    """Return the traceback of the current exception being handled by a
-    frame hidden from applevel.
-    """
-    operr = space.getexecutioncontext().sys_exc_info(for_hidden=True)
-    return space.w_None if operr is None else space.wrap(operr.get_traceback())
-
-@unwrap_spec(meth=str)
+@unwrap_spec(ObjSpace, W_Root, str)
 def lookup_special(space, w_obj, meth):
     """Lookup up a special method on an object."""
     if space.is_oldstyle_instance(w_obj):
@@ -86,23 +70,12 @@ def lookup_special(space, w_obj, meth):
 def do_what_I_mean(space):
     return space.wrap(42)
 
-
-def strategy(space, w_obj):
-    """ strategy(dict or list or set)
-
-    Return the underlying strategy currently used by a dict, list or set object
-    """
-    if isinstance(w_obj, W_DictMultiObject):
-        name = w_obj.get_strategy().__class__.__name__
-    elif isinstance(w_obj, W_ListObject):
-        name = w_obj.strategy.__class__.__name__
-    elif isinstance(w_obj, W_BaseSetObject):
-        name = w_obj.strategy.__class__.__name__
+def list_strategy(space, w_list):
+    if isinstance(w_list, W_ListObject):
+        return space.wrap(w_list.strategy._applevel_repr)
     else:
-        raise OperationError(space.w_TypeError,
-                             space.wrap("expecting dict or list or set object"))
-    return space.wrap(name)
-
+        w_msg = space.wrap("Can only get the list strategy of a list")
+        raise OperationError(space.w_TypeError, w_msg)
 
 @unwrap_spec(fd='c_int')
 def validate_fd(space, fd):
@@ -128,43 +101,3 @@ def resizelist_hint(space, w_iterable, sizehint):
 @unwrap_spec(sizehint=int)
 def newlist_hint(space, sizehint):
     return space.newlist_hint(sizehint)
-
-@unwrap_spec(debug=bool)
-def set_debug(space, debug):
-    space.sys.debug = debug
-    space.setitem(space.builtin.w_dict,
-                  space.wrap('__debug__'),
-                  space.wrap(debug))
-
-@unwrap_spec(estimate=int)
-def add_memory_pressure(estimate):
-    rgc.add_memory_pressure(estimate)
-
-@unwrap_spec(w_frame=PyFrame)
-def locals_to_fast(space, w_frame):
-    assert isinstance(w_frame, PyFrame)
-    w_frame.locals2fast()
-
-@unwrap_spec(w_module=MixedModule)
-def save_module_content_for_future_reload(space, w_module):
-    w_module.save_module_content_for_future_reload()
-
-def specialized_zip_2_lists(space, w_list1, w_list2):
-    from pypy.objspace.std.specialisedtupleobject import specialized_zip_2_lists
-    return specialized_zip_2_lists(space, w_list1, w_list2)
-
-def set_code_callback(space, w_callable):
-    cache = space.fromcache(CodeHookCache)
-    if space.is_none(w_callable):
-        cache._code_hook = None
-    else:
-        cache._code_hook = w_callable
-
-@unwrap_spec(string=str, byteorder=str, signed=int)
-def decode_long(space, string, byteorder='little', signed=1):
-    from rpython.rlib.rbigint import rbigint, InvalidEndiannessError
-    try:
-        result = rbigint.frombytes(string, byteorder, bool(signed))
-    except InvalidEndiannessError:
-        raise oefmt(space.w_ValueError, "invalid byteorder argument")
-    return space.newlong_from_rbigint(result)

@@ -3,9 +3,11 @@
 #define MS_WIN32
 #endif
 
-#include "src/precommondefs.h"
-
-#define EXPORT(x)  RPY_EXPORTED x
+#if defined(MS_WIN32)
+#define EXPORT(x) __declspec(dllexport) x
+#else
+#define EXPORT(x) x
+#endif
 
 #include <stdlib.h>
 #include <math.h>
@@ -272,11 +274,7 @@ integrate(double a, double b, double (*f)(double), long nstep)
 {
 	double x, sum=0.0, dx=(b-a)/(double)nstep;
 	for(x=a+0.5*dx; (b-x)*(x-a)>0.0; x+=dx)
-    {   
-        double y = f(x);
-        printf("f(x)=%.1f\n", y);
 		sum += f(x);
-    }
 	return sum/(double)nstep;
 }
 
@@ -320,8 +318,8 @@ EXPORT(void) _py_func(void)
 {
 }
 
-EXPORT(LONG_LONG) last_tf_arg_s = 0;
-EXPORT(unsigned LONG_LONG) last_tf_arg_u = 0;
+EXPORT(LONG_LONG) last_tf_arg_s;
+EXPORT(unsigned LONG_LONG) last_tf_arg_u;
 
 struct BITS {
 	int A: 1, B:2, C:3, D:4, E: 5, F: 6, G: 7, H: 8, I: 9;
@@ -568,14 +566,4 @@ EXPORT(int) test_errno(void)
     int result = errno;
     errno = result + 1;
     return result;
-}
-
-EXPORT(int *) test_issue1655(char const *tag, int *len)
-{
-    static int data[] = { -1, -2, -3, -4 };
-    *len = -42;
-    if (strcmp(tag, "testing!") != 0)
-        return NULL;
-    *len = sizeof(data) / sizeof(data[0]);
-    return data;
 }

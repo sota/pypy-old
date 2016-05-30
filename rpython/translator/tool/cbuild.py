@@ -1,8 +1,7 @@
 import py
-import sys, os, subprocess
+import sys
 
 from rpython.translator.platform import host
-from rpython.translator import cdir
 from rpython.tool.udir import udir
 
 
@@ -11,7 +10,7 @@ class ExternalCompilationInfo(object):
     _ATTRIBUTES = ['pre_include_bits', 'includes', 'include_dirs',
                    'post_include_bits', 'libraries', 'library_dirs',
                    'separate_module_sources', 'separate_module_files',
-                   'compile_extra', 'link_extra',
+                   'export_symbols', 'compile_extra', 'link_extra',
                    'frameworks', 'link_files', 'testonly_libraries']
     _DUPLICATES_OK = ['compile_extra', 'link_extra']
     _EXTRA_ATTRIBUTES = ['use_cpp_linker', 'platform']
@@ -25,6 +24,7 @@ class ExternalCompilationInfo(object):
                  library_dirs            = [],
                  separate_module_sources = [],
                  separate_module_files   = [],
+                 export_symbols          = [],
                  compile_extra           = [],
                  link_extra              = [],
                  frameworks              = [],
@@ -59,11 +59,8 @@ class ExternalCompilationInfo(object):
         separately and linked later on.  (If an .h file is needed for
         other .c files to access this, it can be put in includes.)
 
-        (export_symbols: killed; you need, depending on the case, to
-        add the RPY_EXTERN or RPY_EXPORTED macro just before the
-        declaration of each function in the C header file, as explained
-        in translator/c/src/precommondefs.h; or you need the decorator
-        @rlib.entrypoint.export_symbol)
+        export_symbols: list of names that should be exported by the final
+        binary.
 
         compile_extra: list of parameters which will be directly passed to
         the compiler
@@ -102,7 +99,6 @@ class ExternalCompilationInfo(object):
             return platform
         return self._platform
 
-    @classmethod
     def from_compiler_flags(cls, flags):
         """Returns a new ExternalCompilationInfo instance by parsing
         the string 'flags', which is in the typical Unix compiler flags
@@ -128,8 +124,8 @@ class ExternalCompilationInfo(object):
         return cls(pre_include_bits=pre_include_bits,
                    include_dirs=include_dirs,
                    compile_extra=compile_extra)
+    from_compiler_flags = classmethod(from_compiler_flags)
 
-    @classmethod
     def from_linker_flags(cls, flags):
         """Returns a new ExternalCompilationInfo instance by parsing
         the string 'flags', which is in the typical Unix linker flags
@@ -150,8 +146,8 @@ class ExternalCompilationInfo(object):
         return cls(libraries=libraries,
                    library_dirs=library_dirs,
                    link_extra=link_extra)
+    from_linker_flags = classmethod(from_linker_flags)
 
-    @classmethod
     def from_config_tool(cls, execonfigtool):
         """Returns a new ExternalCompilationInfo instance by executing
         the 'execonfigtool' with --cflags and --libs arguments."""
@@ -160,29 +156,12 @@ class ExternalCompilationInfo(object):
             raise ImportError("cannot find %r" % (execonfigtool,))
             # we raise ImportError to be nice to the pypy.config.pypyoption
             # logic of skipping modules depending on non-installed libs
-        return cls._run_config_tool('"%s"' % (str(path),))
-
-    @classmethod
-    def from_pkg_config(cls, pkgname):
-        """Returns a new ExternalCompilationInfo instance by executing
-        'pkg-config <pkgname>' with --cflags and --libs arguments."""
-        assert isinstance(pkgname, str)
-        try:
-            popen = subprocess.Popen(['pkg-config', pkgname, '--exists'])
-            result = popen.wait()
-        except OSError:
-            result = -1
-        if result != 0:
-            raise ImportError("failed: 'pkg-config %s --exists'" % pkgname)
-        return cls._run_config_tool('pkg-config "%s"' % pkgname)
-
-    @classmethod
-    def _run_config_tool(cls, command):
-        cflags = py.process.cmdexec('%s --cflags' % command)
+        cflags = py.process.cmdexec('"%s" --cflags' % (str(path),))
         eci1 = cls.from_compiler_flags(cflags)
-        libs = py.process.cmdexec('%s --libs' % command)
+        libs = py.process.cmdexec('"%s" --libs' % (str(path),))
         eci2 = cls.from_linker_flags(libs)
         return eci1.merge(eci2)
+    from_config_tool = classmethod(from_config_tool)
 
     def _value(self):
         return tuple([getattr(self, x)
@@ -244,10 +223,7 @@ class ExternalCompilationInfo(object):
         return ExternalCompilationInfo(**attrs)
 
     def write_c_header(self, fileobj):
-        f = open(os.path.join(cdir, 'src', 'precommondefs.h'))
-        fileobj.write(f.read())
-        f.close()
-        print >> fileobj
+        print >> fileobj, STANDARD_DEFINES
         for piece in self.pre_include_bits:
             print >> fileobj, piece
         for path in self.includes:
@@ -293,14 +269,17 @@ class ExternalCompilationInfo(object):
         d['separate_module_files'] = ()
         return files, ExternalCompilationInfo(**d)
 
-    def compile_shared_lib(self, outputfilename=None, ignore_a_files=False,
-                           debug_mode=True, defines=[]):
+    def compile_shared_lib(self, outputfilename=None, ignore_a_files=False):
         self = self.convert_sources_to_files()
         if ignore_a_files:
             if not [fn for fn in self.link_files if fn.endswith('.a')]:
                 ignore_a_files = False    # there are none
         if not self.separate_module_files and not ignore_a_files:
-            return self    # xxx there was some condition about win32 here
+            if sys.platform != 'win32':
+                return self
+            if not self.export_symbols:
+                return self
+            basepath = udir.join('module_cache')
         else:
             #basepath = py.path.local(self.separate_module_files[0]).dirpath()
             basepath = udir.join('shared_cache')
@@ -315,17 +294,11 @@ class ExternalCompilationInfo(object):
             basepath.ensure(dir=1)
             outputfilename = str(pth.dirpath().join(pth.purebasename))
 
-        d = self._copy_attributes()
         if ignore_a_files:
+            d = self._copy_attributes()
             d['link_files'] = [fn for fn in d['link_files']
                                   if not fn.endswith('.a')]
-        if debug_mode and sys.platform != 'win32':
-            d['compile_extra'] = d['compile_extra'] + ('-g', '-O0')
-        d['compile_extra'] = d['compile_extra'] + (
-            '-DRPY_EXTERN=RPY_EXPORTED',)
-        for define in defines:
-            d['compile_extra'] += ('-D%s' % define,)
-        self = ExternalCompilationInfo(**d)
+            self = ExternalCompilationInfo(**d)
 
         lib = str(host.compile([], self, outputfilename=outputfilename,
                                standalone=False))
@@ -334,3 +307,40 @@ class ExternalCompilationInfo(object):
         d['separate_module_files'] = ()
         d['separate_module_sources'] = ()
         return ExternalCompilationInfo(**d)
+
+
+# ____________________________________________________________
+#
+# This is extracted from pyconfig.h from CPython.  It sets the macros
+# that affect the features we get from system include files.
+
+STANDARD_DEFINES = '''
+/* Define on Darwin to activate all library features */
+#define _DARWIN_C_SOURCE 1
+/* This must be set to 64 on some systems to enable large file support. */
+#define _FILE_OFFSET_BITS 64
+/* Define on Linux to activate all library features */
+#define _GNU_SOURCE 1
+/* This must be defined on some systems to enable large file support. */
+#define _LARGEFILE_SOURCE 1
+/* Define on NetBSD to activate all library features */
+#define _NETBSD_SOURCE 1
+/* Define to activate features from IEEE Stds 1003.1-2001 */
+#ifndef _POSIX_C_SOURCE
+#  define _POSIX_C_SOURCE 200112L
+#endif
+/* Define on FreeBSD to activate all library features */
+#define __BSD_VISIBLE 1
+#define __XSI_VISIBLE 700
+/* Windows: winsock/winsock2 mess */
+#define WIN32_LEAN_AND_MEAN
+#ifdef _WIN64
+   typedef          __int64 Signed;
+   typedef unsigned __int64 Unsigned;
+#  define SIGNED_MIN LLONG_MIN 
+#else
+   typedef          long Signed;
+   typedef unsigned long Unsigned;
+#  define SIGNED_MIN LONG_MIN
+#endif
+'''

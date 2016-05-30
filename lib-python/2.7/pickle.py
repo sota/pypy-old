@@ -269,7 +269,7 @@ class Pickler(object):
     def save(self, obj):
         # Check for persistent id (defined by a subclass)
         pid = self.persistent_id(obj)
-        if pid is not None:
+        if pid:
             self.save_pers(pid)
             return
 
@@ -1005,7 +1005,7 @@ class Unpickler(object):
         rep = self.readline()[:-1]
         for q in "\"'": # double or single quote
             if rep.startswith(q):
-                if len(rep) < 2 or not rep.endswith(q):
+                if not rep.endswith(q):
                     raise ValueError, "insecure string pickle"
                 rep = rep[len(q):-len(q)]
                 break
@@ -1376,7 +1376,6 @@ def encode_long(x):
 
 def decode_long(data):
     r"""Decode a long from a two's complement little-endian binary string.
-    This is overriden on PyPy by a RPython version that has linear complexity.
 
     >>> decode_long('')
     0L
@@ -1402,11 +1401,6 @@ def decode_long(data):
     if data[-1] >= '\x80':
         n -= 1L << (nbytes * 8)
     return n
-
-try:
-    from __pypy__ import decode_long
-except ImportError:
-    pass
 
 # Shorthands
 

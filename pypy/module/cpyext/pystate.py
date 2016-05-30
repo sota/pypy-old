@@ -3,6 +3,7 @@ from pypy.module.cpyext.api import (
 from pypy.module.cpyext.pyobject import PyObject, Py_DecRef, make_ref, from_ref
 from rpython.rtyper.lltypesystem import rffi, lltype
 from rpython.rlib import rthread
+from pypy.module.thread import os_thread
 
 PyInterpreterStateStruct = lltype.ForwardReference()
 PyInterpreterState = lltype.Ptr(PyInterpreterStateStruct)
@@ -16,10 +17,7 @@ PyThreadState = lltype.Ptr(cpython_struct(
      ('dict', PyObject),
      ]))
 
-class NoThreads(Exception):
-    pass
-
-@cpython_api([], PyThreadState, error=CANNOT_FAIL, gil="release")
+@cpython_api([], PyThreadState, error=CANNOT_FAIL)
 def PyEval_SaveThread(space):
     """Release the global interpreter lock (if it has been created and thread
     support is enabled) and reset the thread state to NULL, returning the
@@ -29,29 +27,28 @@ def PyEval_SaveThread(space):
     state = space.fromcache(InterpreterState)
     tstate = state.swap_thread_state(
         space, lltype.nullptr(PyThreadState.TO))
+    if rffi.aroundstate.before:
+        rffi.aroundstate.before()
     return tstate
 
-@cpython_api([PyThreadState], lltype.Void, gil="acquire")
+@cpython_api([PyThreadState], lltype.Void)
 def PyEval_RestoreThread(space, tstate):
     """Acquire the global interpreter lock (if it has been created and thread
     support is enabled) and set the thread state to tstate, which must not be
     NULL.  If the lock has been created, the current thread must not have
     acquired it, otherwise deadlock ensues.  (This function is available even
     when thread support is disabled at compile time.)"""
+    if rffi.aroundstate.after:
+        rffi.aroundstate.after()
     state = space.fromcache(InterpreterState)
     state.swap_thread_state(space, tstate)
 
 @cpython_api([], lltype.Void)
 def PyEval_InitThreads(space):
-    if not space.config.translation.thread:
-        raise NoThreads
-    from pypy.module.thread import os_thread
     os_thread.setup_threads(space)
 
 @cpython_api([], rffi.INT_real, error=CANNOT_FAIL)
 def PyEval_ThreadsInitialized(space):
-    if not space.config.translation.thread:
-        return 0
     return 1
 
 # XXX: might be generally useful
@@ -178,14 +175,17 @@ def PyThreadState_Swap(space, tstate):
     state = space.fromcache(InterpreterState)
     return state.swap_thread_state(space, tstate)
 
-@cpython_api([PyThreadState], lltype.Void, gil="acquire")
+@cpython_api([PyThreadState], lltype.Void)
 def PyEval_AcquireThread(space, tstate):
     """Acquire the global interpreter lock and set the current thread state to
     tstate, which should not be NULL.  The lock must have been created earlier.
     If this thread already has the lock, deadlock ensues.  This function is not
     available when thread support is disabled at compile time."""
+    if rffi.aroundstate.after:
+        # After external call is before entering Python
+        rffi.aroundstate.after()
 
-@cpython_api([PyThreadState], lltype.Void, gil="release")
+@cpython_api([PyThreadState], lltype.Void)
 def PyEval_ReleaseThread(space, tstate):
     """Reset the current thread state to NULL and release the global interpreter
     lock.  The lock must have been created earlier and must be held by the current
@@ -193,20 +193,26 @@ def PyEval_ReleaseThread(space, tstate):
     that it represents the current thread state --- if it isn't, a fatal error is
     reported. This function is not available when thread support is disabled at
     compile time."""
+    if rffi.aroundstate.before:
+        # Before external call is after running Python
+        rffi.aroundstate.before()
 
-PyGILState_STATE = rffi.INT
+PyGILState_STATE = rffi.COpaquePtr('PyGILState_STATE',
+                                   typedef='PyGILState_STATE',
+                                   compilation_info=CConfig._compilation_info_)
 
-@cpython_api([], PyGILState_STATE, error=CANNOT_FAIL, gil="acquire")
+@cpython_api([], PyGILState_STATE, error=CANNOT_FAIL)
 def PyGILState_Ensure(space):
-    # XXX XXX XXX THIS IS A VERY MINIMAL IMPLEMENTATION THAT WILL HAPPILY
-    # DEADLOCK IF CALLED TWICE ON THE SAME THREAD, OR CRASH IF CALLED IN A
-    # NEW THREAD.  We should very carefully follow what CPython does instead.
-    return rffi.cast(PyGILState_STATE, 0)
+    if rffi.aroundstate.after:
+        # After external call is before entering Python
+        rffi.aroundstate.after()
+    return 0
 
-@cpython_api([PyGILState_STATE], lltype.Void, gil="release")
+@cpython_api([PyGILState_STATE], lltype.Void)
 def PyGILState_Release(space, state):
-    # XXX XXX XXX We should very carefully follow what CPython does instead.
-    pass
+    if rffi.aroundstate.before:
+        # Before external call is after running Python
+        rffi.aroundstate.before()
 
 @cpython_api([], PyInterpreterState, error=CANNOT_FAIL)
 def PyInterpreterState_Head(space):
@@ -221,25 +227,25 @@ def PyInterpreterState_Next(space, interp):
     """
     return lltype.nullptr(PyInterpreterState.TO)
 
-@cpython_api([PyInterpreterState], PyThreadState, error=CANNOT_FAIL,
-             gil="around")
+@cpython_api([PyInterpreterState], PyThreadState, error=CANNOT_FAIL)
 def PyThreadState_New(space, interp):
     """Create a new thread state object belonging to the given interpreter
     object.  The global interpreter lock need not be held, but may be held if
     it is necessary to serialize calls to this function."""
-    if not space.config.translation.thread:
-        raise NoThreads
+    rthread.gc_thread_prepare()
     # PyThreadState_Get will allocate a new execution context,
     # we need to protect gc and other globals with the GIL.
-    rthread.gc_thread_start()
-    return PyThreadState_Get(space)
+    rffi.aroundstate.after()
+    try:
+        rthread.gc_thread_start()
+        return PyThreadState_Get(space)
+    finally:
+        rffi.aroundstate.before()
 
 @cpython_api([PyThreadState], lltype.Void)
 def PyThreadState_Clear(space, tstate):
     """Reset all information in a thread state object.  The global
     interpreter lock must be held."""
-    if not space.config.translation.thread:
-        raise NoThreads
     Py_DecRef(space, tstate.c_dict)
     tstate.c_dict = lltype.nullptr(PyObject.TO)
     space.threadlocals.leave_thread(space)

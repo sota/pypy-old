@@ -7,9 +7,9 @@ class Test__ffi(BaseTestPyPyC):
         from rpython.rlib.test.test_clibffi import get_libm_name
         def main(libm_name):
             try:
-                from _rawffi.alt import CDLL, types
+                from _ffi import CDLL, types
             except ImportError:
-                sys.stderr.write('SKIP: cannot import _rawffi.alt\n')
+                sys.stderr.write('SKIP: cannot import _ffi\n')
                 return 0
 
             libm = CDLL(libm_name)
@@ -27,7 +27,7 @@ class Test__ffi(BaseTestPyPyC):
         log = self.run(main, [libm_name])
         pow_addr, res = log.result
         assert res == 8.0 * 300
-        py.test.skip("XXX re-optimize _ffi for the JIT?")
+        py.test.xfail()     # XXX re-optimize _ffi for the JIT?
         loop, = log.loops_by_filename(self.filepath)
         if 'ConstClass(pow)' in repr(loop):   # e.g. OS/X
             pow_addr = 'ConstClass(pow)'
@@ -35,7 +35,7 @@ class Test__ffi(BaseTestPyPyC):
             guard_not_invalidated(descr=...)
             i17 = force_token()
             setfield_gc(p0, i17, descr=<.* .*PyFrame.vable_token .*>)
-            f21 = call_release_gil(%s, 2.000000, 3.000000, descr=<Callf 8 ff EF=7>)
+            f21 = call_release_gil(%s, 2.000000, 3.000000, descr=<Callf 8 ff EF=6>)
             guard_not_forced(descr=...)
             guard_no_exception(descr=...)
         """ % pow_addr)
@@ -45,9 +45,9 @@ class Test__ffi(BaseTestPyPyC):
         from rpython.rlib.test.test_clibffi import get_libm_name
         def main(libm_name):
             try:
-                from _rawffi.alt import CDLL, types
+                from _ffi import CDLL, types
             except ImportError:
-                sys.stderr.write('SKIP: cannot import _rawffi.alt\n')
+                sys.stderr.write('SKIP: cannot import _ffi\n')
                 return 0
 
             libm = CDLL(libm_name)
@@ -82,12 +82,12 @@ class Test__ffi(BaseTestPyPyC):
             from threading import Thread
             #
             if os.name == 'nt':
-                from _rawffi.alt import WinDLL, types
+                from _ffi import WinDLL, types
                 libc = WinDLL('Kernel32.dll')
                 sleep = libc.getfunc('Sleep', [types.uint], types.uint)
                 delays = [0]*n + [1000]
             else:
-                from _rawffi.alt import CDLL, types
+                from _ffi import CDLL, types
                 libc = CDLL(libc_name)
                 sleep = libc.getfunc('sleep', [types.uint], types.uint)
                 delays = [0]*n + [1]
@@ -134,7 +134,7 @@ class Test__ffi(BaseTestPyPyC):
         ops = loop.allops()
         opnames = log.opnames(ops)
         assert opnames.count('new_with_vtable') == 1 # only the virtualref
-        py.test.skip("XXX re-optimize _ffi for the JIT?")
+        py.test.xfail()     # XXX re-optimize _ffi for the JIT?
         assert opnames.count('call_release_gil') == 1
         idx = opnames.index('call_release_gil')
         call = ops[idx]
@@ -144,7 +144,7 @@ class Test__ffi(BaseTestPyPyC):
 
     def test__ffi_struct(self):
         def main():
-            from _rawffi.alt import _StructDescr, Field, types
+            from _ffi import _StructDescr, Field, types
             fields = [
                 Field('x', types.slong),
                 ]
@@ -159,11 +159,11 @@ class Test__ffi(BaseTestPyPyC):
             return struct.getfield('x')
         #
         log = self.run(main, [])
-        py.test.skip("XXX re-optimize _ffi for the JIT?")
+        py.test.xfail()     # XXX re-optimize _ffi for the JIT?
         loop, = log.loops_by_filename(self.filepath)
         assert loop.match_by_id('getfield', """
             guard_not_invalidated(descr=...)
-            i57 = getfield_raw_i(i46, descr=<FieldS dynamic 0>)
+            i57 = getfield_raw(i46, descr=<FieldS dynamic 0>)
         """)
         assert loop.match_by_id('setfield', """
             setfield_raw(i44, i57, descr=<FieldS dynamic 0>)
@@ -199,101 +199,22 @@ class Test__ffi(BaseTestPyPyC):
         ldexp_addr, res = log.result
         assert res == 8.0 * 300
         loop, = log.loops_by_filename(self.filepath)
+        if 'ConstClass(ldexp)' in repr(loop):   # e.g. OS/X
+            ldexp_addr = 'ConstClass(ldexp)'
         assert loop.match_by_id('cfficall', """
-            p96 = force_token()
-            setfield_gc(p0, p96, descr=<FieldP pypy.interpreter.pyframe.PyFrame.vable_token .>)
-            f97 = call_release_gil_f(91, i59, 1.0, 3, descr=<Callf 8 fi EF=7 OS=62>)
-            guard_not_forced(descr=...)
-            guard_no_exception(descr=...)
-        """, ignore_ops=['guard_not_invalidated'])
-
-    def test__cffi_call_c_int(self):
-        if sys.platform == 'win32':
-            py.test.skip("not tested on Windows (this test must pass on "
-                         "other platforms, and it should work the same way)")
-        def main():
-            import os
-            try:
-                import _cffi_backend
-            except ImportError:
-                sys.stderr.write('SKIP: cannot import _cffi_backend\n')
-                return 0
-
-            libc = _cffi_backend.load_library(None)
-            BInt = _cffi_backend.new_primitive_type("int")
-            BClose = _cffi_backend.new_function_type([BInt], BInt)
-            _dup = libc.load_function(BClose, 'dup')
-            i = 0
-            fd0, fd1 = os.pipe()
-            while i < 300:
-                tmp = _dup(fd0)   # ID: cfficall
-                os.close(tmp)
-                i += 1
-            os.close(fd0)
-            os.close(fd1)
-            BLong = _cffi_backend.new_primitive_type("long")
-            return 42
-        #
-        log = self.run(main, [])
-        assert log.result == 42
-        loop, = log.loops_by_filename(self.filepath)
-        if sys.maxint > 2**32:
-            extra = "i98 = int_signext(i97, 4)"
-        else:
-            extra = ""
-        assert loop.match_by_id('cfficall', """
-            p96 = force_token()
-            setfield_gc(p0, p96, descr=<FieldP pypy.interpreter.pyframe.PyFrame.vable_token .>)
-            i97 = call_release_gil_i(91, i59, i50, descr=<Calli 4 i EF=7 OS=62>)
-            guard_not_forced(descr=...)
-            guard_no_exception(descr=...)
-            %s
-        """ % extra, ignore_ops=['guard_not_invalidated'])
-
-    def test__cffi_call_size_t(self):
-        if sys.platform == 'win32':
-            py.test.skip("not tested on Windows (this test must pass on "
-                         "other platforms, and it should work the same way)")
-        def main():
-            import os
-            try:
-                import _cffi_backend
-            except ImportError:
-                sys.stderr.write('SKIP: cannot import _cffi_backend\n')
-                return 0
-
-            libc = _cffi_backend.load_library(None)
-            BInt = _cffi_backend.new_primitive_type("int")
-            BSizeT = _cffi_backend.new_primitive_type("size_t")
-            BChar = _cffi_backend.new_primitive_type("char")
-            BCharP = _cffi_backend.new_pointer_type(BChar)
-            BWrite = _cffi_backend.new_function_type([BInt, BCharP, BSizeT],
-                                                     BSizeT)  # not signed here!
-            _write = libc.load_function(BWrite, 'write')
-            i = 0
-            fd0, fd1 = os.pipe()
-            buffer = _cffi_backend.newp(BCharP, 'A')
-            while i < 300:
-                tmp = _write(fd1, buffer, 1)   # ID: cfficall
-                assert tmp == 1
-                assert os.read(fd0, 2) == 'A'
-                i += 1
-            os.close(fd0)
-            os.close(fd1)
-            return 42
-        #
-        log = self.run(main, [])
-        assert log.result == 42
-        loop, = log.loops_by_filename(self.filepath)
-        assert loop.match_by_id('cfficall', """
-            p96 = force_token()
-            setfield_gc(p0, p96, descr=<FieldP pypy.interpreter.pyframe.PyFrame.vable_token .>)
-            i97 = call_release_gil_i(91, i59, i10, i12, 1, descr=<Calli . iii EF=7 OS=62>)
-            guard_not_forced(descr=...)
-            guard_no_exception(descr=...)
-            p98 = call_r(ConstClass(fromrarith_int__r_uint), i97, descr=<Callr . i EF=4>)
-            guard_no_exception(descr=...)
-        """, ignore_ops=['guard_not_invalidated'])
+            ...
+            f1 = call_release_gil(..., descr=<Callf 8 fi EF=6 OS=62>)
+            ...
+        """)
+        ops = loop.ops_by_id('cfficall')
+        assert 'raw_malloc' not in str(ops)
+        assert 'raw_free' not in str(ops)
+        assert 'getarrayitem_raw' not in log.opnames(ops)
+        assert 'setarrayitem_raw' not in log.opnames(ops)
+        # so far just check that call_release_gil() is produced.
+        # later, also check that the arguments to call_release_gil()
+        # are constants
+        # are constants, and that the numerous raw_mallocs are removed
 
     def test_cffi_call_guard_not_forced_fails(self):
         # this is the test_pypy_c equivalent of
@@ -307,7 +228,7 @@ class Test__ffi(BaseTestPyPyC):
             except ImportError:
                 sys.stderr.write('SKIP: cannot import cffi\n')
                 return 0
-
+                
             ffi = cffi.FFI()
 
             ffi.cdef("""
@@ -348,85 +269,11 @@ class Test__ffi(BaseTestPyPyC):
                 n += 1
             return n
 
-        log = self.run(main, [], import_site=True,
-                       discard_stdout_before_last_line=True)  # <- for Win32
+        log = self.run(main, [], import_site=True)
         assert log.result == 10000
         loop, = log.loops_by_id('cfficall')
         assert loop.match_by_id('cfficall', """
             ...
-            i1 = call_release_gil_i(..., descr=<Calli 4 ii EF=7 OS=62>)
+            f1 = call_release_gil(..., descr=<Calli 4 ii EF=6 OS=62>)
             ...
-        """)
-
-    def test__cffi_bug1(self):
-        from rpython.rlib.test.test_clibffi import get_libm_name
-        def main(libm_name):
-            try:
-                import _cffi_backend
-            except ImportError:
-                sys.stderr.write('SKIP: cannot import _cffi_backend\n')
-                return 0
-
-            libm = _cffi_backend.load_library(libm_name)
-            BDouble = _cffi_backend.new_primitive_type("double")
-            BSin = _cffi_backend.new_function_type([BDouble], BDouble)
-            sin = libm.load_function(BSin, 'sin')
-
-            def f(*args):
-                for i in range(300):
-                    sin(*args)
-
-            f(1.0)
-            f(1)
-        #
-        libm_name = get_libm_name(sys.platform)
-        self.run(main, [libm_name])
-        # assert did not crash
-
-    def test_cffi_init_struct_with_list(self):
-        def main(n):
-            import sys
-            try:
-                import cffi
-            except ImportError:
-                sys.stderr.write('SKIP: cannot import cffi\n')
-                return 0
-
-            ffi = cffi.FFI()
-            ffi.cdef("""
-            struct s {
-                short x;
-                short y;
-                short z;
-            };
-            """)
-
-            for i in xrange(n):
-                ffi.new("struct s *", [i, i, i])
-
-        log = self.run(main, [300])
-        loop, = log.loops_by_filename(self.filepath)
-        assert loop.match("""
-        i161 = int_lt(i160, i43)
-        guard_true(i161, descr=...)
-        i162 = int_add(i160, 1)
-        setfield_gc(p22, i162, descr=<FieldS pypy.module.__builtin__.functional.W_XRangeIterator.inst_current .>)
-        guard_not_invalidated(descr=...)
-        p163 = force_token()
-        p164 = force_token()
-        p167 = call_r(ConstClass(_ll_0_alloc_with_del___), descr=<Callr . EF=5>)
-        guard_no_exception(descr=...)
-        i112 = int_signext(i160, 2)
-        setfield_gc(p167, ConstPtr(ptr85), descr=<FieldP pypy.module._cffi_backend.cdataobj.W_CData.inst_ctype .+>)
-        setfield_gc(p167, -1, descr=<FieldS pypy.module._cffi_backend.cdataobj.W_CDataNewOwning.inst_length .+>)
-        i114 = int_ne(i160, i112)
-        guard_false(i114, descr=...)
-        --TICK--
-        i123 = arraylen_gc(p67, descr=<ArrayP .>)
-        i119 = call_i(ConstClass(_ll_1_raw_malloc_varsize__Signed), 6, descr=<Calli . i EF=5 OS=110>)
-        raw_store(i119, 0, i160, descr=<ArrayS 2>)
-        raw_store(i119, 2, i160, descr=<ArrayS 2>)
-        raw_store(i119, 4, i160, descr=<ArrayS 2>)
-        setfield_gc(p167, i119, descr=<FieldU pypy.module._cffi_backend.cdataobj.W_CData.inst__ptr .+>)
-        jump(..., descr=...)
         """)

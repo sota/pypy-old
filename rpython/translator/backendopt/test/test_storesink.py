@@ -3,14 +3,17 @@ import py
 from rpython.translator.translator import TranslationContext, graphof
 from rpython.translator.backendopt.storesink import storesink_graph
 from rpython.translator.backendopt import removenoops
-from rpython.flowspace.model import checkgraph
+from rpython.flowspace.model import last_exception, checkgraph
 from rpython.conftest import option
 
 class TestStoreSink(object):
+    # not sure if it makes any sense on ootype, maybe worth trying
+    type_system = 'lltype'
+    
     def translate(self, func, argtypes):
         t = TranslationContext()
         t.buildannotator().build_types(func, argtypes)
-        t.buildrtyper().specialize()
+        t.buildrtyper(type_system=self.type_system).specialize()
         return t
 
     def check(self, f, argtypes, no_getfields=0):
@@ -34,13 +37,13 @@ class TestStoreSink(object):
     def test_infrastructure(self):
         class A(object):
             pass
-
+        
         def f(i):
             a = A()
             a.x = i
             return a.x
 
-        self.check(f, [int], 0)
+        self.check(f, [int], 1)
 
     def test_simple(self):
         class A(object):
@@ -51,8 +54,8 @@ class TestStoreSink(object):
             a.x = i
             return a.x + a.x
 
-        self.check(f, [int], 0)
-
+        self.check(f, [int], 1)
+                
     def test_irrelevant_setfield(self):
         class A(object):
             pass
@@ -65,7 +68,7 @@ class TestStoreSink(object):
             two = a.x
             return one + two
 
-        self.check(f, [int], 0)
+        self.check(f, [int], 1)
 
     def test_relevant_setfield(self):
         class A(object):
@@ -99,7 +102,7 @@ class TestStoreSink(object):
             two = a.x
             return one + two
 
-        self.check(f, [int], 0)
+        self.check(f, [int], 1)
 
     def test_subclass(self):
         class A(object):
@@ -117,7 +120,7 @@ class TestStoreSink(object):
             two = a.x
             return one + two
 
-        self.check(f, [int], 1)
+        self.check(f, [int], 2)
 
     def test_bug_1(self):
         class A(object):
@@ -131,37 +134,4 @@ class TestStoreSink(object):
                 return True
             return n
 
-        self.check(f, [int], 0)
-
-
-    def test_cfg_splits(self):
-        class A(object):
-            pass
-
-        def f(i):
-            a = A()
-            j = i
-            for i in range(i):
-                a.x = i
-                if i:
-                    j = a.x + a.x
-                else:
-                    j = a.x * 5
-            return j
-
-        self.check(f, [int], 0)
-
-    def test_malloc_does_not_invalidate(self):
-        class A(object):
-            pass
-        class B(object):
-            pass
-
-        def f(i):
-            a = A()
-            a.x = i
-            b = B()
-            return a.x
-
-        self.check(f, [int], 0)
-
+        self.check(f, [int], 1)

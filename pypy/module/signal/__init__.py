@@ -48,6 +48,3 @@ class Module(MixedModule):
                                                   use_bytecode_counter=False)
         space.actionflag.__class__ = interp_signal.SignalActionFlag
         # xxx yes I know the previous line is a hack
-
-    def startup(self, space):
-        space.check_signal_action.startup(space)

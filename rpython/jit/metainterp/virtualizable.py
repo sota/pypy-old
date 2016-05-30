@@ -1,11 +1,10 @@
-from rpython.jit.codewriter.effectinfo import EffectInfo
 from rpython.jit.metainterp import history
 from rpython.jit.metainterp.typesystem import deref, fieldType, arrayItem
 from rpython.jit.metainterp.warmstate import wrap, unwrap
-from rpython.jit.metainterp.resumecode import numb_next_item
 from rpython.rlib.unroll import unrolling_iterable
-from rpython.rtyper import rvirtualizable
+from rpython.rtyper import rvirtualizable2
 from rpython.rtyper.lltypesystem import lltype, llmemory
+from rpython.rtyper.ootypesystem import ootype
 from rpython.rtyper.rclass import IR_IMMUTABLE_ARRAY, IR_IMMUTABLE
 
 
@@ -15,21 +14,19 @@ class VirtualizableInfo(object):
     def __init__(self, warmrunnerdesc, VTYPEPTR):
         self.warmrunnerdesc = warmrunnerdesc
         cpu = warmrunnerdesc.cpu
+        if cpu.ts.name == 'ootype':
+            import py
+            py.test.skip("ootype: fix virtualizables")
         self.cpu = cpu
+        self.BoxArray = cpu.ts.BoxRef
         #
-        VTYPEPTR1 = VTYPEPTR
-        while 'virtualizable_accessor' not in deref(VTYPEPTR)._hints:
+        while 'virtualizable2_accessor' not in deref(VTYPEPTR)._hints:
             VTYPEPTR = cpu.ts.get_superclass(VTYPEPTR)
-            assert VTYPEPTR is not None, (
-                "%r is listed in the jit driver's 'virtualizables', "
-                "but that class doesn't have a '_virtualizable_' attribute "
-                "(if it has _virtualizable2_, rename it to _virtualizable_)"
-                % (VTYPEPTR1,))
         self.VTYPEPTR = VTYPEPTR
         self.VTYPE = VTYPE = deref(VTYPEPTR)
         self.vable_token_descr = cpu.fielddescrof(VTYPE, 'vable_token')
         #
-        accessor = VTYPE._hints['virtualizable_accessor']
+        accessor = VTYPE._hints['virtualizable2_accessor']
         all_fields = accessor.fields
         static_fields = []
         array_fields = []
@@ -48,14 +45,8 @@ class VirtualizableInfo(object):
         for name in array_fields:
             ARRAYPTR = fieldType(VTYPE, name)
             ARRAY = deref(ARRAYPTR)
-            assert isinstance(ARRAYPTR, lltype.Ptr)
-            if not isinstance(ARRAY, lltype.GcArray):
-                raise Exception(
-                    "The virtualizable field '%s' is not an array (found %r)."
-                    " It usually means that you must try harder to ensure that"
-                    " the list is not resized at run-time. You can do that by"
-                    " using rpython.rlib.debug.make_sure_not_resized()." %
-                    (name, ARRAY))
+            assert isinstance(ARRAYPTR, (lltype.Ptr, ootype.Array))
+            assert isinstance(ARRAY, (lltype.GcArray, ootype.Array))
             ARRAYITEMTYPES.append(arrayItem(ARRAY))
         self.array_descrs = [cpu.arraydescrof(deref(fieldType(VTYPE, name)))
                              for name in array_fields]
@@ -74,12 +65,6 @@ class VirtualizableInfo(object):
                                     for name in static_fields]
         self.array_field_descrs = [cpu.fielddescrof(VTYPE, name)
                                    for name in array_fields]
-
-        for descr in self.static_field_descrs:
-            descr.vinfo = self
-        for descr in self.array_field_descrs:
-            descr.vinfo = self
-
         self.static_field_by_descrs = dict(
             [(descr, i) for (i, descr) in enumerate(self.static_field_descrs)])
         self.array_field_by_descrs = dict(
@@ -117,52 +102,53 @@ class VirtualizableInfo(object):
                     i = i + 1
             assert len(boxes) == i + 1
 
-        def get_total_size(virtualizable):
-            virtualizable = cast_gcref_to_vtype(virtualizable)
-            size = 0
-            for _, fieldname in unroll_array_fields:
-                lst = getattr(virtualizable, fieldname)
-                size += getlength(lst)
-            for _, fieldname in unroll_static_fields:
-                size += 1
-            return size
-
-        def write_from_resume_data_partial(virtualizable, reader, index, numb):
+        def write_from_resume_data_partial(virtualizable, reader, numb):
             virtualizable = cast_gcref_to_vtype(virtualizable)
             # Load values from the reader (see resume.py) described by
             # the list of numbers 'nums', and write them in their proper
-            # place in the 'virtualizable'.
-            for FIELDTYPE, fieldname in unroll_static_fields:
-                item, index = numb_next_item(numb, index)
-                x = reader.load_value_of_type(FIELDTYPE, item)
-                setattr(virtualizable, fieldname, x)
-            for ARRAYITEMTYPE, fieldname in unroll_array_fields:
+            # place in the 'virtualizable'.  This works from the end of
+            # the list and returns the index in 'nums' of the start of
+            # the virtualizable data found, allowing the caller to do
+            # further processing with the start of the list.
+            i = len(numb.nums) - 1
+            assert i >= 0
+            for ARRAYITEMTYPE, fieldname in unroll_array_fields_rev:
                 lst = getattr(virtualizable, fieldname)
-                for j in range(getlength(lst)):
-                    item, index = numb_next_item(numb, index)                    
-                    x = reader.load_value_of_type(ARRAYITEMTYPE, item)
+                for j in range(getlength(lst) - 1, -1, -1):
+                    i -= 1
+                    assert i >= 0
+                    x = reader.load_value_of_type(ARRAYITEMTYPE, numb.nums[i])
                     setarrayitem(lst, j, x)
-            return index
+            for FIELDTYPE, fieldname in unroll_static_fields_rev:
+                i -= 1
+                assert i >= 0
+                x = reader.load_value_of_type(FIELDTYPE, numb.nums[i])
+                setattr(virtualizable, fieldname, x)
+            return i
 
-        def load_list_of_boxes(virtualizable, reader, vable_box, numb, index):
+        def load_list_of_boxes(virtualizable, reader, numb):
             virtualizable = cast_gcref_to_vtype(virtualizable)
             # Uses 'virtualizable' only to know the length of the arrays;
             # does not write anything into it.  The returned list is in
             # the format expected of virtualizable_boxes, so it ends in
             # the virtualizable itself.
-            boxes = []
-            for FIELDTYPE, fieldname in unroll_static_fields:
-                item, index = numb_next_item(numb, index)
-                box = reader.decode_box_of_type(FIELDTYPE, item)
-                boxes.append(box)
-            for ARRAYITEMTYPE, fieldname in unroll_array_fields:
+            i = len(numb.nums) - 1
+            assert i >= 0
+            boxes = [reader.decode_box_of_type(self.VTYPEPTR, numb.nums[i])]
+            for ARRAYITEMTYPE, fieldname in unroll_array_fields_rev:
                 lst = getattr(virtualizable, fieldname)
-                for j in range(getlength(lst)):
-                    item, index = numb_next_item(numb, index)                    
-                    box = reader.decode_box_of_type(ARRAYITEMTYPE, item)
+                for j in range(getlength(lst) - 1, -1, -1):
+                    i -= 1
+                    assert i >= 0
+                    box = reader.decode_box_of_type(ARRAYITEMTYPE, numb.nums[i])
                     boxes.append(box)
-            boxes.append(vable_box)
-            return boxes, index
+            for FIELDTYPE, fieldname in unroll_static_fields_rev:
+                i -= 1
+                assert i >= 0
+                box = reader.decode_box_of_type(FIELDTYPE, numb.nums[i])
+                boxes.append(box)
+            boxes.reverse()
+            return boxes
 
         def check_boxes(virtualizable, boxes):
             virtualizable = cast_gcref_to_vtype(virtualizable)
@@ -217,7 +203,6 @@ class VirtualizableInfo(object):
         self.check_boxes = check_boxes
         self.get_index_in_array = get_index_in_array
         self.get_array_length = get_array_length
-        self.get_total_size = get_total_size
 
         def cast_to_vtype(virtualizable):
             return self.cpu.ts.cast_to_instance_maybe(VTYPEPTR, virtualizable)
@@ -227,6 +212,10 @@ class VirtualizableInfo(object):
             assert lltype.typeOf(virtualizable) == llmemory.GCREF
             return lltype.cast_opaque_ptr(VTYPEPTR, virtualizable)
         self.cast_gcref_to_vtype = cast_gcref_to_vtype
+
+        def reset_vable_token(virtualizable):
+            virtualizable.vable_token = TOKEN_NONE
+        self.reset_vable_token = reset_vable_token
 
         def clear_vable_token(virtualizable):
             virtualizable = cast_gcref_to_vtype(virtualizable)
@@ -242,10 +231,6 @@ class VirtualizableInfo(object):
         self.tracing_before_residual_call = tracing_before_residual_call
 
         def tracing_after_residual_call(virtualizable):
-            """
-            Returns whether or not the virtualizable was forced during a
-            CALL_MAY_FORCE.
-            """
             virtualizable = cast_gcref_to_vtype(virtualizable)
             if virtualizable.vable_token:
                 # not modified by the residual call; assert that it is still
@@ -283,10 +268,6 @@ class VirtualizableInfo(object):
             virtualizable.vable_token = TOKEN_NONE
         self.reset_token_gcref = reset_token_gcref
 
-        def reset_vable_token(virtualizable):
-            virtualizable.vable_token = TOKEN_NONE
-        self.reset_vable_token = reset_vable_token
-
     def _freeze_(self):
         return True
 
@@ -302,24 +283,14 @@ class VirtualizableInfo(object):
         (_, FUNCPTR) = ts.get_FuncType([self.VTYPEPTR], lltype.Void)
         funcptr = self.warmrunnerdesc.helper_func(
             FUNCPTR, force_virtualizable_if_necessary)
-        rvirtualizable.replace_force_virtualizable_with_call(
+        rvirtualizable2.replace_force_virtualizable_with_call(
             all_graphs, self.VTYPEPTR, funcptr)
-        (_, FUNCPTR) = ts.get_FuncType([llmemory.GCREF], lltype.Void)
-        self.clear_vable_ptr = self.warmrunnerdesc.helper_func(
-            FUNCPTR, self.clear_vable_token)
-        FUNC = FUNCPTR.TO
-        ei = EffectInfo([], [], [], [], [], [], EffectInfo.EF_CANNOT_RAISE,
-                        can_invalidate=False,
-                        oopspecindex=EffectInfo.OS_JIT_FORCE_VIRTUALIZABLE)
-
-        self.clear_vable_descr = self.cpu.calldescrof(FUNC, FUNC.ARGS,
-                                                      FUNC.RESULT, ei)
 
     def unwrap_virtualizable_box(self, virtualizable_box):
         return virtualizable_box.getref(llmemory.GCREF)
 
     def is_vtypeptr(self, TYPE):
-        return TYPE == self.VTYPEPTR
+        return rvirtualizable2.match_virtualizable_type(TYPE, self.VTYPEPTR)
 
 # ____________________________________________________________
 #

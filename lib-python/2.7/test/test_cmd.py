@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 """
 Test script for the 'cmd' module
 Original by Michael Schneider
@@ -83,11 +84,11 @@ class samplecmdclass(cmd.Cmd):
     <BLANKLINE>
     Documented commands (type help <topic>):
     ========================================
-    add  help
+    add
     <BLANKLINE>
     Undocumented commands:
     ======================
-    exit  shell
+    exit  help  shell
     <BLANKLINE>
 
     Test for the function print_topics():
@@ -124,11 +125,11 @@ class samplecmdclass(cmd.Cmd):
     <BLANKLINE>
     Documented commands (type help <topic>):
     ========================================
-    add  help
+    add
     <BLANKLINE>
     Undocumented commands:
     ======================
-    exit  shell
+    exit  help  shell
     <BLANKLINE>
     help text for add
     Hello from postloop

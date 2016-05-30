@@ -1,10 +1,9 @@
-from rpython.rlib.runicode import code_to_unichr, MAXUNICODE
+from rpython.rlib.runicode import code_to_unichr
 from rpython.rlib.unicodedata import unicodedb_5_2_0
-from rpython.rtyper.test.tool import BaseRtypingTest
-from rpython.translator.c.test.test_genc import compile
+from rpython.rtyper.test.tool import BaseRtypingTest, LLRtypeMixin
 
 
-class TestTranslated(BaseRtypingTest):
+class TestTranslated(BaseRtypingTest, LLRtypeMixin):
     def test_translated(self):
         def f(n):
             if n == 0:
@@ -16,13 +15,8 @@ class TestTranslated(BaseRtypingTest):
         print hex(res)
         assert res == f(1)
 
-
-def test_code_to_unichr():
-    def f(c):
-        return ord(code_to_unichr(c)[0])
-    f1 = compile(f, [int])
-    got = f1(0x12346)
-    if MAXUNICODE == 65535:
-        assert got == 0xd808    # first char of a pair
-    else:
-        assert got == 0x12346
+    def test_code_to_unichr(self):
+        def f(c):
+            return code_to_unichr(c) + u''
+        res = self.ll_to_unicode(self.interpret(f, [0x10346]))
+        assert res == u'\U00010346'

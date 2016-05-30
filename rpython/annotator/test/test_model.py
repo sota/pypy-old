@@ -1,17 +1,8 @@
-import pytest
+import py
 
-from rpython.flowspace.model import Variable
-from rpython.flowspace.operation import op
-from rpython.translator.translator import TranslationContext
 from rpython.annotator.model import *
-from rpython.annotator.annrpython import BlockedInference
 from rpython.annotator.listdef import ListDef
-from rpython.annotator import unaryop, binaryop  # for side-effects
-
-@pytest.fixture()
-def annotator():
-    t = TranslationContext()
-    return t.buildannotator()
+from rpython.rtyper.ootypesystem import ootype
 
 
 listdef1 = ListDef(None, SomeTuple([SomeInteger(nonneg=True), SomeString()]))
@@ -28,6 +19,25 @@ slist = [s1, s2, s3, s4, s6]  # not s5 -- unionof(s4,s5) modifies s4 and s5
 
 class C(object):
     pass
+
+class DummyClassDef:
+    def __init__(self, cls=C):
+        self.cls = cls
+        self.name = cls.__name__
+
+si0 = SomeInstance(DummyClassDef(), True)
+si1 = SomeInstance(DummyClassDef())
+sTrue = SomeBool()
+sTrue.const = True
+sFalse = SomeBool()
+sFalse.const = False
+
+def test_is_None():
+    assert pair(s_None, s_None).is_() == sTrue
+    assert pair(si1, s_None).is_() == sFalse
+    assert pair(si0, s_None).is_() != sTrue
+    assert pair(si0, s_None).is_() != sFalse
+    assert pair(si0, s_None).is_() == SomeBool()
 
 def test_equality():
     assert s1 != s2 != s3 != s4 != s5 != s6
@@ -46,16 +56,12 @@ def test_contains():
                                            (s4, s4), (s4, s6),
                                                      (s6, s6)])
 
-def test_signedness():
-    assert not SomeInteger(unsigned=True).contains(SomeInteger())
-    assert SomeInteger(unsigned=True).contains(SomeInteger(nonneg=True))
-
 def test_commonbase_simple():
-    class A0:
+    class A0: 
         pass
-    class A1(A0):
+    class A1(A0): 
         pass
-    class A2(A0):
+    class A2(A0): 
         pass
     class B1(object):
         pass
@@ -67,10 +73,10 @@ def test_commonbase_simple():
     except TypeError:    # if A0 is also a new-style class, e.g. in PyPy
         class B3(A0, object):
             pass
-    assert commonbase(A1,A2) is A0
+    assert commonbase(A1,A2) is A0 
     assert commonbase(A1,A0) is A0
     assert commonbase(A1,A1) is A1
-    assert commonbase(A2,B2) is object
+    assert commonbase(A2,B2) is object 
     assert commonbase(A2,B3) is A0
 
 def test_list_union():
@@ -93,6 +99,102 @@ def test_list_contains():
     assert not s1.contains(s2)
     assert s1 != s2
 
+def test_ll_to_annotation():
+    s_z = ll_to_annotation(lltype.Signed._defl())
+    s_s = SomeInteger()
+    s_u = SomeInteger(nonneg=True, unsigned=True)
+    assert s_z.contains(s_s)
+    assert not s_z.contains(s_u)
+    s_uz = ll_to_annotation(lltype.Unsigned._defl())
+    assert s_uz.contains(s_u)
+    assert ll_to_annotation(lltype.Bool._defl()).contains(SomeBool())
+    assert ll_to_annotation(lltype.Char._defl()).contains(SomeChar())
+    S = lltype.GcStruct('s')
+    A = lltype.GcArray()
+    s_p = ll_to_annotation(lltype.malloc(S))
+    assert isinstance(s_p, SomePtr) and s_p.ll_ptrtype == lltype.Ptr(S)
+    s_p = ll_to_annotation(lltype.malloc(A, 0))
+    assert isinstance(s_p, SomePtr) and s_p.ll_ptrtype == lltype.Ptr(A)
+    C = ootype.Instance('C', ootype.ROOT, {})
+    s_p = ll_to_annotation(ootype.new(C))
+    assert isinstance(s_p, SomeOOInstance) and s_p.ootype == C
+
+def test_annotation_to_lltype():
+    from rpython.rlib.rarithmetic import r_uint, r_singlefloat
+    s_i = SomeInteger()
+    s_pos = SomeInteger(nonneg=True)
+    s_1 = SomeInteger(nonneg=True); s_1.const = 1
+    s_m1 = SomeInteger(nonneg=False); s_m1.const = -1
+    s_u = SomeInteger(nonneg=True, unsigned=True); 
+    s_u1 = SomeInteger(nonneg=True, unsigned=True); 
+    s_u1.const = r_uint(1)
+    assert annotation_to_lltype(s_i) == lltype.Signed
+    assert annotation_to_lltype(s_pos) == lltype.Signed
+    assert annotation_to_lltype(s_1) == lltype.Signed
+    assert annotation_to_lltype(s_m1) == lltype.Signed
+    assert annotation_to_lltype(s_u) == lltype.Unsigned
+    assert annotation_to_lltype(s_u1) == lltype.Unsigned
+    assert annotation_to_lltype(SomeBool()) == lltype.Bool
+    assert annotation_to_lltype(SomeChar()) == lltype.Char
+    PS = lltype.Ptr(lltype.GcStruct('s'))
+    s_p = SomePtr(ll_ptrtype=PS)
+    assert annotation_to_lltype(s_p) == PS
+    py.test.raises(ValueError, "annotation_to_lltype(si0)")
+    C = ootype.Instance('C', ootype.ROOT, {})
+    ref = SomeOOInstance(C)
+    assert annotation_to_lltype(ref) == C
+    s_singlefloat = SomeSingleFloat()
+    s_singlefloat.const = r_singlefloat(0.0)
+    assert annotation_to_lltype(s_singlefloat) == lltype.SingleFloat
+    
+def test_ll_union():
+    PS1 = lltype.Ptr(lltype.GcStruct('s'))
+    PS2 = lltype.Ptr(lltype.GcStruct('s'))
+    PS3 = lltype.Ptr(lltype.GcStruct('s3'))
+    PA1 = lltype.Ptr(lltype.GcArray())
+    PA2 = lltype.Ptr(lltype.GcArray())
+
+    assert unionof(SomePtr(PS1),SomePtr(PS1)) == SomePtr(PS1)
+    assert unionof(SomePtr(PS1),SomePtr(PS2)) == SomePtr(PS2)
+    assert unionof(SomePtr(PS1),SomePtr(PS2)) == SomePtr(PS1)
+
+    assert unionof(SomePtr(PA1),SomePtr(PA1)) == SomePtr(PA1)
+    assert unionof(SomePtr(PA1),SomePtr(PA2)) == SomePtr(PA2)
+    assert unionof(SomePtr(PA1),SomePtr(PA2)) == SomePtr(PA1)
+
+    assert unionof(SomePtr(PS1),SomeImpossibleValue()) == SomePtr(PS1)
+    assert unionof(SomeImpossibleValue(), SomePtr(PS1)) == SomePtr(PS1)
+
+    py.test.raises(AssertionError, "unionof(SomePtr(PA1), SomePtr(PS1))")
+    py.test.raises(AssertionError, "unionof(SomePtr(PS1), SomePtr(PS3))")
+    py.test.raises(AssertionError, "unionof(SomePtr(PS1), SomeInteger())")
+    py.test.raises(AssertionError, "unionof(SomePtr(PS1), SomeObject())")
+    py.test.raises(AssertionError, "unionof(SomeInteger(), SomePtr(PS1))")
+    py.test.raises(AssertionError, "unionof(SomeObject(), SomePtr(PS1))")
+
+def test_oo_union():
+    C1 = ootype.Instance("C1", ootype.ROOT)
+    C2 = ootype.Instance("C2", C1)
+    C3 = ootype.Instance("C3", C1)
+    D = ootype.Instance("D", ootype.ROOT)
+    assert unionof(SomeOOInstance(C1), SomeOOInstance(C1)) == SomeOOInstance(C1)
+    assert unionof(SomeOOInstance(C1), SomeOOInstance(C2)) == SomeOOInstance(C1)
+    assert unionof(SomeOOInstance(C2), SomeOOInstance(C1)) == SomeOOInstance(C1)
+    assert unionof(SomeOOInstance(C2), SomeOOInstance(C3)) == SomeOOInstance(C1)
+
+    assert unionof(SomeOOInstance(C1),SomeImpossibleValue()) == SomeOOInstance(C1)
+    assert unionof(SomeImpossibleValue(), SomeOOInstance(C1)) == SomeOOInstance(C1)
+
+    assert unionof(SomeOOInstance(C1), SomeOOInstance(D)) == SomeOOInstance(ootype.ROOT)
+
+def test_ooclass_array_contains():
+    A = ootype.Array(ootype.Signed)
+    cls = ootype.runtimeClass(A)
+    s1 = SomeOOClass(A)
+    s2 = SomeOOClass(A)
+    s2.const=cls
+    assert s1.contains(s2)
+
 def test_nan():
     f1 = SomeFloat()
     f1.const = float("nan")
@@ -102,124 +204,8 @@ def test_nan():
     assert f2.contains(f1)
     assert f1.contains(f2)
 
-def compile_function(function, annotation=[]):
-    t = TranslationContext()
-    t.buildannotator().build_types(function, annotation)
+if __name__ == '__main__':
+    for name, value in globals().items():
+        if name.startswith('test_'):
+            value()
 
-class AAA(object):
-    pass
-
-def test_blocked_inference1(annotator):
-    def blocked_inference():
-        return AAA().m()
-
-    with pytest.raises(AnnotatorError):
-        annotator.build_types(blocked_inference, [])
-
-def test_blocked_inference2(annotator):
-    def blocked_inference():
-        a = AAA()
-        b = a.x
-        return b
-
-    with pytest.raises(AnnotatorError):
-        annotator.build_types(blocked_inference, [])
-
-
-def test_not_const():
-    s_int = SomeInteger()
-    s_int.const = 2
-    assert s_int != SomeInteger()
-    assert not_const(s_int) == SomeInteger()
-    assert not_const(s_None) == s_None
-
-
-def test_nonnulify():
-    s = SomeString(can_be_None=True).nonnulify()
-    assert s.can_be_None is True
-    assert s.no_nul is True
-    s = SomeChar().nonnulify()
-    assert s.no_nul is True
-
-def test_SomeException_union(annotator):
-    bk = annotator.bookkeeper
-    someinst = lambda cls, **kw: SomeInstance(bk.getuniqueclassdef(cls), **kw)
-    s_inst = someinst(Exception)
-    s_exc = bk.new_exception([ValueError, IndexError])
-    assert unionof(s_exc, s_inst) == s_inst
-    assert unionof(s_inst, s_exc) == s_inst
-    s_nullable = unionof(s_None, bk.new_exception([ValueError]))
-    assert isinstance(s_nullable, SomeInstance)
-    assert s_nullable.can_be_None
-    s_exc1 = bk.new_exception([ValueError])
-    s_exc2 = bk.new_exception([IndexError])
-    unionof(s_exc1, s_exc2) == unionof(s_exc2, s_exc1)
-
-def contains_s(s_a, s_b):
-    if s_b is None:
-        return True
-    elif s_a is None:
-        return False
-    else:
-        return s_a.contains(s_b)
-
-def annotate_op(ann, hlop, args_s):
-    for v_arg, s_arg in zip(hlop.args, args_s):
-        ann.setbinding(v_arg, s_arg)
-    with ann.bookkeeper.at_position(None):
-        try:
-            ann.consider_op(hlop)
-        except BlockedInference:
-            # BlockedInference only stops annotation along the normal path,
-            # but not along the exceptional one.
-            pass
-    return hlop.result.annotation, ann.get_exception(hlop)
-
-def test_generalize_getitem_dict(annotator):
-    bk = annotator.bookkeeper
-    hlop = op.getitem(Variable(), Variable())
-    s_int = SomeInteger()
-    with bk.at_position(None):
-        s_empty_dict = bk.newdict()
-    s_value, s_exc = annotate_op(annotator, hlop, [s_None, s_int])
-    s_value2, s_exc2 = annotate_op(annotator, hlop, [s_empty_dict, s_int])
-    assert contains_s(s_value2, s_value)
-    assert contains_s(s_exc2, s_exc)
-
-def test_generalize_getitem_list(annotator):
-    bk = annotator.bookkeeper
-    hlop = op.getitem(Variable(), Variable())
-    s_int = SomeInteger()
-    with bk.at_position(None):
-        s_empty_list = bk.newlist()
-    s_value, s_exc = annotate_op(annotator, hlop, [s_None, s_int])
-    s_value2, s_exc2 = annotate_op(annotator, hlop, [s_empty_list, s_int])
-    assert contains_s(s_value2, s_value)
-    assert contains_s(s_exc2, s_exc)
-
-def test_generalize_getitem_string(annotator):
-    hlop = op.getitem(Variable(), Variable())
-    s_int = SomeInteger()
-    s_str = SomeString(can_be_None=True)
-    s_value, s_exc = annotate_op(annotator, hlop, [s_None, s_int])
-    s_value2, s_exc2 = annotate_op(annotator, hlop, [s_str, s_int])
-    assert contains_s(s_value2, s_value)
-    assert contains_s(s_exc2, s_exc)
-
-def test_generalize_string_concat(annotator):
-    hlop = op.add(Variable(), Variable())
-    s_str = SomeString(can_be_None=True)
-    s_value, s_exc = annotate_op(annotator, hlop, [s_None, s_str])
-    s_value2, s_exc2 = annotate_op(annotator, hlop, [s_str, s_str])
-    assert contains_s(s_value2, s_value)
-    assert contains_s(s_exc2, s_exc)
-
-def test_getitem_dict(annotator):
-    bk = annotator.bookkeeper
-    hlop = op.getitem(Variable(), Variable())
-    with bk.at_position(None):
-        s_dict = bk.newdict()
-    s_dict.dictdef.generalize_key(SomeString())
-    s_dict.dictdef.generalize_value(SomeInteger())
-    s_result, _ = annotate_op(annotator, hlop, [s_dict, SomeString()])
-    assert s_result == SomeInteger()

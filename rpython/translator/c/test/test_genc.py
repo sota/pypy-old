@@ -1,10 +1,9 @@
 import ctypes
-from collections import OrderedDict
 
 import py
 
 from rpython.rlib.rfloat import NAN, INFINITY
-from rpython.rlib.entrypoint import entrypoint_highlevel
+from rpython.rlib.entrypoint import entrypoint
 from rpython.rlib.unroll import unrolling_iterable
 from rpython.rlib.rarithmetic import r_longlong, r_ulonglong, r_uint, intmask
 from rpython.rlib.objectmodel import specialize
@@ -38,7 +37,7 @@ def llrepr_out(v):
     if isinstance(v, float):
         from rpython.rlib.rfloat import formatd, DTSF_ADD_DOT_0
         return formatd(v, 'r', 0, DTSF_ADD_DOT_0)
-    return str(v)   # always return a string, to get consistent types
+    return v
 
 def parse_longlong(a):
     p0, p1 = a.split(":")
@@ -51,7 +50,7 @@ def parse_ulonglong(a):
                                            unsigned_ffffffff)
 
 def compile(fn, argtypes, view=False, gcpolicy="none", backendopt=True,
-            annotatorpolicy=None, thread=False, **kwds):
+            annotatorpolicy=None, thread=False):
     argtypes_unroll = unrolling_iterable(enumerate(argtypes))
 
     for argtype in argtypes:
@@ -99,7 +98,7 @@ def compile(fn, argtypes, view=False, gcpolicy="none", backendopt=True,
         return 0
 
     t = Translation(entry_point, None, gc=gcpolicy, backend="c",
-                    policy=annotatorpolicy, thread=thread, **kwds)
+                    policy=annotatorpolicy, thread=thread)
     if not backendopt:
         t.disable(["backendopt_lltype"])
     t.driver.config.translation.countmallocs = True
@@ -204,28 +203,6 @@ def test_simple():
     assert f1(-123) == -246
 
     py.test.raises(Exception, f1, "world")  # check that it's really typed
-
-
-def test_int_becomes_float():
-    # used to crash "very often": the long chain of mangle() calls end
-    # up converting the return value of f() from an int to a float, but
-    # if blocks are followed in random order by the annotator, it will
-    # very likely first follow the call to llrepr_out() done after the
-    # call to f(), getting an int first (and a float only later).
-    @specialize.arg(1)
-    def mangle(x, chain):
-        if chain:
-            return mangle(x, chain[1:])
-        return x - 0.5
-    def f(x):
-        if x > 10:
-            x = mangle(x, (1,1,1,1,1,1,1,1,1,1))
-        return x + 1
-
-    f1 = compile(f, [int])
-
-    assert f1(5) == 6
-    assert f1(12) == 12.5
 
 
 def test_string_arg():
@@ -481,7 +458,6 @@ def test_name():
         return 3
 
     f.c_name = 'pypy_xyz_f'
-    f.exported_symbol = True
 
     t = Translation(f, [], backend="c")
     t.annotate()
@@ -495,7 +471,7 @@ def test_entrypoints():
         return 3
 
     key = "test_entrypoints42"
-    @entrypoint_highlevel(key, [int], "foobar")
+    @entrypoint(key, [int], "foobar")
     def g(x):
         return x + 42
 
@@ -514,6 +490,9 @@ def test_exportstruct():
     FOO = Struct("FOO", ("field1", Signed))
     foo = malloc(FOO, flavor="raw")
     foo.field1 = 43
+    # maybe export_struct should add the struct name to eci automatically?
+    # https://bugs.pypy.org/issue1361
+    foo._obj._compilation_info = ExternalCompilationInfo(export_symbols=['BarStruct'])
     export_struct("BarStruct", foo._obj)
     t = Translation(f, [], backend="c")
     t.annotate()
@@ -573,17 +552,6 @@ def test_recursive_llhelper():
     fn = compile(chooser, [bool])
     assert fn(True)
 
-def test_ordered_dict():
-    expected = [('ea', 1), ('bb', 2), ('c', 3), ('d', 4), ('e', 5),
-                ('ef', 6)]
-    d = OrderedDict(expected)
-
-    def f():
-        assert d.items() == expected
-
-    fn = compile(f, [])
-    fn()
-
 def test_inhibit_tail_call():
     def foobar_fn(n):
         return 42
@@ -596,7 +564,7 @@ def test_inhibit_tail_call():
     t.context._graphof(foobar_fn).inhibit_tail_call = True
     t.source_c()
     lines = t.driver.cbuilder.c_source_filename.join('..',
-                              'rpython_translator_c_test.c').readlines()
+                              'rpython_translator_c_test_test_genc.c').readlines()
     for i, line in enumerate(lines):
         if '= pypy_g_foobar_fn' in line:
             break

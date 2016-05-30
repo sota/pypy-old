@@ -1,12 +1,13 @@
 """Just another bunch of tests for llmath, run on top of llinterp."""
 
-from rpython.rtyper.test.tool import BaseRtypingTest
+from rpython.rtyper.test.tool import BaseRtypingTest, LLRtypeMixin
 from rpython.rtyper.lltypesystem.module import ll_math
 import math
 from rpython.rlib import rfloat
 
+# XXX no OORtypeMixin here
 
-class TestMath(BaseRtypingTest):
+class TestMath(BaseRtypingTest, LLRtypeMixin):
     def new_unary_test(name):
         try:
             fn = getattr(math, name)

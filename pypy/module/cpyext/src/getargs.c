@@ -53,7 +53,7 @@ PyArg_Parse(PyObject *args, const char *format, ...)
 }
 
 int
-_PyArg_Parse_SizeT(PyObject *args, const char *format, ...)
+_PyArg_Parse_SizeT(PyObject *args, char *format, ...)
 {
     int retval;
     va_list va;
@@ -78,7 +78,7 @@ PyArg_ParseTuple(PyObject *args, const char *format, ...)
 }
 
 int
-_PyArg_ParseTuple_SizeT(PyObject *args, const char *format, ...)
+_PyArg_ParseTuple_SizeT(PyObject *args, char *format, ...)
 {
     int retval;
     va_list va;
@@ -109,7 +109,7 @@ PyArg_VaParse(PyObject *args, const char *format, va_list va)
 }
 
 int
-_PyArg_VaParse_SizeT(PyObject *args, const char *format, va_list va)
+_PyArg_VaParse_SizeT(PyObject *args, char *format, va_list va)
 {
     va_list lva;
 
@@ -442,7 +442,7 @@ converttuple(PyObject *arg, const char **p_format, va_list *p_va, int flags,
             strncpy(msgbuf, "is not retrievable", bufsize);
             return msgbuf;
         }
-	//PyPy_Borrow(arg, item);
+	PyPy_Borrow(arg, item);
         msg = convertitem(item, &format, p_va, flags, levels+1,
                           msgbuf, bufsize, freelist);
         /* PySequence_GetItem calls tp->sq_item, which INCREFs */

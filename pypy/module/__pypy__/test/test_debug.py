@@ -43,8 +43,3 @@ class AppTestDebug:
                         ('debug_print', 'hello world'),
                         ])
                 ])
-
-    def test_debug_flush(self):
-        from __pypy__ import debug_flush
-        debug_flush()
-        # assert did not crash

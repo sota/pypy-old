@@ -95,6 +95,8 @@ if UNROLL_ALL:
 class RSHA(object):
     """RPython-level SHA object.
     """
+    _mixin_ = True        # for interp_sha.py
+
     def __init__(self, initialdata=''):
         self._init()
         self.update(initialdata)

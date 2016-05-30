@@ -1,13 +1,18 @@
+import py
 from rpython.translator.translator import TranslationContext, graphof
+from rpython.translator.simplify import get_funcobj
 from rpython.translator.backendopt.canraise import RaiseAnalyzer
 from rpython.translator.backendopt.all import backend_optimizations
+from rpython.rtyper.test.tool import LLRtypeMixin, OORtypeMixin
 from rpython.conftest import option
 
-class TestCanRaise(object):
+class BaseTestCanRaise(object):
+    type_system = None
+
     def translate(self, func, sig):
         t = TranslationContext()
         t.buildannotator().build_types(func, sig)
-        t.buildrtyper().specialize()
+        t.buildrtyper(type_system=self.type_system).specialize()
         if option.view:
             t.view()
         return t, RaiseAnalyzer(t)
@@ -131,7 +136,7 @@ class TestCanRaise(object):
                 obj = B()
             f(obj)
             m(obj)
-
+        
         t, ra = self.translate(h, [int])
         hgraph = graphof(t, h)
         # fiiiish :-(
@@ -142,7 +147,7 @@ class TestCanRaise(object):
         # check that we fished the expected ops
         def check_call(op, fname):
             assert op.opname == "direct_call"
-            assert op.args[0].value._obj._name == fname
+            assert get_funcobj(op.args[0].value)._name == fname
         check_call(op_call_f, "f")
         check_call(op_call_m, "m")
 
@@ -174,7 +179,7 @@ class TestCanRaise(object):
         # an indirect call without a list of graphs
         from rpython.rlib.objectmodel import instantiate
         class A:
-            pass
+            pass 
         class B(A):
             pass
         def g(x):
@@ -190,6 +195,7 @@ class TestCanRaise(object):
         result = ra.can_raise(fgraph.startblock.operations[0])
         assert result
 
+class TestLLType(LLRtypeMixin, BaseTestCanRaise):
     def test_llexternal(self):
         from rpython.rtyper.lltypesystem.rffi import llexternal
         from rpython.rtyper.lltypesystem import lltype
@@ -204,7 +210,8 @@ class TestCanRaise(object):
         result = ra.can_raise(fgraph.startblock.operations[0])
         assert not result
 
-        z = llexternal('z', [lltype.Signed], lltype.Signed)
+        z = lltype.functionptr(lltype.FuncType([lltype.Signed], lltype.Signed),
+                               'foobar')
         def g(x):
             return z(x)
         t, ra = self.translate(g, [int])
@@ -225,31 +232,7 @@ class TestCanRaise(object):
         result = ra.can_raise(fgraph.startblock.operations[0])
         assert not result
 
-    def test_memoryerror(self):
-        def f(x):
-            return [x, 42]
-        t, ra = self.translate(f, [int])
-        result = ra.analyze_direct_call(graphof(t, f))
-        assert result
-        #
-        ra = RaiseAnalyzer(t)
-        ra.do_ignore_memory_error()
-        result = ra.analyze_direct_call(graphof(t, f))
-        assert not result
-        #
-        def g(x):
-            try:
-                return f(x)
-            except:
-                raise
-        t, ra = self.translate(g, [int])
-        ra.do_ignore_memory_error()
-        result = ra.analyze_direct_call(graphof(t, g))
-        assert not result
-        #
-        def h(x):
-            return {5:6}[x]
-        t, ra = self.translate(h, [int])
-        ra.do_ignore_memory_error()     # but it's potentially a KeyError
-        result = ra.analyze_direct_call(graphof(t, h))
-        assert result
+
+class TestOOType(OORtypeMixin, BaseTestCanRaise):
+    def test_can_raise_recursive(self):
+        py.test.skip("ootype: no explicit stack checks raising RuntimeError")

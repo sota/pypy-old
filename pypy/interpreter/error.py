@@ -1,12 +1,11 @@
 import cStringIO
-import itertools
 import os
 import sys
 import traceback
 from errno import EINTR
 
 from rpython.rlib import jit
-from rpython.rlib.objectmodel import we_are_translated, specialize
+from rpython.rlib.objectmodel import we_are_translated
 
 from pypy.interpreter import debug
 
@@ -29,22 +28,23 @@ class OperationError(Exception):
     _application_traceback = None
 
     def __init__(self, w_type, w_value, tb=None):
+        assert w_type is not None
         self.setup(w_type)
         self._w_value = w_value
         self._application_traceback = tb
 
     def setup(self, w_type):
-        assert w_type is not None
         self.w_type = w_type
         if not we_are_translated():
             self.debug_excs = []
 
     def clear(self, space):
-        # XXX remove this method.  The point is that we cannot always
-        # hack at 'self' to clear w_type and _w_value, because in some
-        # corner cases the OperationError will be used again: see
-        # test_interpreter.py:test_with_statement_and_sys_clear.
-        pass
+        # for sys.exc_clear()
+        self.w_type = space.w_None
+        self._w_value = space.w_None
+        self._application_traceback = None
+        if not we_are_translated():
+            del self.debug_excs[:]
 
     def match(self, space, w_check_class):
         "Check if this application-level exception matches 'w_check_class'."
@@ -59,9 +59,7 @@ class OperationError(Exception):
         "NOT_RPYTHON: Convenience for tracebacks."
         s = self._w_value
         if self.__class__ is not OperationError and s is None:
-            space = getattr(self.w_type, 'space')
-            if space is not None:
-                s = self._compute_value(space)
+            s = self._compute_value()
         return '[%s: %s]' % (self.w_type, s)
 
     def errorstr(self, space, use_repr=False):
@@ -226,9 +224,10 @@ class OperationError(Exception):
     def _exception_getclass(self, space, w_inst):
         w_type = space.exception_getclass(w_inst)
         if not space.exception_is_valid_class_w(w_type):
-            raise oefmt(space.w_TypeError,
-                        "exceptions must be old-style classes or derived from "
-                        "BaseException, not %N", w_type)
+            typename = w_type.getname(space)
+            msg = ("exceptions must be old-style classes or derived "
+                   "from BaseException, not %s")
+            raise operationerrfmt(space.w_TypeError, msg, typename)
         return w_type
 
     def write_unraisable(self, space, where, w_object=None,
@@ -252,8 +251,7 @@ class OperationError(Exception):
                                w_t, w_v, w_tb],
                 """(where, objrepr, extra_line, t, v, tb):
                     import sys, traceback
-                    if where or objrepr:
-                        sys.stderr.write('From %s%s:\\n' % (where, objrepr))
+                    sys.stderr.write('From %s%s:\\n' % (where, objrepr))
                     if extra_line:
                         sys.stderr.write(extra_line)
                     traceback.print_exception(t, v, tb)
@@ -269,11 +267,11 @@ class OperationError(Exception):
     def get_w_value(self, space):
         w_value = self._w_value
         if w_value is None:
-            value = self._compute_value(space)
+            value = self._compute_value()
             self._w_value = w_value = space.wrap(value)
         return w_value
 
-    def _compute_value(self, space):
+    def _compute_value(self):
         raise NotImplementedError
 
     def get_traceback(self):
@@ -300,14 +298,6 @@ class OperationError(Exception):
         """
         self._application_traceback = traceback
 
-
-class ClearedOpErr:
-    def __init__(self, space):
-        self.operr = OperationError(space.w_None, space.w_None)
-
-def get_cleared_operation_error(space):
-    return space.fromcache(ClearedOpErr).operr
-
 # ____________________________________________________________
 # optimization only: avoid the slowest operation -- the string
 # formatting with '%' -- in the common case were we don't
@@ -315,7 +305,6 @@ def get_cleared_operation_error(space):
 
 _fmtcache = {}
 _fmtcache2 = {}
-_FMTS = tuple('NRTds')
 
 def decompose_valuefmt(valuefmt):
     """Returns a tuple of string parts extracted from valuefmt,
@@ -324,7 +313,7 @@ def decompose_valuefmt(valuefmt):
     parts = valuefmt.split('%')
     i = 1
     while i < len(parts):
-        if parts[i].startswith(_FMTS):
+        if parts[i].startswith('s') or parts[i].startswith('d'):
             formats.append(parts[i][0])
             parts[i] = parts[i][1:]
             i += 1
@@ -332,9 +321,7 @@ def decompose_valuefmt(valuefmt):
             parts[i-1] += '%' + parts[i+1]
             del parts[i:i+2]
         else:
-            fmts = '%%%s or %%%s' % (', %'.join(_FMTS[:-1]), _FMTS[-1])
-            raise ValueError("invalid format string (only %s supported)" %
-                             fmts)
+            raise ValueError("invalid format string (only %s or %d supported)")
     assert len(formats) > 0, "unsupported: no % command found"
     return tuple(parts), tuple(formats)
 
@@ -346,72 +333,45 @@ def get_operrcls2(valuefmt):
     except KeyError:
         from rpython.rlib.unroll import unrolling_iterable
         attrs = ['x%d' % i for i in range(len(formats))]
-        entries = unrolling_iterable(zip(itertools.count(), formats, attrs))
+        entries = unrolling_iterable(enumerate(attrs))
 
         class OpErrFmt(OperationError):
             def __init__(self, w_type, strings, *args):
                 self.setup(w_type)
                 assert len(args) == len(strings) - 1
                 self.xstrings = strings
-                for i, _, attr in entries:
+                for i, attr in entries:
                     setattr(self, attr, args[i])
+                assert w_type is not None
 
-            def _compute_value(self, space):
+            def _compute_value(self):
                 lst = [None] * (len(formats) + len(formats) + 1)
-                for i, fmt, attr in entries:
-                    lst[i + i] = self.xstrings[i]
+                for i, attr in entries:
+                    string = self.xstrings[i]
                     value = getattr(self, attr)
-                    if fmt == 'R':
-                        result = space.str_w(space.repr(value))
-                    elif fmt == 'T':
-                        result = space.type(value).name
-                    elif fmt == 'N':
-                        result = value.getname(space)
-                    else:
-                        result = str(value)
-                    lst[i + i + 1] = result
+                    lst[i+i] = string
+                    lst[i+i+1] = str(value)
                 lst[-1] = self.xstrings[-1]
                 return ''.join(lst)
         #
         _fmtcache2[formats] = OpErrFmt
     return OpErrFmt, strings
 
-class OpErrFmtNoArgs(OperationError):
-    def __init__(self, w_type, value):
-        self._value = value
-        self.setup(w_type)
-
-    def get_w_value(self, space):
-        w_value = self._w_value
-        if w_value is None:
-            self._w_value = w_value = space.wrap(self._value)
-        return w_value
-
-@specialize.memo()
-def get_operr_class(valuefmt):
+def get_operationerr_class(valuefmt):
     try:
         result = _fmtcache[valuefmt]
     except KeyError:
         result = _fmtcache[valuefmt] = get_operrcls2(valuefmt)
     return result
+get_operationerr_class._annspecialcase_ = 'specialize:memo'
 
-@specialize.arg(1)
-def oefmt(w_type, valuefmt, *args):
+def operationerrfmt(w_type, valuefmt, *args):
     """Equivalent to OperationError(w_type, space.wrap(valuefmt % args)).
     More efficient in the (common) case where the value is not actually
-    needed.
-
-    Supports the standard %s and %d formats, plus the following:
-
-    %N - The result of w_arg.getname(space)
-    %R - The result of space.str_w(space.repr(w_arg))
-    %T - The result of space.type(w_arg).name
-
-    """
-    if not len(args):
-        return OpErrFmtNoArgs(w_type, valuefmt)
-    OpErrFmt, strings = get_operr_class(valuefmt)
+    needed."""
+    OpErrFmt, strings = get_operationerr_class(valuefmt)
     return OpErrFmt(w_type, strings, *args)
+operationerrfmt._annspecialcase_ = 'specialize:arg(1)'
 
 # ____________________________________________________________
 
@@ -487,10 +447,10 @@ def wrap_oserror(space, e, filename=None, exception_name='w_OSError',
                              w_exception_class=w_exception_class)
 wrap_oserror._annspecialcase_ = 'specialize:arg(3)'
 
-def exception_from_saved_errno(space, w_type):
-    from rpython.rlib.rposix import get_saved_errno
+def exception_from_errno(space, w_type):
+    from rpython.rlib.rposix import get_errno
 
-    errno = get_saved_errno()
+    errno = get_errno()
     msg = os.strerror(errno)
     w_error = space.call_function(w_type, space.wrap(errno), space.wrap(msg))
     return OperationError(w_type, w_error)
@@ -517,3 +477,7 @@ def new_exception_class(space, name, w_bases=None, w_dict=None):
     if module:
         space.setattr(w_exc, space.wrap("__module__"), space.wrap(module))
     return w_exc
+
+def typed_unwrap_error_msg(space, expected, w_obj):
+    type_name = space.type(w_obj).getname(space)
+    return space.wrap("expected %s, got %s object" % (expected, type_name))

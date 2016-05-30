@@ -16,13 +16,10 @@ OPTIONS
     Inspect interactively after running script.
 
 -O
-    Skip assert statements.
+    Dummy optimization flag for compatibility with C Python.
 
--OO
-    Remove docstrings when importing modules in addition to ``-O``.
-
--c CMD
-    Program passed in as ``CMD`` (terminates option list).
+-c *cmd*
+    Program passed in as CMD (terminates option list).
 
 -S
     Do not ``import site`` on initialization.
@@ -36,10 +33,10 @@ OPTIONS
 -h, --help
     Show a help message and exit.
 
--m MOD
+-m *mod*
     Library module to be run as a script (terminates option list).
 
--W ARG
+-W *arg*
     Warning control (*arg* is *action*:*message*:*category*:*module*:*lineno*).
 
 -E
@@ -54,9 +51,44 @@ OPTIONS
 --info
     Print translation information about this PyPy executable.
 
---jit ARG
-    Low level JIT parameters.  Mostly internal.  Run ``--jit help``
-    for more information.
+--jit *arg*
+    Low level JIT parameters. Format is
+    *arg*\ ``=``\ *value*\ [``,``\ *arg*\ ``=``\ *value*\ ...]
+
+    ``off``
+        Disable the JIT.
+
+    ``threshold=``\ *value*
+        Number of times a loop has to run for it to become hot.
+
+    ``function_threshold=``\ *value*
+        Number of times a function must run for it to become traced from
+        start.
+
+    ``inlining=``\ *value*
+        Inline python functions or not (``1``/``0``).
+
+    ``loop_longevity=``\ *value*
+        A parameter controlling how long loops will be kept before being
+        freed, an estimate.
+
+    ``max_retrace_guards=``\ *value*
+        Number of extra guards a retrace can cause.
+
+    ``retrace_limit=``\ *value*
+        How many times we can try retracing before giving up.
+
+    ``trace_eagerness=``\ *value*
+        Number of times a guard has to fail before we start compiling a
+        bridge.
+
+    ``trace_limit=``\ *value*
+        Number of recorded operations before we abort tracing with
+        ``ABORT_TRACE_TOO_LONG``.
+
+    ``enable_opts=``\ *value*
+        Optimizations to enabled or ``all``.
+        Warning, this option is dangerous, and should be avoided.
 
 ENVIRONMENT
 ===========
@@ -95,12 +127,11 @@ ENVIRONMENT
 ``PYPYLOG``
     If set to a non-empty value, enable logging, the format is:
 
-    *fname* or *+fname*
+    *fname*
         logging for profiling: includes all
         ``debug_start``/``debug_stop`` but not any nested
         ``debug_print``.
         *fname* can be ``-`` to log to *stderr*.
-        The *+fname* form can be used if there is a *:* in fname
 
     ``:``\ *fname*
         Full logging, including ``debug_print``.
@@ -110,14 +141,9 @@ ENVIRONMENT
         Multiple prefixes can be specified, comma-separated.
         Only sections whose name match the prefix will be logged.
 
-    ``PYPYLOG=jit-log-opt,jit-backend:logfile`` will
+    ``PYPYLOG``\ =\ ``jit-log-opt,jit-backend:``\ *logfile* will
     generate a log suitable for *jitviewer*, a tool for debugging
     performance issues under PyPy.
-
-``PYPY_IRC_TOPIC``
-    If set to a non-empty value, print a random #pypy IRC
-    topic at startup of interactive mode.
-
 
 .. include:: ../gc_info.rst
    :start-line: 7

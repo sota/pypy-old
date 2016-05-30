@@ -3,26 +3,49 @@
 #
 # the below object/attribute model evolved from
 # a discussion in Berlin, 4th of october 2003
-import types
 import py
 
 from rpython.tool.uid import uid, Hashable
 from rpython.tool.sourcetools import PY_IDENTIFIER, nice_repr_for_func
+from rpython.rlib.rarithmetic import is_valid_int, r_longlong, r_ulonglong, r_uint
+
+
+"""
+    memory size before and after introduction of __slots__
+    using targetpypymain with -no-c
+
+    slottified          annotation  ann+genc
+    -------------------------------------------
+    nothing             321 MB      442 MB
+    Var/Const/SpaceOp   205 MB      325 MB
+    + Link              189 MB      311 MB
+    + Block             185 MB      304 MB
+
+    Dropping Variable.instances and using
+    just an instancenames dict brought
+    annotation down to 160 MB.
+    Computing the Variable.renamed attribute
+    and dropping Variable.instancenames
+    got annotation down to 109 MB.
+    Probably an effect of less fragmentation.
+"""
+
+__metaclass__ = type
 
 
 class FunctionGraph(object):
     def __init__(self, name, startblock, return_var=None):
-        self.name = name  # function name (possibly mangled already)
-        self.startblock = startblock
+        self.name        = name    # function name (possibly mangled already)
+        self.startblock  = startblock
         # build default returnblock
         self.returnblock = Block([return_var or Variable()])
         self.returnblock.operations = ()
-        self.returnblock.exits = ()
+        self.returnblock.exits      = ()
         # block corresponding to exception results
         self.exceptblock = Block([Variable('etype'),   # exception class
                                   Variable('evalue')])  # exception value
         self.exceptblock.operations = ()
-        self.exceptblock.exits = ()
+        self.exceptblock.exits      = ()
         self.tag = None
 
     def getargs(self):
@@ -140,12 +163,6 @@ class Link(object):
             newlink.llexitcase = self.llexitcase
         return newlink
 
-    def replace(self, mapping):
-        def rename(v):
-            if v is not None:
-                return v.replace(mapping)
-        return self.copy(rename)
-
     def settarget(self, targetblock):
         assert len(self.args) == len(targetblock.inputargs), (
             "output args mismatch")
@@ -170,7 +187,7 @@ class Block(object):
         self.operations = []              # list of SpaceOperation(s)
         self.exitswitch = None            # a variable or
                                           #  Constant(last_exception), see below
-        self.exits = []                   # list of Link(s)
+        self.exits      = []              # list of Link(s)
 
     def at(self):
         if self.operations and self.operations[0].offset >= 0:
@@ -196,15 +213,6 @@ class Block(object):
             txt = "%s(%s)" % (txt, self.exitswitch)
         return txt
 
-    @property
-    def canraise(self):
-        return self.exitswitch is c_last_exception
-
-    @property
-    def raising_op(self):
-        if self.canraise:
-            return self.operations[-1]
-
     def getvariables(self):
         "Return all variables mentioned in this Block."
         result = self.inputargs[:]
@@ -221,12 +229,15 @@ class Block(object):
         return uniqueitems([w for w in result if isinstance(w, Constant)])
 
     def renamevariables(self, mapping):
-        self.inputargs = [a.replace(mapping) for a in self.inputargs]
-        self.operations = [op.replace(mapping) for op in self.operations]
-        if self.exitswitch is not None:
-            self.exitswitch = self.exitswitch.replace(mapping)
+        for a in mapping:
+            assert isinstance(a, Variable), a
+        self.inputargs = [mapping.get(a, a) for a in self.inputargs]
+        for op in self.operations:
+            op.args = [mapping.get(a, a) for a in op.args]
+            op.result = mapping.get(op.result, op.result)
+        self.exitswitch = mapping.get(self.exitswitch, self.exitswitch)
         for link in self.exits:
-            link.args = [a.replace(mapping) for a in link.args]
+            link.args = [mapping.get(a, a) for a in link.args]
 
     def closeblock(self, *exits):
         assert self.exits == [], "block already closed"
@@ -241,33 +252,15 @@ class Block(object):
         from rpython.translator.tool.graphpage import try_show
         try_show(self)
 
-    def _slowly_get_graph(self):
-        import gc
-        pending = [self]   # pending blocks
-        seen = {self: True, None: True}
-        for x in pending:
-            for y in gc.get_referrers(x):
-                if isinstance(y, FunctionGraph):
-                    return y
-                elif isinstance(y, Link):
-                    block = y.prevblock
-                    if block not in seen:
-                        pending.append(block)
-                        seen[block] = True
-                elif isinstance(y, dict):
-                    pending.append(y)   # go back from the dict to the real obj
-        return pending
-
     view = show
 
 
 class Variable(object):
-    __slots__ = ["_name", "_nr", "annotation", "concretetype"]
+    __slots__ = ["_name", "_nr", "concretetype"]
 
     dummyname = 'v'
-    namesdict = {dummyname: (dummyname, 0)}
+    namesdict = {dummyname : (dummyname, 0)}
 
-    @property
     def name(self):
         _name = self._name
         _nr = self._nr
@@ -277,15 +270,15 @@ class Variable(object):
             _nr = self._nr = nd[_name][1]
             nd[_name] = (_name, _nr + 1)
         return "%s%d" % (_name, _nr)
+    name = property(name)
 
-    @property
     def renamed(self):
         return self._name is not self.dummyname
+    renamed = property(renamed)
 
     def __init__(self, name=None):
         self._name = self.dummyname
         self._nr = -1
-        self.annotation = None
         # numbers are bound lazily, when the name is requested
         if name is not None:
             self.rename(name)
@@ -321,72 +314,14 @@ class Variable(object):
         self._name = intern(name)
         self._nr = nr
 
-    def foldable(self):
-        return False
-
-    def copy(self):
-        """Make a copy of the Variable, preserving annotations and concretetype."""
-        newvar = Variable(self)
-        newvar.annotation = self.annotation
-        if hasattr(self, 'concretetype'):
-            newvar.concretetype = self.concretetype
-        return newvar
-
-    def replace(self, mapping):
-        return mapping.get(self, self)
-
 
 class Constant(Hashable):
     __slots__ = ["concretetype"]
 
-    def __init__(self, value, concretetype=None):
+    def __init__(self, value, concretetype = None):
         Hashable.__init__(self, value)
         if concretetype is not None:
             self.concretetype = concretetype
-
-    def foldable(self):
-        to_check = self.value
-        if hasattr(to_check, 'im_self'):
-            to_check = to_check.im_self
-        if isinstance(to_check, (type, types.ClassType, types.ModuleType)):
-            # classes/types/modules are assumed immutable
-            return True
-        if (hasattr(to_check, '__class__') and
-                to_check.__class__.__module__ == '__builtin__'):
-            # builtin object
-            return True
-        # User-created instance
-        if hasattr(to_check, '_freeze_'):
-            assert to_check._freeze_() is True
-            return True
-        else:
-            # cannot count on it not mutating at runtime!
-            return False
-
-    def replace(self, mapping):
-        return self
-
-
-class FSException(object):
-    def __init__(self, w_type, w_value):
-        assert w_type is not None
-        self.w_type = w_type
-        self.w_value = w_value
-
-    def __str__(self):
-        return '[%s: %s]' % (self.w_type, self.w_value)
-
-class ConstException(Constant, FSException):
-    def foldable(self):
-        return True
-
-    @property
-    def w_type(self):
-        return Constant(type(self.value))
-
-    @property
-    def w_value(self):
-        return Constant(self.value)
 
 
 class UnwrapException(Exception):
@@ -397,30 +332,12 @@ class WrapException(Exception):
     during its construction"""
 
 
-# method-wrappers have not enough introspection in CPython
-if hasattr(complex.real.__get__, 'im_self'):
-    type_with_bad_introspection = None     # on top of PyPy
-else:
-    type_with_bad_introspection = type(complex.real.__get__)
-
-def const(obj):
-    if hasattr(obj, "_flowspace_rewrite_directly_as_"):
-        obj = obj._flowspace_rewrite_directly_as_
-    if isinstance(obj, (Variable, Constant)):
-        raise TypeError("already wrapped: " + repr(obj))
-    # method-wrapper have ill-defined comparison and introspection
-    # to appear in a flow graph
-    if type(obj) is type_with_bad_introspection:
-        raise WrapException
-    elif isinstance(obj, Exception):
-        return ConstException(obj)
-    return Constant(obj)
-
 class SpaceOperation(object):
+    __slots__ = "opname args result offset".split()
 
     def __init__(self, opname, args, result, offset=-1):
         self.opname = intern(opname)      # operation name
-        self.args = list(args)    # mixed list of var/const
+        self.args   = list(args)  # mixed list of var/const
         self.result = result      # either Variable or Constant instance
         self.offset = offset      # offset in code string
 
@@ -434,20 +351,15 @@ class SpaceOperation(object):
         return not (self == other)
 
     def __hash__(self):
-        return hash((self.opname, tuple(self.args), self.result))
+        return hash((self.opname,tuple(self.args),self.result))
 
     def __repr__(self):
         return "%r = %s(%s)" % (self.result, self.opname,
                                 ", ".join(map(repr, self.args)))
 
-    def replace(self, mapping):
-        newargs = [arg.replace(mapping) for arg in self.args]
-        newresult = self.result.replace(mapping)
-        return type(self)(self.opname, newargs, newresult, self.offset)
-
 class Atom(object):
     def __init__(self, name):
-        self.__name__ = name  # make save_global happy
+        self.__name__ = name # make save_global happy
     def __repr__(self):
         return self.__name__
 
@@ -474,8 +386,7 @@ def flattenobj(*args):
         try:
             for atom in flattenobj(*arg):
                 yield atom
-        except:
-            yield arg
+        except: yield arg
 
 def mkentrymap(funcgraph):
     "Returns a dict mapping Blocks to lists of Links."
@@ -555,8 +466,7 @@ def checkgraph(graph):
     if not __debug__:
         return
     try:
-        from rpython.rlib.rarithmetic import (is_valid_int, r_longlong,
-            r_ulonglong, r_uint)
+
         vars_previous_blocks = {}
 
         exitblocks = {graph.returnblock: 1,   # retval
@@ -610,11 +520,11 @@ def checkgraph(graph):
                 assert len(block.exits) <= 1
                 if block.exits:
                     assert block.exits[0].exitcase is None
-            elif block.canraise:
+            elif block.exitswitch == Constant(last_exception):
                 assert len(block.operations) >= 1
                 # check if an exception catch is done on a reasonable
                 # operation
-                assert block.raising_op.opname not in ("keepalive",
+                assert block.operations[-1].opname not in ("keepalive",
                                                            "cast_pointer",
                                                            "same_as")
                 assert len(block.exits) >= 2

@@ -11,7 +11,7 @@ from rpython.rlib.objectmodel import we_are_translated
 from rpython.rlib.rtimer import read_timestamp, _is_64_bit
 from rpython.rtyper.lltypesystem import rffi, lltype
 from rpython.translator.tool.cbuild import ExternalCompilationInfo
-from rpython.translator import cdir
+from rpython.conftest import cdir
 from rpython.rlib.rarithmetic import r_longlong
 
 import time, sys
@@ -20,8 +20,8 @@ import time, sys
 
 srcdir = py.path.local(cdir).join('src')
 eci = ExternalCompilationInfo(
-    include_dirs          = [cdir],
-    separate_module_files = [srcdir.join('profiling.c')])
+    separate_module_files=[srcdir.join('profiling.c')],
+    export_symbols=['pypy_setup_profiling', 'pypy_teardown_profiling'])
 
 c_setup_profiling = rffi.llexternal('pypy_setup_profiling',
                                   [], lltype.Void,
@@ -59,7 +59,7 @@ class W_StatsEntry(W_Root):
             self.tt, self.it, calls_repr))
 
     def get_code(self, space):
-        return returns_code(space, self.frame)
+        return self.frame
 
 W_StatsEntry.typedef = TypeDef(
     'StatsEntry',
@@ -86,7 +86,7 @@ class W_StatsSubEntry(W_Root):
             frame_repr, self.callcount, self.reccallcount, self.tt, self.it))
 
     def get_code(self, space):
-        return returns_code(space, self.frame)
+        return self.frame
 
 W_StatsSubEntry.typedef = TypeDef(
     'SubStatsEntry',
@@ -159,7 +159,7 @@ class ProfilerEntry(ProfilerSubEntry):
                 subentry = ProfilerSubEntry(entry.frame)
                 self.calls[entry] = subentry
                 return subentry
-            raise
+            return None
 
 class ProfilerContext(object):
     def __init__(self, profobj, entry):
@@ -181,90 +181,55 @@ class ProfilerContext(object):
         entry._stop(tt, it)
         if profobj.subcalls and self.previous:
             caller = jit.promote(self.previous.entry)
-            try:
-                subentry = caller._get_or_make_subentry(entry, False)
-            except KeyError:
-                pass
-            else:
+            subentry = caller._get_or_make_subentry(entry, False)
+            if subentry is not None:
                 subentry._stop(tt, it)
 
 
+@jit.elidable_promote()
 def create_spec_for_method(space, w_function, w_type):
-    class_name = None
+    w_function = w_function
     if isinstance(w_function, Function):
         name = w_function.name
-        # try to get the real class that defines the method,
-        # which is a superclass of the class of the instance
-        from pypy.objspace.std.typeobject import W_TypeObject   # xxx
-        if isinstance(w_type, W_TypeObject):
-            w_realclass, _ = space.lookup_in_type_where(w_type, name)
-            if isinstance(w_realclass, W_TypeObject):
-                class_name = w_realclass.name
     else:
         name = '?'
-    if class_name is None:
-        class_name = w_type.getname(space)    # if the rest doesn't work
-    return "<method '%s' of '%s' objects>" % (name, class_name)
+    # try to get the real class that defines the method,
+    # which is a superclass of the class of the instance
+    from pypy.objspace.std.typeobject import W_TypeObject   # xxx
+    class_name = w_type.getname(space)    # if the rest doesn't work
+    if isinstance(w_type, W_TypeObject) and name != '?':
+        w_realclass, _ = space.lookup_in_type_where(w_type, name)
+        if isinstance(w_realclass, W_TypeObject):
+            class_name = w_realclass.get_module_type_name()
+    return "{method '%s' of '%s' objects}" % (name, class_name)
 
 
+@jit.elidable_promote()
 def create_spec_for_function(space, w_func):
-    assert isinstance(w_func, Function)
-    if w_func.w_module is not None:
-        module = space.str_w(w_func.w_module)
-        if module != '__builtin__':
-            return '<%s.%s>' % (module, w_func.name)
-    return '<%s>' % w_func.name
-
-
-def create_spec_for_object(space, w_type):
-    class_name = w_type.getname(space)
-    return "<'%s' object>" % (class_name,)
-
-
-class W_DelayedBuiltinStr(W_Root):
-    # This class should not be seen at app-level, but is useful to
-    # contain a (w_func, w_type) pair returned by prepare_spec().
-    # Turning this pair into a string cannot be done eagerly in
-    # an @elidable function because of space.str_w(), but it can
-    # be done lazily when we really want it.
-
-    _immutable_fields_ = ['w_func', 'w_type']
-
-    def __init__(self, w_func, w_type):
-        self.w_func = w_func
-        self.w_type = w_type
-        self.w_string = None
-
-    def wrap_string(self, space):
-        if self.w_string is None:
-            if self.w_type is None:
-                s = create_spec_for_function(space, self.w_func)
-            elif self.w_func is None:
-                s = create_spec_for_object(space, self.w_type)
-            else:
-                s = create_spec_for_method(space, self.w_func, self.w_type)
-            self.w_string = space.wrap(s)
-        return self.w_string
-
-W_DelayedBuiltinStr.typedef = TypeDef(
-    'DelayedBuiltinStr',
-    __str__ = interp2app(W_DelayedBuiltinStr.wrap_string),
-)
-
-def returns_code(space, w_frame):
-    if isinstance(w_frame, W_DelayedBuiltinStr):
-        return w_frame.wrap_string(space)
-    return w_frame    # actually a PyCode object
-
-
-def prepare_spec(space, w_arg):
-    if isinstance(w_arg, Method):
-        return (w_arg.w_function, w_arg.w_class)
-    elif isinstance(w_arg, Function):
-        return (w_arg, None)
+    if w_func.w_module is None:
+        module = ''
     else:
-        return (None, space.type(w_arg))
-prepare_spec._always_inline_ = True
+        module = space.str_w(w_func.w_module)
+        if module == '__builtin__':
+            module = ''
+        else:
+            module += '.'
+    return '{%s%s}' % (module, w_func.name)
+
+
+@jit.elidable_promote()
+def create_spec_for_object(space, w_obj):
+    class_name = space.type(w_obj).getname(space)
+    return "{'%s' object}" % (class_name,)
+
+
+def create_spec(space, w_arg):
+    if isinstance(w_arg, Method):
+        return create_spec_for_method(space, w_arg.w_function, w_arg.w_class)
+    elif isinstance(w_arg, Function):
+        return create_spec_for_function(space, w_arg)
+    else:
+        return create_spec_for_object(space, w_arg)
 
 
 def lsprof_call(space, w_self, frame, event, w_arg):
@@ -277,10 +242,12 @@ def lsprof_call(space, w_self, frame, event, w_arg):
         w_self._enter_return(code)
     elif event == 'c_call':
         if w_self.builtins:
-            w_self._enter_builtin_call(w_arg)
+            key = create_spec(space, w_arg)
+            w_self._enter_builtin_call(key)
     elif event == 'c_return' or event == 'c_exception':
         if w_self.builtins:
-            w_self._enter_builtin_return(w_arg)
+            key = create_spec(space, w_arg)
+            w_self._enter_builtin_return(key)
     else:
         # ignore or raise an exception???
         pass
@@ -341,19 +308,18 @@ class W_Profiler(W_Root):
                 entry = ProfilerEntry(f_code)
                 self.data[f_code] = entry
                 return entry
-            raise
+            return None
 
-    @jit.elidable_promote()
-    def _get_or_make_builtin_entry(self, w_func, w_type, make):
-        key = (w_func, w_type)
+    @jit.elidable
+    def _get_or_make_builtin_entry(self, key, make=True):
         try:
             return self.builtin_data[key]
         except KeyError:
             if make:
-                entry = ProfilerEntry(W_DelayedBuiltinStr(w_func, w_type))
+                entry = ProfilerEntry(self.space.wrap(key))
                 self.builtin_data[key] = entry
                 return entry
-            raise
+            return None
 
     def _enter_call(self, f_code):
         # we have a superb gc, no point in freelist :)
@@ -366,29 +332,23 @@ class W_Profiler(W_Root):
         if context is None:
             return
         self = jit.promote(self)
-        try:
-            entry = self._get_or_make_entry(f_code, False)
-        except KeyError:
-            pass
-        else:
+        entry = self._get_or_make_entry(f_code, False)
+        if entry is not None:
             context._stop(self, entry)
         self.current_context = context.previous
 
-    def _enter_builtin_call(self, w_arg):
-        w_func, w_type = prepare_spec(self.space, w_arg)
-        entry = self._get_or_make_builtin_entry(w_func, w_type, True)
+    def _enter_builtin_call(self, key):
+        self = jit.promote(self)
+        entry = self._get_or_make_builtin_entry(key)
         self.current_context = ProfilerContext(self, entry)
 
-    def _enter_builtin_return(self, w_arg):
+    def _enter_builtin_return(self, key):
         context = self.current_context
         if context is None:
             return
-        w_func, w_type = prepare_spec(self.space, w_arg)
-        try:
-            entry = self._get_or_make_builtin_entry(w_func, w_type, False)
-        except KeyError:
-            pass
-        else:
+        self = jit.promote(self)
+        entry = self._get_or_make_builtin_entry(key, False)
+        if entry is not None:
             context._stop(self, entry)
         self.current_context = context.previous
 
@@ -440,7 +400,8 @@ def descr_new_profile(space, w_type, w_callable=None, time_unit=0.0,
     return space.wrap(p)
 
 W_Profiler.typedef = TypeDef(
-    '_lsprof.Profiler',
+    'Profiler',
+    __module__ = '_lsprof',
     __new__ = interp2app(descr_new_profile),
     enable = interp2app(W_Profiler.enable),
     disable = interp2app(W_Profiler.disable),

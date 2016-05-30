@@ -1,7 +1,6 @@
 from rpython.flowspace.model import Constant
-from rpython.rtyper.lltypesystem import lltype, llmemory, rdict
+from rpython.rtyper.lltypesystem import lltype, llmemory, rclass, rdict
 from rpython.rtyper.lltypesystem.llmemory import weakref_create, weakref_deref
-from rpython.rtyper import rclass
 from rpython.rtyper.rclass import getinstancerepr
 from rpython.rtyper.rmodel import Repr
 from rpython.rlib.rweakref import RWeakKeyDictionary

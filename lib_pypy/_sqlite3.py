@@ -38,7 +38,6 @@ except ImportError:
 
 if sys.version_info[0] >= 3:
     StandardError = Exception
-    cmp = lambda x, y: (x > y) - (x < y)
     long = int
     xrange = range
     basestring = unicode = str
@@ -47,7 +46,232 @@ if sys.version_info[0] >= 3:
 else:
     _BLOB_TYPE = buffer
 
-from _sqlite3_cffi import ffi as _ffi, lib as _lib
+from cffi import FFI as _FFI
+
+_ffi = _FFI()
+
+_ffi.cdef("""
+#define SQLITE_OK ...
+#define SQLITE_ERROR ...
+#define SQLITE_INTERNAL ...
+#define SQLITE_PERM ...
+#define SQLITE_ABORT ...
+#define SQLITE_BUSY ...
+#define SQLITE_LOCKED ...
+#define SQLITE_NOMEM ...
+#define SQLITE_READONLY ...
+#define SQLITE_INTERRUPT ...
+#define SQLITE_IOERR ...
+#define SQLITE_CORRUPT ...
+#define SQLITE_NOTFOUND ...
+#define SQLITE_FULL ...
+#define SQLITE_CANTOPEN ...
+#define SQLITE_PROTOCOL ...
+#define SQLITE_EMPTY ...
+#define SQLITE_SCHEMA ...
+#define SQLITE_TOOBIG ...
+#define SQLITE_CONSTRAINT ...
+#define SQLITE_MISMATCH ...
+#define SQLITE_MISUSE ...
+#define SQLITE_NOLFS ...
+#define SQLITE_AUTH ...
+#define SQLITE_FORMAT ...
+#define SQLITE_RANGE ...
+#define SQLITE_NOTADB ...
+#define SQLITE_ROW ...
+#define SQLITE_DONE ...
+#define SQLITE_INTEGER ...
+#define SQLITE_FLOAT ...
+#define SQLITE_BLOB ...
+#define SQLITE_NULL ...
+#define SQLITE_TEXT ...
+#define SQLITE3_TEXT ...
+
+#define SQLITE_TRANSIENT ...
+#define SQLITE_UTF8 ...
+
+#define SQLITE_DENY ...
+#define SQLITE_IGNORE ...
+
+#define SQLITE_CREATE_INDEX ...
+#define SQLITE_CREATE_TABLE ...
+#define SQLITE_CREATE_TEMP_INDEX ...
+#define SQLITE_CREATE_TEMP_TABLE ...
+#define SQLITE_CREATE_TEMP_TRIGGER ...
+#define SQLITE_CREATE_TEMP_VIEW ...
+#define SQLITE_CREATE_TRIGGER ...
+#define SQLITE_CREATE_VIEW ...
+#define SQLITE_DELETE ...
+#define SQLITE_DROP_INDEX ...
+#define SQLITE_DROP_TABLE ...
+#define SQLITE_DROP_TEMP_INDEX ...
+#define SQLITE_DROP_TEMP_TABLE ...
+#define SQLITE_DROP_TEMP_TRIGGER ...
+#define SQLITE_DROP_TEMP_VIEW ...
+#define SQLITE_DROP_TRIGGER ...
+#define SQLITE_DROP_VIEW ...
+#define SQLITE_INSERT ...
+#define SQLITE_PRAGMA ...
+#define SQLITE_READ ...
+#define SQLITE_SELECT ...
+#define SQLITE_TRANSACTION ...
+#define SQLITE_UPDATE ...
+#define SQLITE_ATTACH ...
+#define SQLITE_DETACH ...
+#define SQLITE_ALTER_TABLE ...
+#define SQLITE_REINDEX ...
+#define SQLITE_ANALYZE ...
+#define SQLITE_CREATE_VTABLE ...
+#define SQLITE_DROP_VTABLE ...
+#define SQLITE_FUNCTION ...
+
+const char *sqlite3_libversion(void);
+
+typedef ... sqlite3;
+typedef ... sqlite3_stmt;
+typedef ... sqlite3_context;
+typedef ... sqlite3_value;
+typedef int64_t sqlite3_int64;
+typedef uint64_t sqlite3_uint64;
+
+int sqlite3_open(
+    const char *filename,   /* Database filename (UTF-8) */
+    sqlite3 **ppDb          /* OUT: SQLite db handle */
+);
+
+int sqlite3_close(sqlite3 *);
+
+int sqlite3_busy_timeout(sqlite3*, int ms);
+int sqlite3_prepare_v2(
+    sqlite3 *db,            /* Database handle */
+    const char *zSql,       /* SQL statement, UTF-8 encoded */
+    int nByte,              /* Maximum length of zSql in bytes. */
+    sqlite3_stmt **ppStmt,  /* OUT: Statement handle */
+    const char **pzTail     /* OUT: Pointer to unused portion of zSql */
+);
+int sqlite3_finalize(sqlite3_stmt *pStmt);
+int sqlite3_data_count(sqlite3_stmt *pStmt);
+int sqlite3_column_count(sqlite3_stmt *pStmt);
+const char *sqlite3_column_name(sqlite3_stmt*, int N);
+int sqlite3_get_autocommit(sqlite3*);
+int sqlite3_reset(sqlite3_stmt *pStmt);
+int sqlite3_step(sqlite3_stmt*);
+int sqlite3_errcode(sqlite3 *db);
+const char *sqlite3_errmsg(sqlite3*);
+int sqlite3_changes(sqlite3*);
+
+int sqlite3_bind_blob(sqlite3_stmt*, int, const void*, int n, void(*)(void*));
+int sqlite3_bind_double(sqlite3_stmt*, int, double);
+int sqlite3_bind_int(sqlite3_stmt*, int, int);
+int sqlite3_bind_int64(sqlite3_stmt*, int, sqlite3_int64);
+int sqlite3_bind_null(sqlite3_stmt*, int);
+int sqlite3_bind_text(sqlite3_stmt*, int, const char*, int n, void(*)(void*));
+int sqlite3_bind_text16(sqlite3_stmt*, int, const void*, int, void(*)(void*));
+int sqlite3_bind_value(sqlite3_stmt*, int, const sqlite3_value*);
+int sqlite3_bind_zeroblob(sqlite3_stmt*, int, int n);
+
+const void *sqlite3_column_blob(sqlite3_stmt*, int iCol);
+int sqlite3_column_bytes(sqlite3_stmt*, int iCol);
+double sqlite3_column_double(sqlite3_stmt*, int iCol);
+int sqlite3_column_int(sqlite3_stmt*, int iCol);
+sqlite3_int64 sqlite3_column_int64(sqlite3_stmt*, int iCol);
+const unsigned char *sqlite3_column_text(sqlite3_stmt*, int iCol);
+const void *sqlite3_column_text16(sqlite3_stmt*, int iCol);
+int sqlite3_column_type(sqlite3_stmt*, int iCol);
+const char *sqlite3_column_decltype(sqlite3_stmt*,int);
+
+void sqlite3_progress_handler(sqlite3*, int, int(*)(void*), void*);
+int sqlite3_create_collation(
+    sqlite3*,
+    const char *zName,
+    int eTextRep,
+    void*,
+    int(*xCompare)(void*,int,const void*,int,const void*)
+);
+int sqlite3_set_authorizer(
+    sqlite3*,
+    int (*xAuth)(void*,int,const char*,const char*,const char*,const char*),
+    void *pUserData
+);
+int sqlite3_create_function(
+    sqlite3 *db,
+    const char *zFunctionName,
+    int nArg,
+    int eTextRep,
+    void *pApp,
+    void (*xFunc)(sqlite3_context*,int,sqlite3_value**),
+    void (*xStep)(sqlite3_context*,int,sqlite3_value**),
+    void (*xFinal)(sqlite3_context*)
+);
+void *sqlite3_aggregate_context(sqlite3_context*, int nBytes);
+
+sqlite3_int64 sqlite3_last_insert_rowid(sqlite3*);
+int sqlite3_bind_parameter_count(sqlite3_stmt*);
+const char *sqlite3_bind_parameter_name(sqlite3_stmt*, int);
+int sqlite3_total_changes(sqlite3*);
+
+int sqlite3_prepare(
+    sqlite3 *db,            /* Database handle */
+    const char *zSql,       /* SQL statement, UTF-8 encoded */
+    int nByte,              /* Maximum length of zSql in bytes. */
+    sqlite3_stmt **ppStmt,  /* OUT: Statement handle */
+    const char **pzTail     /* OUT: Pointer to unused portion of zSql */
+);
+
+void sqlite3_result_blob(sqlite3_context*, const void*, int, void(*)(void*));
+void sqlite3_result_double(sqlite3_context*, double);
+void sqlite3_result_error(sqlite3_context*, const char*, int);
+void sqlite3_result_error16(sqlite3_context*, const void*, int);
+void sqlite3_result_error_toobig(sqlite3_context*);
+void sqlite3_result_error_nomem(sqlite3_context*);
+void sqlite3_result_error_code(sqlite3_context*, int);
+void sqlite3_result_int(sqlite3_context*, int);
+void sqlite3_result_int64(sqlite3_context*, sqlite3_int64);
+void sqlite3_result_null(sqlite3_context*);
+void sqlite3_result_text(sqlite3_context*, const char*, int, void(*)(void*));
+void sqlite3_result_text16(sqlite3_context*, const void*, int, void(*)(void*));
+void sqlite3_result_text16le(sqlite3_context*,const void*, int,void(*)(void*));
+void sqlite3_result_text16be(sqlite3_context*,const void*, int,void(*)(void*));
+void sqlite3_result_value(sqlite3_context*, sqlite3_value*);
+void sqlite3_result_zeroblob(sqlite3_context*, int n);
+
+const void *sqlite3_value_blob(sqlite3_value*);
+int sqlite3_value_bytes(sqlite3_value*);
+int sqlite3_value_bytes16(sqlite3_value*);
+double sqlite3_value_double(sqlite3_value*);
+int sqlite3_value_int(sqlite3_value*);
+sqlite3_int64 sqlite3_value_int64(sqlite3_value*);
+const unsigned char *sqlite3_value_text(sqlite3_value*);
+const void *sqlite3_value_text16(sqlite3_value*);
+const void *sqlite3_value_text16le(sqlite3_value*);
+const void *sqlite3_value_text16be(sqlite3_value*);
+int sqlite3_value_type(sqlite3_value*);
+int sqlite3_value_numeric_type(sqlite3_value*);
+""")
+
+def _has_load_extension():
+    """Only available since 3.3.6"""
+    unverified_ffi = _FFI()
+    unverified_ffi.cdef("""
+    typedef ... sqlite3;
+    int sqlite3_enable_load_extension(sqlite3 *db, int onoff);
+    """)
+    libname = 'sqlite3'
+    if sys.platform == 'win32':
+        import os
+        _libname = os.path.join(os.path.dirname(sys.executable), libname)
+        if os.path.exists(_libname + '.dll'):
+            libname = _libname
+    unverified_lib = unverified_ffi.dlopen(libname)
+    return hasattr(unverified_lib, 'sqlite3_enable_load_extension')
+
+if _has_load_extension():
+    _ffi.cdef("int sqlite3_enable_load_extension(sqlite3 *db, int onoff);")
+
+_lib = _ffi.verify("""
+#include <sqlite3.h>
+""", libraries=['sqlite3']
+)
 
 exported_sqlite_symbols = [
     'SQLITE_ALTER_TABLE',
@@ -86,7 +310,7 @@ exported_sqlite_symbols = [
 for symbol in exported_sqlite_symbols:
     globals()[symbol] = getattr(_lib, symbol)
 
-_SQLITE_TRANSIENT = _lib.SQLITE_TRANSIENT
+_SQLITE_TRANSIENT = _ffi.cast('void *', _lib.SQLITE_TRANSIENT)
 
 # pysqlite version information
 version = "2.6.0"
@@ -97,14 +321,6 @@ PARSE_DECLTYPES = 2
 
 # SQLite version information
 sqlite_version = str(_ffi.string(_lib.sqlite3_libversion()).decode('ascii'))
-
-_STMT_TYPE_UPDATE = 0
-_STMT_TYPE_DELETE = 1
-_STMT_TYPE_INSERT = 2
-_STMT_TYPE_REPLACE = 3
-_STMT_TYPE_OTHER = 4
-_STMT_TYPE_SELECT = 5
-_STMT_TYPE_INVALID = 6
 
 
 class Error(StandardError):
@@ -147,11 +363,9 @@ class NotSupportedError(DatabaseError):
     pass
 
 
-def connect(database, timeout=5.0, detect_types=0, isolation_level="",
-                 check_same_thread=True, factory=None, cached_statements=100):
-    factory = Connection if not factory else factory
-    return factory(database, timeout, detect_types, isolation_level,
-                    check_same_thread, factory, cached_statements)
+def connect(database, **kwargs):
+    factory = kwargs.get("factory", Connection)
+    return factory(database, **kwargs)
 
 
 def _unicode_text_factory(x):
@@ -218,7 +432,6 @@ class Connection(object):
         self.__cursors_counter = 0
         self.__statements = []
         self.__statements_counter = 0
-        self.__rawstatements = set()
         self._statement_cache = _StatementCache(self, cached_statements)
 
         self.__func_cache = {}
@@ -247,14 +460,6 @@ class Connection(object):
         self._check_thread()
 
         self.__do_all_statements(Statement._finalize, True)
-
-        # depending on when this close() is called, the statements' weakrefs
-        # may be already dead, even though Statement.__del__() was not called
-        # yet.  In this case, self.__rawstatements is not empty.
-        if self.__rawstatements is not None:
-            for stmt in list(self.__rawstatements):
-                self._finalize_raw_statement(stmt)
-            self.__rawstatements = None
 
         if self._db:
             ret = _lib.sqlite3_close(self._db)
@@ -285,7 +490,7 @@ class Connection(object):
             raise ProgrammingError(
                 "SQLite objects created in a thread can only be used in that "
                 "same thread. The object was created in thread id %d and this "
-                "is thread id %d" % (self.__thread_ident, _thread_get_ident()))
+                "is thread id %d", self.__thread_ident, _thread_get_ident())
 
     def _check_thread_wrap(func):
         @wraps(func)
@@ -335,21 +540,12 @@ class Connection(object):
         self.__cursors = [r for r in self.__cursors if r() is not None]
 
     def _remember_statement(self, statement):
-        self.__rawstatements.add(statement._statement)
         self.__statements.append(weakref.ref(statement))
         self.__statements_counter += 1
         if self.__statements_counter < 200:
             return
         self.__statements_counter = 0
         self.__statements = [r for r in self.__statements if r() is not None]
-
-    def _finalize_raw_statement(self, _statement):
-        if self.__rawstatements is not None:
-            try:
-                self.__rawstatements.remove(_statement)
-            except KeyError:
-                return    # rare case: already finalized, see issue #2097
-            _lib.sqlite3_finalize(_statement)
 
     def __do_all_statements(self, action, reset_cursors):
         for weakref in self.__statements:
@@ -561,12 +757,8 @@ class Connection(object):
             def collation_callback(context, len1, str1, len2, str2):
                 text1 = _ffi.buffer(str1, len1)[:]
                 text2 = _ffi.buffer(str2, len2)[:]
-                try:
-                    ret = callback(text1, text2)
-                    assert isinstance(ret, (int, long))
-                    return cmp(ret, 0)
-                except Exception:
-                    return 0
+
+                return callback(text1, text2)
 
             self.__collations[name] = collation_callback
 
@@ -589,12 +781,7 @@ class Connection(object):
                            "const char*, const char*)")
             def authorizer(userdata, action, arg1, arg2, dbname, source):
                 try:
-                    ret = callback(action, arg1, arg2, dbname, source)
-                    assert isinstance(ret, int)
-                    # try to detect cases in which cffi would swallow
-                    # OverflowError when casting the return value
-                    assert int(_ffi.cast('int', ret)) == ret
-                    return ret
+                    return int(callback(action, arg1, arg2, dbname, source))
                 except Exception:
                     return _lib.SQLITE_DENY
             self.__func_cache[callback] = authorizer
@@ -795,18 +982,13 @@ class Cursor(object):
             self.__statement = self.__connection._statement_cache.get(sql)
 
             if self.__connection._isolation_level is not None:
-                if self.__statement._type in (
-                    _STMT_TYPE_UPDATE,
-                    _STMT_TYPE_DELETE,
-                    _STMT_TYPE_INSERT,
-                    _STMT_TYPE_REPLACE
-                ):
+                if self.__statement._type in ("UPDATE", "DELETE", "INSERT", "REPLACE"):
                     if not self.__connection._in_transaction:
                         self.__connection._begin()
-                elif self.__statement._type == _STMT_TYPE_OTHER:
+                elif self.__statement._type == "OTHER":
                     if self.__connection._in_transaction:
                         self.__connection.commit()
-                elif self.__statement._type == _STMT_TYPE_SELECT:
+                elif self.__statement._type == "SELECT":
                     if multiple:
                         raise ProgrammingError("You cannot execute SELECT "
                                                "statements in executemany().")
@@ -829,17 +1011,12 @@ class Cursor(object):
                     self.__statement._reset()
                     raise self.__connection._get_exception(ret)
 
-                if self.__statement._type in (
-                    _STMT_TYPE_UPDATE,
-                    _STMT_TYPE_DELETE,
-                    _STMT_TYPE_INSERT,
-                    _STMT_TYPE_REPLACE
-                ):
+                if self.__statement._type in ("UPDATE", "DELETE", "INSERT", "REPLACE"):
                     if self.__rowcount == -1:
                         self.__rowcount = 0
                     self.__rowcount += _lib.sqlite3_changes(self.__connection._db)
 
-                if not multiple and self.__statement._type == _STMT_TYPE_INSERT:
+                if not multiple and self.__statement._type == "INSERT":
                     self.__lastrowid = _lib.sqlite3_last_insert_rowid(self.__connection._db)
                 else:
                     self.__lastrowid = None
@@ -960,9 +1137,8 @@ class Cursor(object):
         try:
             return self.__description
         except AttributeError:
-            if self.__statement:
-                self.__description = self.__statement._get_description()
-                return self.__description
+            self.__description = self.__statement._get_description()
+            return self.__description
     description = property(__get_description)
 
     def __get_lastrowid(self):
@@ -981,29 +1157,20 @@ class Statement(object):
 
     def __init__(self, connection, sql):
         self.__con = connection
+        self.__con._remember_statement(self)
 
         self._in_use = False
 
         if not isinstance(sql, basestring):
             raise Warning("SQL is of wrong type. Must be string or unicode.")
-        if '\0' in sql:
-            raise ValueError("the query contains a null character")
 
         first_word = sql.lstrip().split(" ")[0].upper()
         if first_word == "":
-            self._type = _STMT_TYPE_INVALID
-        elif first_word == "SELECT":
-            self._type = _STMT_TYPE_SELECT
-        elif first_word == "INSERT":
-            self._type = _STMT_TYPE_INSERT
-        elif first_word == "UPDATE":
-            self._type = _STMT_TYPE_UPDATE
-        elif first_word == "DELETE":
-            self._type = _STMT_TYPE_DELETE
-        elif first_word == "REPLACE":
-            self._type = _STMT_TYPE_REPLACE
+            self._type = "INVALID"
+        elif first_word in ("SELECT", "INSERT", "UPDATE", "DELETE", "REPLACE"):
+            self._type = first_word
         else:
-            self._type = _STMT_TYPE_OTHER
+            self._type = "OTHER"
 
         if isinstance(sql, unicode):
             sql = sql.encode('utf-8')
@@ -1016,7 +1183,7 @@ class Statement(object):
 
         if ret == _lib.SQLITE_OK and not self._statement:
             # an empty statement, work around that, as it's the least trouble
-            self._type = _STMT_TYPE_SELECT
+            self._type = "SELECT"
             c_sql = _ffi.new("char[]", b"select 42")
             ret = _lib.sqlite3_prepare_v2(self.__con._db, c_sql, -1,
                                           statement_star, next_char)
@@ -1025,19 +1192,17 @@ class Statement(object):
         if ret != _lib.SQLITE_OK:
             raise self.__con._get_exception(ret)
 
-        self.__con._remember_statement(self)
-
         tail = _ffi.string(next_char[0]).decode('utf-8')
         if _check_remaining_sql(tail):
             raise Warning("You can only execute one statement at a time.")
 
     def __del__(self):
         if self._statement:
-            self.__con._finalize_raw_statement(self._statement)
+            _lib.sqlite3_finalize(self._statement)
 
     def _finalize(self):
         if self._statement:
-            self.__con._finalize_raw_statement(self._statement)
+            _lib.sqlite3_finalize(self._statement)
             self._statement = None
         self._in_use = False
 
@@ -1064,10 +1229,7 @@ class Statement(object):
         if cvt is not None:
             param = cvt(param)
 
-        try:
-            param = adapt(param)
-        except:
-            pass  # And use previous value
+        param = adapt(param)
 
         if param is None:
             rc = _lib.sqlite3_bind_null(self._statement, idx)
@@ -1137,18 +1299,13 @@ class Statement(object):
             raise ValueError("parameters are of unsupported type")
 
     def _get_description(self):
-        if self._type in (
-            _STMT_TYPE_INSERT,
-            _STMT_TYPE_UPDATE,
-            _STMT_TYPE_DELETE,
-            _STMT_TYPE_REPLACE
-        ):
+        if self._type in ("INSERT", "UPDATE", "DELETE", "REPLACE"):
             return None
         desc = []
         for i in xrange(_lib.sqlite3_column_count(self._statement)):
             name = _lib.sqlite3_column_name(self._statement, i)
             if name:
-                name = _ffi.string(name).split("[")[0].strip()
+                name = _ffi.string(name).decode('utf-8').split("[")[0].strip()
             desc.append((name, None, None, None, None, None, None))
         return desc
 
@@ -1158,18 +1315,15 @@ class Row(object):
         self.description = cursor.description
         self.values = values
 
-    def __len__(self):
-        return len(self.values)
-
     def __getitem__(self, item):
-        if isinstance(item, (int, long)):
+        if type(item) is int:
             return self.values[item]
         else:
             item = item.lower()
             for idx, desc in enumerate(self.description):
                 if desc[0].lower() == item:
                     return self.values[idx]
-            raise IndexError("No item with that key")
+            raise KeyError
 
     def keys(self):
         return [desc[0] for desc in self.description]

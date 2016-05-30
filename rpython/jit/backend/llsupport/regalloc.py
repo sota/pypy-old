@@ -1,16 +1,14 @@
 import os
-from rpython.jit.metainterp.history import Const, REF, JitCellToken
+from rpython.jit.metainterp.history import Const, Box, REF, JitCellToken
 from rpython.rlib.objectmodel import we_are_translated, specialize
-from rpython.jit.metainterp.resoperation import rop, AbstractValue
-from rpython.rtyper.lltypesystem import lltype
-from rpython.rtyper.lltypesystem.lloperation import llop
+from rpython.jit.metainterp.resoperation import rop
 
 try:
     from collections import OrderedDict
 except ImportError:
     OrderedDict = dict # too bad
 
-class TempVar(AbstractValue):
+class TempBox(Box):
     def __init__(self):
         pass
 
@@ -68,37 +66,19 @@ class LinkedList(object):
             function(arg, node.val)
             node = node.next
 
-    def pop(self, size, tp, hint=-1):
+    def pop(self, size, tp):
         if size == 2:
-            return self._pop_two(tp)   # 'hint' ignored for floats on 32-bit
+            return self._pop_two(tp)
         assert size == 1
         if not self.master_node:
             return None
         node = self.master_node
-        #
-        if hint >= 0:
-            # Look for and remove the Node with the .val matching 'hint'.
-            # If not found, fall back to removing the first Node.
-            # Note that the loop below ignores the first Node, but
-            # even if by chance it is the one with the correct .val,
-            # it will be the one we remove at the end anyway.
-            prev_node = node
-            while prev_node.next:
-                if prev_node.next.val == hint:
-                    node = prev_node.next
-                    prev_node.next = node.next
-                    break
-                prev_node = prev_node.next
-            else:
-                self.master_node = node.next
-        else:
-            self.master_node = node.next
-        #
+        self.master_node = node.next
         return self.fm.frame_pos(node.val, tp)
 
     def _candidate(self, node):
         return (node.val & 1 == 0) and (node.val + 1 == node.next.val)
-
+        
     def _pop_two(self, tp):
         node = self.master_node
         if node is None or node.next is None:
@@ -149,7 +129,8 @@ class FrameManager(object):
     def __init__(self, start_free_depth=0, freelist=None):
         self.bindings = {}
         self.current_frame_depth = start_free_depth
-        self.hint_frame_pos = {}
+        # we disable hints for now
+        #self.hint_frame_locations = {}
         self.freelist = LinkedList(self, freelist)
 
     def get_frame_depth(self):
@@ -165,16 +146,22 @@ class FrameManager(object):
             return self.bindings[box]
         except KeyError:
             pass
+        # check if we have a hint for this box
+        #if box in self.hint_frame_locations:
+        #    # if we do, try to reuse the location for this box
+        #    loc = self.hint_frame_locations[box]
+        #    if self.try_to_reuse_location(box, loc):
+        #        return loc
+        ## no valid hint.  make up a new free location
         return self.get_new_loc(box)
 
     def get_new_loc(self, box):
         size = self.frame_size(box.type)
-        hint = self.hint_frame_pos.get(box, -1)
         # frame_depth is rounded up to a multiple of 'size', assuming
         # that 'size' is a power of two.  The reason for doing so is to
         # avoid obscure issues in jump.py with stack locations that try
         # to move from position (6,7) to position (7,8).
-        newloc = self.freelist.pop(size, box.type, hint)
+        newloc = self.freelist.pop(size, box.type)
         if newloc is None:
             #
             index = self.get_frame_depth()
@@ -243,6 +230,23 @@ class FrameManager(object):
             all[node.val] = 1
             node = node.next
 
+    def try_to_reuse_location(self, box, loc):
+        xxx
+        index = self.get_loc_index(loc)
+        if index < 0:
+            return False
+        size = self.frame_size(box.type)
+        for i in range(size):
+            while (index + i) >= len(self.used):
+                self.used.append(False)
+            if self.used[index + i]:
+                return False    # already in use
+        # good, we can reuse the location
+        for i in range(size):
+            self.used[index + i] = True
+        self.bindings[box] = loc
+        return True
+
     @staticmethod
     def _gather_gcroots(lst, var):
         lst.append(var)
@@ -267,7 +271,6 @@ class FrameManager(object):
         raise NotImplementedError("Purely abstract")
 
 class RegisterManager(object):
-
     """ Class that keeps track of register allocations
     """
     box_types             = None       # or a list of acceptable types
@@ -278,7 +281,6 @@ class RegisterManager(object):
 
     def __init__(self, longevity, frame_manager=None, assembler=None):
         self.free_regs = self.all_regs[:]
-        self.free_regs.reverse()
         self.longevity = longevity
         self.temp_boxes = []
         if not we_are_translated():
@@ -305,7 +307,7 @@ class RegisterManager(object):
 
     def _check_type(self, v):
         if not we_are_translated() and self.box_types is not None:
-            assert isinstance(v, TempVar) or v.type in self.box_types
+            assert isinstance(v, TempBox) or v.type in self.box_types
 
     def possibly_free_var(self, v):
         """ If v is stored in a register and v is not used beyond the
@@ -379,7 +381,7 @@ class RegisterManager(object):
             loc = self.reg_bindings.get(v, None)
             if loc is not None and loc not in self.no_lower_byte_regs:
                 return loc
-            for i in range(len(self.free_regs) - 1, -1, -1):
+            for i in range(len(self.free_regs)):
                 reg = self.free_regs[i]
                 if reg not in self.no_lower_byte_regs:
                     if loc is not None:
@@ -443,7 +445,7 @@ class RegisterManager(object):
         Will not spill a variable from 'forbidden_vars'.
         """
         self._check_type(v)
-        if isinstance(v, TempVar):
+        if isinstance(v, TempBox):
             self.longevity[v] = (self.position, self.position)
         loc = self.try_allocate_reg(v, selected_reg,
                                     need_lower_byte=need_lower_byte)
@@ -634,39 +636,44 @@ class BaseRegalloc(object):
         locs = []
         base_ofs = self.assembler.cpu.get_baseofs_of_frame_field()
         for box in inputargs:
-            assert not isinstance(box, Const)
+            assert isinstance(box, Box)
             loc = self.fm.get_new_loc(box)
             locs.append(loc.value - base_ofs)
-        if looptoken.compiled_loop_token is not None:   # <- for tests
+        if looptoken.compiled_loop_token is not None:
+            # for tests
             looptoken.compiled_loop_token._ll_initial_locs = locs
 
-    def next_op_can_accept_cc(self, operations, i):
-        op = operations[i]
-        next_op = operations[i + 1]
-        opnum = next_op.getopnum()
-        if (opnum != rop.GUARD_TRUE and opnum != rop.GUARD_FALSE
-                                    and opnum != rop.COND_CALL):
+    def can_merge_with_next_guard(self, op, i, operations):
+        if (op.getopnum() == rop.CALL_MAY_FORCE or
+            op.getopnum() == rop.CALL_ASSEMBLER or
+            op.getopnum() == rop.CALL_RELEASE_GIL):
+            assert operations[i + 1].getopnum() == rop.GUARD_NOT_FORCED
+            return True
+        if not op.is_comparison():
+            if op.is_ovf():
+                if (operations[i + 1].getopnum() != rop.GUARD_NO_OVERFLOW and
+                    operations[i + 1].getopnum() != rop.GUARD_OVERFLOW):
+                    not_implemented("int_xxx_ovf not followed by "
+                                    "guard_(no)_overflow")
+                return True
             return False
-        if next_op.getarg(0) is not op:
+        if (operations[i + 1].getopnum() != rop.GUARD_TRUE and
+            operations[i + 1].getopnum() != rop.GUARD_FALSE):
             return False
-        if self.longevity[op][1] > i + 1:
+        if operations[i + 1].getarg(0) is not op.result:
             return False
-        if opnum != rop.COND_CALL:
-            if op in operations[i + 1].getfailargs():
-                return False
-        else:
-            if op in operations[i + 1].getarglist()[1:]:
-                return False
+        if (self.longevity[op.result][1] > i + 1 or
+            op.result in operations[i + 1].getfailargs()):
+            return False
         return True
 
-    def locs_for_call_assembler(self, op):
+    def locs_for_call_assembler(self, op, guard_op):
         descr = op.getdescr()
         assert isinstance(descr, JitCellToken)
         if op.numargs() == 2:
             self.rm._sync_var(op.getarg(1))
             return [self.loc(op.getarg(0)), self.fm.loc(op.getarg(1))]
         else:
-            assert op.numargs() == 1
             return [self.loc(op.getarg(0))]
 
 
@@ -678,17 +685,20 @@ def compute_vars_longevity(inputargs, operations):
     # never appear in the assembler or it does not matter if they appear on
     # stack or in registers. Main example is loop arguments that go
     # only to guard operations or to jump or to finish
+    produced = {}
     last_used = {}
     last_real_usage = {}
     for i in range(len(operations)-1, -1, -1):
         op = operations[i]
-        if op.type != 'v':
-            if op not in last_used and op.has_no_side_effect():
+        if op.result:
+            if op.result not in last_used and op.has_no_side_effect():
                 continue
+            assert op.result not in produced
+            produced[op.result] = i
         opnum = op.getopnum()
         for j in range(op.numargs()):
             arg = op.getarg(j)
-            if isinstance(arg, Const):
+            if not isinstance(arg, Box):
                 continue
             if arg not in last_used:
                 last_used[arg] = i
@@ -699,36 +709,25 @@ def compute_vars_longevity(inputargs, operations):
             for arg in op.getfailargs():
                 if arg is None: # hole
                     continue
-                assert not isinstance(arg, Const)
+                assert isinstance(arg, Box)
                 if arg not in last_used:
                     last_used[arg] = i
     #
     longevity = {}
-    for i, arg in enumerate(operations):
-        if arg.type != 'v' and arg in last_used:
-            assert not isinstance(arg, Const)
-            assert i < last_used[arg]
-            longevity[arg] = (i, last_used[arg])
+    for arg in produced:
+        if arg in last_used:
+            assert isinstance(arg, Box)
+            assert produced[arg] < last_used[arg]
+            longevity[arg] = (produced[arg], last_used[arg])
             del last_used[arg]
     for arg in inputargs:
-        assert not isinstance(arg, Const)
+        assert isinstance(arg, Box)
         if arg not in last_used:
             longevity[arg] = (-1, -1)
         else:
             longevity[arg] = (0, last_used[arg])
             del last_used[arg]
     assert len(last_used) == 0
-
-    if not we_are_translated():
-        produced = {}
-        for arg in inputargs:
-            produced[arg] = None
-        for op in operations:
-            for arg in op.getarglist():
-                if not isinstance(arg, Const):
-                    assert arg in produced
-            produced[op] = None
-    
     return longevity, last_real_usage
 
 def is_comparison_or_ovf_op(opnum):
@@ -738,7 +737,7 @@ def is_comparison_or_ovf_op(opnum):
     # any instance field, we can use a fake object
     class Fake(cls):
         pass
-    op = Fake()
+    op = Fake(None)
     return op.is_comparison() or op.is_ovf()
 
 def valid_addressing_size(size):
@@ -753,7 +752,5 @@ def get_scale(size):
 
 
 def not_implemented(msg):
-    msg = '[llsupport/regalloc] %s\n' % msg
-    if we_are_translated():
-        llop.debug_print(lltype.Void, msg)
+    os.write(2, '[llsupport/regalloc] %s\n' % msg)
     raise NotImplementedError(msg)

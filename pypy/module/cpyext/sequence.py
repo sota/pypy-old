@@ -1,8 +1,8 @@
 
-from pypy.interpreter.error import OperationError, oefmt
+from pypy.interpreter.error import OperationError, operationerrfmt
 from pypy.module.cpyext.api import (
     cpython_api, CANNOT_FAIL, CONST_STRING, Py_ssize_t)
-from pypy.module.cpyext.pyobject import PyObject
+from pypy.module.cpyext.pyobject import PyObject, borrow_from
 from rpython.rtyper.lltypesystem import rffi, lltype
 from pypy.objspace.std import listobject, tupleobject
 
@@ -42,19 +42,15 @@ def PySequence_Fast(space, w_obj, m):
     which case o is returned.  Use PySequence_Fast_GET_ITEM() to access the
     members of the result.  Returns NULL on failure.  If the object is not a
     sequence, raises TypeError with m as the message text."""
-    if isinstance(w_obj, listobject.W_ListObject):
-        # make sure we can return a borrowed obj from PySequence_Fast_GET_ITEM
-        # XXX how does this interact with CPyListStrategy?
-        w_obj.ensure_object_strategy()
-        return w_obj
-    if isinstance(w_obj, tupleobject.W_TupleObject):
+    if (isinstance(w_obj, listobject.W_ListObject) or
+        isinstance(w_obj, tupleobject.W_TupleObject)):
         return w_obj
     try:
         return tupleobject.W_TupleObject(space.fixedview(w_obj))
     except OperationError:
         raise OperationError(space.w_TypeError, space.wrap(rffi.charp2str(m)))
 
-@cpython_api([PyObject, Py_ssize_t], PyObject, result_borrowed=True)
+@cpython_api([PyObject, Py_ssize_t], PyObject)
 def PySequence_Fast_GET_ITEM(space, w_obj, index):
     """Return the ith element of o, assuming that o was returned by
     PySequence_Fast(), o is not NULL, and that i is within bounds.
@@ -64,7 +60,7 @@ def PySequence_Fast_GET_ITEM(space, w_obj, index):
     else:
         assert isinstance(w_obj, tupleobject.W_TupleObject)
         w_res = w_obj.wrappeditems[index]
-    return w_res     # borrowed ref
+    return borrow_from(w_obj, w_res)
 
 @cpython_api([PyObject], Py_ssize_t, error=CANNOT_FAIL)
 def PySequence_Fast_GET_SIZE(space, w_obj):
@@ -157,8 +153,8 @@ def PySequence_SetItem(space, w_o, i, w_v):
     is the equivalent of the Python statement o[i] = v.  This function does
     not steal a reference to v."""
     if PyDict_Check(space, w_o) or not PySequence_Check(space, w_o):
-        raise oefmt(space.w_TypeError,
-                    "'%T' object does not support item assignment", w_o)
+        raise operationerrfmt(space.w_TypeError, "'%s' object does not support item assignment",
+                             space.type(w_o).getname(space))
     space.setitem(w_o, space.wrap(i), w_v)
     return 0
 

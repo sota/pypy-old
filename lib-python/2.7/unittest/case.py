@@ -6,7 +6,6 @@ import functools
 import difflib
 import pprint
 import re
-import types
 import warnings
 
 from . import result
@@ -26,7 +25,7 @@ class SkipTest(Exception):
     """
     Raise this exception in a test to skip it.
 
-    Usually you can use TestCase.skipTest() or one of the skipping decorators
+    Usually you can use TestResult.skip() or one of the skipping decorators
     instead of raising this directly.
     """
     pass
@@ -56,7 +55,7 @@ def skip(reason):
     Unconditionally skip a test.
     """
     def decorator(test_item):
-        if not isinstance(test_item, (type, types.ClassType)):
+        if not (isinstance(test_item, type) and issubclass(test_item, TestCase)):
             @functools.wraps(test_item)
             def skip_wrapper(*args, **kwargs):
                 raise SkipTest(reason)
@@ -122,13 +121,13 @@ class _AssertRaisesContext(object):
             return True
 
         expected_regexp = self.expected_regexp
+        if isinstance(expected_regexp, basestring):
+            expected_regexp = re.compile(expected_regexp)
         if not expected_regexp.search(str(exc_value)):
             raise self.failureException('"%s" does not match "%s"' %
                      (expected_regexp.pattern, str(exc_value)))
         return True
 
-def _sentinel(*args, **kwargs):
-    raise AssertionError('Should never be called')
 
 class TestCase(object):
     """A class whose instances are single test cases.
@@ -150,22 +149,23 @@ class TestCase(object):
     should not change the signature of their __init__ method, since instances
     of the classes are instantiated automatically by parts of the framework
     in order to be run.
-
-    When subclassing TestCase, you can set these attributes:
-    * failureException: determines which exception will be raised when
-        the instance's assertion methods fail; test methods raising this
-        exception will be deemed to have 'failed' rather than 'errored'.
-    * longMessage: determines whether long messages (including repr of
-        objects used in assert methods) will be printed on failure in *addition*
-        to any explicit message passed.
-    * maxDiff: sets the maximum length of a diff in failure messages
-        by assert methods using difflib. It is looked up as an instance
-        attribute so can be configured by individual tests if required.
     """
+
+    # This attribute determines which exception will be raised when
+    # the instance's assertion methods fail; test methods raising this
+    # exception will be deemed to have 'failed' rather than 'errored'
 
     failureException = AssertionError
 
+    # This attribute determines whether long messages (including repr of
+    # objects used in assert methods) will be printed on failure in *addition*
+    # to any explicit message passed.
+
     longMessage = False
+
+    # This attribute sets the maximum length of a diff in failure messages
+    # by assert methods using difflib. It is looked up as an instance attribute
+    # so can be configured by individual tests if required.
 
     maxDiff = 80*8
 
@@ -201,11 +201,7 @@ class TestCase(object):
         self.addTypeEqualityFunc(tuple, 'assertTupleEqual')
         self.addTypeEqualityFunc(set, 'assertSetEqual')
         self.addTypeEqualityFunc(frozenset, 'assertSetEqual')
-        try:
-            self.addTypeEqualityFunc(unicode, 'assertMultiLineEqual')
-        except NameError:
-            # No unicode support in this build
-            pass
+        self.addTypeEqualityFunc(unicode, 'assertMultiLineEqual')
 
     def addTypeEqualityFunc(self, typeobj, function):
         """Add a type specific assertEqual style function to compare a type.
@@ -445,15 +441,15 @@ class TestCase(object):
             return  '%s : %s' % (safe_repr(standardMsg), safe_repr(msg))
 
 
-    def assertRaises(self, excClass, callableObj=_sentinel, *args, **kwargs):
-        """Fail unless an exception of class excClass is raised
+    def assertRaises(self, excClass, callableObj=None, *args, **kwargs):
+        """Fail unless an exception of class excClass is thrown
            by callableObj when invoked with arguments args and keyword
            arguments kwargs. If a different type of exception is
-           raised, it will not be caught, and the test case will be
+           thrown, it will not be caught, and the test case will be
            deemed to have suffered an error, exactly as for an
            unexpected exception.
 
-           If called with callableObj omitted, will return a
+           If called with callableObj omitted or None, will return a
            context object used like this::
 
                 with self.assertRaises(SomeException):
@@ -469,7 +465,7 @@ class TestCase(object):
                self.assertEqual(the_exception.error_code, 3)
         """
         context = _AssertRaisesContext(excClass, self)
-        if callableObj is _sentinel:
+        if callableObj is None:
             return context
         with context:
             callableObj(*args, **kwargs)
@@ -515,7 +511,7 @@ class TestCase(object):
         assertion_func(first, second, msg=msg)
 
     def assertNotEqual(self, first, second, msg=None):
-        """Fail if the two objects are equal as determined by the '!='
+        """Fail if the two objects are equal as determined by the '=='
            operator.
         """
         if not first != second:
@@ -875,7 +871,7 @@ class TestCase(object):
             - [0, 1, 1] and [1, 0, 1] compare equal.
             - [0, 0, 1] and [0, 1] compare unequal.
         """
-        first_seq, second_seq = list(expected_seq), list(actual_seq)
+        first_seq, second_seq = list(actual_seq), list(expected_seq)
         with warnings.catch_warnings():
             if sys.py3kwarning:
                 # Silence Py3k warning raised during the sorting
@@ -975,7 +971,7 @@ class TestCase(object):
             self.fail(self._formatMessage(msg, standardMsg))
 
     def assertRaisesRegexp(self, expected_exception, expected_regexp,
-                           callable_obj=_sentinel, *args, **kwargs):
+                           callable_obj=None, *args, **kwargs):
         """Asserts that the message in a raised exception matches a regexp.
 
         Args:
@@ -986,10 +982,8 @@ class TestCase(object):
             args: Extra args.
             kwargs: Extra kwargs.
         """
-        if expected_regexp is not None:
-            expected_regexp = re.compile(expected_regexp)
         context = _AssertRaisesContext(expected_exception, self, expected_regexp)
-        if callable_obj is _sentinel:
+        if callable_obj is None:
             return context
         with context:
             callable_obj(*args, **kwargs)

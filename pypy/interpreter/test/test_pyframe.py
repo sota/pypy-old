@@ -1,14 +1,10 @@
 from rpython.tool import udir
 from pypy.conftest import option
-from pypy.interpreter.gateway import interp2app
 
-def check_no_w_locals(space, w_frame):
-    return space.wrap(w_frame.getorcreatedebug().w_locals is None)
 
 class AppTestPyFrame:
 
     def setup_class(cls):
-        space = cls.space
         cls.w_udir = cls.space.wrap(str(udir.udir))
         cls.w_tempfile1 = cls.space.wrap(str(udir.udir.join('tempfile1')))
         if not option.runappdirect:
@@ -21,8 +17,6 @@ class AppTestPyFrame:
             w_call_further.code.hidden_applevel = True       # hack
             cls.w_call_further = w_call_further
 
-            cls.w_check_no_w_locals = space.wrap(interp2app(check_no_w_locals))
-
     # test for the presence of the attributes, not functionality
 
     def test_f_locals(self):
@@ -34,7 +28,6 @@ class AppTestPyFrame:
         import sys
         f = sys._getframe()
         assert f.f_globals is globals()
-        raises(TypeError, "f.f_globals = globals()")
 
     def test_f_builtins(self):
         import sys, __builtin__
@@ -71,14 +64,10 @@ class AppTestPyFrame:
                 f.f_lineno += 1
             return x
 
-        open    # force fetching of this name now
-
         def function():
             xyz
-            with open(self.tempfile1, 'w') as f:
-                pass
             return 3
-
+        
         import sys
         sys.settrace(tracer)
         function()
@@ -252,7 +241,7 @@ class AppTestPyFrame:
     def test_trace_ignore_hidden(self):
         import sys
         import _testing
-
+            
         l = []
         def trace(a,b,c):
             l.append((a,b,c))
@@ -304,7 +293,7 @@ class AppTestPyFrame:
             return trace
 
         def g():
-            raise Exception
+            raise Exception            
         def f():
             try:
                 g()
@@ -392,6 +381,7 @@ class AppTestPyFrame:
         assert len(l) == 2
         assert issubclass(l[0][0], Exception)
         assert issubclass(l[1][0], Exception)
+        
 
     def test_trace_generator_finalisation(self):
         import sys
@@ -500,25 +490,6 @@ class AppTestPyFrame:
         sys.settrace(None)
         assert res == 42
 
-    def test_fast2locals_called_lazily(self):
-        import sys
-        class FrameHolder:
-            pass
-        fh = FrameHolder()
-        def trace(frame, what, arg):
-            # trivial trace function, does not access f_locals
-            fh.frame = frame
-            return trace
-        def f(x):
-            x += 1
-            return x
-        sys.settrace(trace)
-        res = f(1)
-        sys.settrace(None)
-        assert res == 2
-        if hasattr(self, "check_no_w_locals"): # not appdirect
-            assert self.check_no_w_locals(fh.frame)
-
     def test_set_unset_f_trace(self):
         import sys
         seen = []
@@ -544,21 +515,3 @@ class AppTestPyFrame:
         assert seen == [(1, f, firstline + 6, 'line', None),
                         (1, f, firstline + 7, 'line', None),
                         (1, f, firstline + 8, 'line', None)]
-
-    def test_locals2fast_freevar_bug(self):
-        import sys
-        def f(n):
-            class A(object):
-                def g(self):
-                    return n
-                n = 42
-            return A()
-        res = f(10).g()
-        assert res == 10
-        #
-        def trace(*args):
-            return trace
-        sys.settrace(trace)
-        res = f(10).g()
-        sys.settrace(None)
-        assert res == 10

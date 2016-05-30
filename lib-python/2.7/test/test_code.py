@@ -75,15 +75,14 @@ varnames: ()
 cellvars: ()
 freevars: ()
 nlocals: 0
-flags: 1048643
+flags: 67
 consts: ("'doc string'", 'None')
 
 """
 
 import unittest
 import weakref
-from test.test_support import run_doctest, run_unittest, cpython_only
-from test.test_support import gc_collect
+from test import test_support
 
 
 def consts(t):
@@ -105,7 +104,7 @@ def dump(co):
 
 class CodeTest(unittest.TestCase):
 
-    @cpython_only
+    @test_support.impl_detail("test for PyCode_NewEmpty")
     def test_newempty(self):
         import _testcapi
         co = _testcapi.code_newempty("filename", "funcname", 15)
@@ -135,12 +134,13 @@ class CodeWeakRefTest(unittest.TestCase):
         coderef = weakref.ref(f.__code__, callback)
         self.assertTrue(bool(coderef()))
         del f
-        gc_collect()
+        test_support.gc_collect()
         self.assertFalse(bool(coderef()))
         self.assertTrue(self.called)
 
 
 def test_main(verbose=None):
+    from test.test_support import run_doctest, run_unittest
     from test import test_code
     run_doctest(test_code, verbose)
     run_unittest(CodeTest, CodeWeakRefTest)

@@ -1,7 +1,6 @@
 """Tests for multiple JitDrivers."""
-import py
 from rpython.rlib.jit import JitDriver, unroll_safe, set_param
-from rpython.jit.metainterp.test.support import LLJitMixin
+from rpython.jit.metainterp.test.support import LLJitMixin, OOJitMixin
 from rpython.jit.metainterp.warmspot import get_stats
 
 
@@ -104,7 +103,7 @@ class MultipleJitDriversTests(object):
         res = self.meta_interp(loop2, [4, 40], repeat=7, inline=True)
         assert res == loop2(4, 40)
         # we expect no int_sub, but a residual call
-        self.check_resops(call_i=2, int_sub=0)
+        self.check_resops(call=2, int_sub=0)
 
     def test_multiple_jits_trace_too_long(self):
         myjitdriver1 = JitDriver(greens=["n"], reds=["i", "box"])
@@ -143,91 +142,9 @@ class MultipleJitDriversTests(object):
         stats = get_stats()
         assert stats.aborted_keys == [None, None]
 
-    def test_inline_across_languages(self):
-        py.test.skip("why does this not work")
-        driver_weird = JitDriver(
-            greens = ["pc", "bc"],
-            reds = ["acc", "x", "y", "z"])
-
-        def interp1(bc, x, y, z):
-            pc = 0
-            acc = 0
-            while True:
-                driver_weird.jit_merge_point(bc=bc, pc=pc, acc=acc, x=x, y=y, z=z)
-                op = ord(bc[pc])
-                pc += 1
-                if op == 0:
-                    acc += x
-                if op == 1:
-                    acc += y
-                if op == 2:
-                    acc *= z
-                if op == 3:
-                    pc = 0
-                if pc >= len(bc):
-                    break
-            return acc
-
-        driver = JitDriver(
-                greens = ["substract"],
-                reds = ["x"],
-        )
-        def interp2(x):
-            substract = interp1('\x00', 0, 0, 0)
-            while True:
-                driver.jit_merge_point(substract=substract, x=x)
-                substract += 1
-                if x < 0:
-                    break
-                if substract == 10:
-                    # computes x + 1 * (-1)
-                    x = interp1('\x01\x02\x00', x, 1, -1)
-                    substract = 0
-        interp2(100)
-        self.meta_interp(interp2, [100], listcomp=True, backendopt=True,
-                         listops=True, inline=True)
-        self.check_resops(call_assembler=0)
-
-    def test_get_unique_id(self):
-        def get_unique_id(pc):
-            return pc + 1
-        
-        driver = JitDriver(greens=["pc"], reds='auto',
-                           get_unique_id=get_unique_id, is_recursive=True)
-
-        def f(arg):
-            i = 0
-            pc = 0
-            while i < 30 and pc < 3:
-                driver.jit_merge_point(pc=pc)
-                pc += 1
-                if arg == 0 and pc == 3:
-                    pc = 0
-                if arg == 0:
-                    f(1)
-                i += 1
-
-        self.meta_interp(f, [0], inline=True)
-        loop = get_stats().loops[1]
-        for op in loop.operations:
-            if op.getopname() == 'enter_portal_frame':
-                assert op.getarg(0).getint() == 0
-                assert op.getarg(1).getint() == 1
-
-    def test_manual_leave_enter_portal_frame(self):
-        from rpython.rlib import jit
-        driver = JitDriver(greens=[], reds='auto', is_recursive=True)
-
-        def f(arg):
-            i = 0
-            while i < 100:
-                driver.jit_merge_point()
-                jit.enter_portal_frame(42)
-                jit.leave_portal_frame()
-                i += 1
-
-        self.meta_interp(f, [0])
-        self.check_simple_loop(enter_portal_frame=1, leave_portal_frame=1)
 
 class TestLLtype(MultipleJitDriversTests, LLJitMixin):
+    pass
+
+class TestOOtype(MultipleJitDriversTests, OOJitMixin):
     pass

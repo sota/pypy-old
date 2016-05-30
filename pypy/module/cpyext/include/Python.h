@@ -11,8 +11,8 @@
 # include <errno.h>
 # include <unistd.h>
 # define Py_DEPRECATED(VERSION_UNUSED) __attribute__((__deprecated__))
-# define PyAPI_FUNC(RTYPE) __attribute__((visibility("default"))) RTYPE
-# define PyAPI_DATA(RTYPE) extern PyAPI_FUNC(RTYPE)
+# define PyAPI_FUNC(RTYPE) RTYPE
+# define PyAPI_DATA(RTYPE) extern RTYPE
 # define Py_LOCAL_INLINE(type) static inline type
 #else
 # define MS_WIN32 1
@@ -24,7 +24,6 @@
 #  include <limits.h>
 # endif
 # include <io.h>
-# include <sys/types.h>   /* for 'off_t' */
 # define Py_DEPRECATED(VERSION_UNUSED)
 # ifdef Py_BUILD_CORE
 #  define PyAPI_FUNC(RTYPE) __declspec(dllexport) RTYPE
@@ -47,7 +46,7 @@
 # endif
 #endif
 #ifndef DL_EXPORT
-#       define DL_EXPORT(RTYPE) PyAPI_FUNC(RTYPE)
+#       define DL_EXPORT(RTYPE) RTYPE
 #endif
 #ifndef DL_IMPORT
 #       define DL_IMPORT(RTYPE) RTYPE
@@ -84,7 +83,6 @@ typedef long Py_ssize_t;
 #include "pyconfig.h"
 
 #include "object.h"
-#include "pymath.h"
 #include "pyport.h"
 #include "warnings.h"
 
@@ -100,7 +98,6 @@ typedef long Py_ssize_t;
 #include "complexobject.h"
 #include "methodobject.h"
 #include "funcobject.h"
-#include "code.h"
 
 #include "modsupport.h"
 #include "pythonrun.h"
@@ -116,6 +113,7 @@ typedef long Py_ssize_t;
 #include "compile.h"
 #include "frameobject.h"
 #include "eval.h"
+#include "pymath.h"
 #include "pymem.h"
 #include "pycobject.h"
 #include "pycapsule.h"
@@ -127,10 +125,9 @@ typedef long Py_ssize_t;
 #include "fileobject.h"
 #include "pysignals.h"
 #include "pythread.h"
-#include "traceback.h"
 
-/* Missing definitions */
-#include "missing.h"
+// XXX This shouldn't be included here
+#include "structmember.h"
 
 #include <pypy_decl.h>
 

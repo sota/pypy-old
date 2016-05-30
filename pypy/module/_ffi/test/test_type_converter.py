@@ -150,7 +150,7 @@ class DummyToAppLevelConverter(ToAppLevelConverter):
         return self.do_and_wrap(w_ffitype)
 
 
-class TestToAppLevel(object):
+class TestFromAppLevel(object):
     spaceconfig = dict(usemodules=('_ffi',))
 
     def setup_class(cls):

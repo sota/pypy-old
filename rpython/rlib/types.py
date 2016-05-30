@@ -39,12 +39,8 @@ def unicode0():
     return model.SomeUnicodeString(no_nul=True)
 
 
-def str(can_be_None=False):
-    return model.SomeString(can_be_None=can_be_None)
-
-
-def bytearray():
-    return model.SomeByteArray()
+def str():
+    return model.SomeString()
 
 
 def str0():
@@ -57,8 +53,7 @@ def char():
 
 def ptr(ll_type):
     from rpython.rtyper.lltypesystem.lltype import Ptr
-    from rpython.rtyper.llannotation import SomePtr
-    return SomePtr(Ptr(ll_type))
+    return model.SomePtr(Ptr(ll_type))
 
 
 def list(element):

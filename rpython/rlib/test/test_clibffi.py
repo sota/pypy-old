@@ -3,7 +3,6 @@
 """
 
 from rpython.translator.c.test.test_genc import compile
-from rpython.translator import cdir
 from rpython.rlib.clibffi import *
 from rpython.rlib.objectmodel import keepalive_until_here
 from rpython.rtyper.lltypesystem.ll2ctypes import ALLOCATED
@@ -269,7 +268,6 @@ class TestCLibffi(BaseFfiTest):
 
         c_file = udir.ensure("test_libffi", dir=1).join("xlib.c")
         c_file.write(py.code.Source('''
-        #include "src/precommondefs.h"
         #include <stdlib.h>
         #include <stdio.h>
 
@@ -278,7 +276,6 @@ class TestCLibffi(BaseFfiTest):
             long y;
         };
 
-        RPY_EXPORTED
         long sum_x_y(struct x_y s) {
             return s.x + s.y;
         }
@@ -288,7 +285,7 @@ class TestCLibffi(BaseFfiTest):
         }
         
         '''))
-        eci = ExternalCompilationInfo(include_dirs=[cdir])
+        eci = ExternalCompilationInfo(export_symbols=['sum_x_y'])
         lib_name = str(platform.compile([c_file], eci, 'x', standalone=False))
 
         lib = CDLL(lib_name)
@@ -322,7 +319,6 @@ class TestCLibffi(BaseFfiTest):
 
         c_file = udir.ensure("test_libffi", dir=1).join("xlib.c")
         c_file.write(py.code.Source('''
-        #include "src/precommondefs.h"
         #include <stdlib.h>
         #include <stdio.h>
 
@@ -331,7 +327,6 @@ class TestCLibffi(BaseFfiTest):
             short y;
         };
 
-        RPY_EXPORTED
         struct s2h give(short x, short y) {
             struct s2h out;
             out.x = x;
@@ -339,7 +334,6 @@ class TestCLibffi(BaseFfiTest):
             return out;
         }
 
-        RPY_EXPORTED
         struct s2h perturb(struct s2h inp) {
             inp.x *= 2;
             inp.y *= 3;
@@ -347,7 +341,7 @@ class TestCLibffi(BaseFfiTest):
         }
         
         '''))
-        eci = ExternalCompilationInfo(include_dirs=[cdir])
+        eci = ExternalCompilationInfo(export_symbols=['give', 'perturb'])
         lib_name = str(platform.compile([c_file], eci, 'x', standalone=False))
 
         lib = CDLL(lib_name)
@@ -401,13 +395,11 @@ class TestCLibffi(BaseFfiTest):
 
         c_file = udir.ensure("test_libffi", dir=1).join("xlib.c")
         c_file.write(py.code.Source('''
-        #include "src/precommondefs.h"
-        RPY_EXPORTED
         long fun(long i) {
             return i + 42;
         }
         '''))
-        eci = ExternalCompilationInfo(include_dirs=[cdir])
+        eci = ExternalCompilationInfo(export_symbols=['fun'])
         lib_name = str(platform.compile([c_file], eci, 'x', standalone=False))
 
         lib = CDLL(lib_name)
@@ -431,12 +423,11 @@ class TestWin32Handles(BaseFfiTest):
     def setup_class(cls):
         if sys.platform != 'win32':
             py.test.skip("Handle to libc library, Win-only test")
-        BaseFfiTest.setup_class()
+        BaseFfiTest.setup_class(cls)
     
     def test_get_libc_handle(self):
         handle = get_libc_handle()
         print get_libc_name()
-        print dir(handle)
-        addr = rffi.cast(rffi.INT, handle)
-        assert addr != 0
-        assert addr % 0x1000 == 0
+        print hex(handle)
+        assert handle != 0
+        assert handle % 0x1000 == 0

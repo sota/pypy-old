@@ -1,6 +1,7 @@
 from rpython.flowspace.model import Variable, Constant, SpaceOperation
 from rpython.tool.algo.unionfind import UnionFind
 from rpython.rtyper.lltypesystem import lltype
+from rpython.rtyper.ootypesystem import ootype
 from rpython.translator import simplify
 from rpython.translator.backendopt import removenoops
 from rpython.translator.backendopt.support import log
@@ -10,9 +11,9 @@ class LifeTime:
 
     def __init__(self, (block, var)):
         assert isinstance(var, Variable)
-        self.variables = {(block, var)}
-        self.creationpoints = set()   # set of ("type of creation point", ...)
-        self.usepoints = set()        # set of ("type of use point",      ...)
+        self.variables = {(block, var) : True}
+        self.creationpoints = {}   # set of ("type of creation point", ...)
+        self.usepoints = {}        # set of ("type of use point",      ...)
 
     def absorb(self, other):
         self.variables.update(other.variables)
@@ -126,11 +127,11 @@ class BaseMallocRemover(object):
 
         def set_creation_point(block, var, *cp):
             _, _, info = lifetimes.find((block, var))
-            info.creationpoints.add(cp)
+            info.creationpoints[cp] = True
 
         def set_use_point(block, var, *up):
             _, _, info = lifetimes.find((block, var))
-            info.usepoints.add(up)
+            info.usepoints[up] = True
 
         def union(block1, var1, block2, var2):
             if isinstance(var1, Variable):
@@ -170,7 +171,7 @@ class BaseMallocRemover(object):
             if isinstance(node.last_exc_value, Variable):
                 set_creation_point(node.prevblock, node.last_exc_value,
                                    "last_exc_value")
-            d = set()
+            d = {}
             for i, arg in enumerate(node.args):
                 union(node.prevblock, arg,
                       node.target, node.target.inputargs[i])
@@ -181,7 +182,7 @@ class BaseMallocRemover(object):
                         # will disable malloc optimization (aliasing problems)
                         set_use_point(node.prevblock, arg, "dup", node, i)
                     else:
-                        d.add(arg)
+                        d[arg] = True
 
         return lifetimes.infos()
 
@@ -189,7 +190,7 @@ class BaseMallocRemover(object):
         """Try to inline the mallocs creation and manipulation of the Variables
         in the given LifeTime."""
         # the values must be only ever created by a "malloc"
-        lltypes = set()
+        lltypes = {}
         for cp in info.creationpoints:
             if cp[0] != "op":
                 return False
@@ -199,19 +200,18 @@ class BaseMallocRemover(object):
             if not self.inline_type(op.args[0].value):
                 return False
 
-            lltypes.add(op.result.concretetype)
+            lltypes[op.result.concretetype] = True
 
         # there must be a single largest malloced GcStruct;
         # all variables can point to it or to initial substructures
         if len(lltypes) != 1:
             return False
-        concretetype, = lltypes
-        STRUCT = self.get_STRUCT(concretetype)
+        STRUCT = self.get_STRUCT(lltypes.keys()[0])
 
         # must be only ever accessed via getfield/setfield/getsubstruct/
         # direct_fieldptr, or touched by ptr_iszero/ptr_nonzero.
         # Note that same_as and cast_pointer are not recorded in usepoints.
-        self.accessed_substructs = set()
+        self.accessed_substructs = {}
 
         for up in info.usepoints:
             if up[0] != "op":
@@ -260,8 +260,8 @@ class BaseMallocRemover(object):
 
         variables_by_block = {}
         for block, var in info.variables:
-            vars = variables_by_block.setdefault(block, set())
-            vars.add(var)
+            vars = variables_by_block.setdefault(block, {})
+            vars[var] = True
 
         count = [0]
 
@@ -270,10 +270,10 @@ class BaseMallocRemover(object):
             # look for variables arriving from outside the block
             newvarsmap = None
             newinputargs = []
-            inputvars = set()
+            inputvars = {}
             for var in block.inputargs:
                 if var in vars:
-                    inputvars.add(var)
+                    inputvars[var] = None
                     if newvarsmap is None:
                         newvarsmap = {}
                         for key in self.flatnames:
@@ -293,7 +293,7 @@ class BaseMallocRemover(object):
                 if self.check_malloc(op) and op.result in vars:
                     vars_created_here.append(op.result)
             for var in vars_created_here:
-                self.flowin(block, count, {var}, newvarsmap=None)
+                self.flowin(block, count, {var: True}, newvarsmap=None)
 
         return count[0]
 
@@ -371,7 +371,7 @@ class LLTypeMallocRemover(BaseMallocRemover):
         name = op.args[1].value
         if not isinstance(name, str):      # access by index
             name = 'item%d' % (name,)
-        self.accessed_substructs.add((S, name))
+        self.accessed_substructs[S, name] = True
 
     def inline_type(self, TYPE):
         return True
@@ -494,7 +494,7 @@ class LLTypeMallocRemover(BaseMallocRemover):
             else:
                 newvarsmap[key] = op.args[2]
         elif op.opname in ("same_as", "cast_pointer"):
-            vars.add(op.result)
+            vars[op.result] = True
             # Consider the two pointers (input and result) as
             # equivalent.  We can, and indeed must, use the same
             # flattened list of variables for both, as a "setfield"
@@ -509,7 +509,7 @@ class LLTypeMallocRemover(BaseMallocRemover):
             if equiv:
                 # exactly like a cast_pointer
                 assert op.result not in vars
-                vars.add(op.result)
+                vars[op.result] = True
             else:
                 # do it with a getsubstruct on the independently
                 # malloc'ed GcStruct
@@ -537,17 +537,99 @@ class LLTypeMallocRemover(BaseMallocRemover):
             raise AssertionError(op.opname)
 
 
-def remove_simple_mallocs(graph, verbose=True):
-    remover = LLTypeMallocRemover(verbose)
+class OOTypeMallocRemover(BaseMallocRemover):
+
+    IDENTITY_OPS = ('same_as', 'ooupcast', 'oodowncast')
+    SUBSTRUCT_OPS = ()
+    MALLOC_OP = 'new'
+    FIELD_ACCESS = dict.fromkeys(["oogetfield",
+                                  "oosetfield",
+                                  "oononnull",
+                                  "ooisnull",
+                                  #"oois",  # ???
+                                  #"instanceof", # ???
+                                  ])
+    SUBSTRUCT_ACCESS = {}
+    CHECK_ARRAY_INDEX = {}
+
+    def get_STRUCT(self, TYPE):
+        return TYPE
+
+    def union_wrapper(self, S):
+        return False
+
+    def RTTI_dtor(self, STRUCT):
+        return False
+
+    def inline_type(self, TYPE):
+        return isinstance(TYPE, (ootype.Record, ootype.Instance))
+
+    def _get_fields(self, TYPE):
+        if isinstance(TYPE, ootype.Record):
+            return TYPE._fields
+        elif isinstance(TYPE, ootype.Instance):
+            return TYPE._allfields()
+        else:
+            assert False
+
+    def flatten(self, TYPE):
+        for name, (FIELDTYPE, default) in self._get_fields(TYPE).iteritems():
+            key = self.key_for_field_access(TYPE, name)
+            constant = Constant(default)
+            constant.concretetype = FIELDTYPE
+            self.flatconstants[key] = constant
+            self.flatnames.append(key)
+            self.newvarstype[key] = FIELDTYPE
+
+    def key_for_field_access(self, S, fldname):
+        CLS, TYPE = S._lookup_field(fldname)
+        return CLS, fldname
+
+    def flowin_op(self, op, vars, newvarsmap):
+        if op.opname == "oogetfield":
+            S = op.args[0].concretetype
+            fldname = op.args[1].value
+            key = self.key_for_field_access(S, fldname)
+            newop = SpaceOperation("same_as",
+                                   [newvarsmap[key]],
+                                   op.result)
+            self.newops.append(newop)
+        elif op.opname == "oosetfield":
+            S = op.args[0].concretetype
+            fldname = op.args[1].value
+            key = self.key_for_field_access(S, fldname)
+            assert key in newvarsmap
+            newvarsmap[key] = op.args[2]
+        elif op.opname in ("same_as", "oodowncast", "ooupcast"):
+            vars[op.result] = True
+            # Consider the two pointers (input and result) as
+            # equivalent.  We can, and indeed must, use the same
+            # flattened list of variables for both, as a "setfield"
+            # via one pointer must be reflected in the other.
+        elif op.opname in ("ooisnull", "oononnull"):
+            # we know the pointer is not NULL if it comes from
+            # a successful malloc
+            c = Constant(op.opname == "oononnull", lltype.Bool)
+            newop = SpaceOperation('same_as', [c], op.result)
+            self.newops.append(newop)
+        else:
+            raise AssertionError(op.opname)
+
+
+def remove_simple_mallocs(graph, type_system='lltypesystem', verbose=True):
+    if type_system == 'lltypesystem':
+        remover = LLTypeMallocRemover(verbose)
+    else:
+        remover = OOTypeMallocRemover(verbose)
     return remover.remove_simple_mallocs(graph)
 
 
-def remove_mallocs(translator, graphs=None):
+def remove_mallocs(translator, graphs=None, type_system="lltypesystem"):
     if graphs is None:
         graphs = translator.graphs
     tot = 0
     for graph in graphs:
-        count = remove_simple_mallocs(graph, verbose=translator.config.translation.verbose)
+        count = remove_simple_mallocs(graph, type_system=type_system, verbose=translator.config.translation.verbose)
         if count:
             # remove typical leftovers from malloc removal
             removenoops.remove_same_as(graph)

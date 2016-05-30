@@ -11,6 +11,7 @@ like: (on the left, without the new bytecodes; on the right, with them)
 """
 
 from pypy.interpreter import function
+from pypy.objspace.descroperation import object_getattribute
 from rpython.rlib import jit
 from pypy.objspace.std.mapdict import LOOKUP_METHOD_mapdict, \
     LOOKUP_METHOD_mapdict_fill_cache_method
@@ -35,6 +36,7 @@ def LOOKUP_METHOD(f, nameindex, *ignored):
 
     if space.config.objspace.std.withmapdict and not jit.we_are_jitted():
         # mapdict has an extra-fast version of this function
+        from pypy.objspace.std.mapdict import LOOKUP_METHOD_mapdict
         if LOOKUP_METHOD_mapdict(f, nameindex, w_obj):
             return
 
@@ -77,7 +79,7 @@ def CALL_METHOD(f, oparg, *ignored):
     n_kwargs = (oparg >> 8) & 0xff
     w_self = f.peekvalue(n_args + (2 * n_kwargs))
     n = n_args + (w_self is not None)
-
+    
     if not n_kwargs:
         w_callable = f.peekvalue(n_args + (2 * n_kwargs) + 1)
         try:
@@ -96,13 +98,13 @@ def CALL_METHOD(f, oparg, *ignored):
             key = f.space.str_w(w_key)
             keywords[n_kwargs] = key
             keywords_w[n_kwargs] = w_value
-
+    
         arguments = f.popvalues(n)    # includes w_self if it is not None
         args = f.argument_factory(arguments, keywords, keywords_w, None, None)
         if w_self is None:
             f.popvalue()    # removes w_self, which is None
         w_callable = f.popvalue()
-        if f.get_is_being_profiled() and function.is_builtin_code(w_callable):
+        if f.is_being_profiled and function.is_builtin_code(w_callable):
             w_result = f.space.call_args_and_c_profile(f, w_callable, args)
         else:
             w_result = f.space.call_args(w_callable, args)

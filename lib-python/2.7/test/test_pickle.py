@@ -3,11 +3,10 @@ from cStringIO import StringIO
 
 from test import test_support
 
-from test.pickletester import (AbstractPickleTests,
-                               AbstractPickleModuleTests,
-                               AbstractPersistentPicklerTests,
-                               AbstractPicklerUnpicklerObjectTests,
-                               BigmemPickleTests)
+from test.pickletester import AbstractPickleTests
+from test.pickletester import AbstractPickleModuleTests
+from test.pickletester import AbstractPersistentPicklerTests
+from test.pickletester import AbstractPicklerUnpicklerObjectTests
 
 class PickleTests(AbstractPickleTests, AbstractPickleModuleTests):
 
@@ -67,16 +66,6 @@ class PicklerUnpicklerObjectTests(AbstractPicklerUnpicklerObjectTests):
     pickler_class = pickle.Pickler
     unpickler_class = pickle.Unpickler
 
-class PickleBigmemPickleTests(BigmemPickleTests):
-
-    def dumps(self, arg, proto=0, fast=0):
-        # Ignore fast
-        return pickle.dumps(arg, proto)
-
-    def loads(self, buf):
-        # Ignore fast
-        return pickle.loads(buf)
-
 
 def test_main():
     test_support.run_unittest(
@@ -84,7 +73,6 @@ def test_main():
         PicklerTests,
         PersPicklerTests,
         PicklerUnpicklerObjectTests,
-        PickleBigmemPickleTests,
     )
     test_support.run_doctest(pickle)
 

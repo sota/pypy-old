@@ -1,7 +1,8 @@
+
 import py
 from pypy.module.micronumpy.compile import (numpy_compile, Assignment,
-    ArrayConstant, NumberConstant, Operator, Variable, RangeConstant, Execute,
-    FunctionCall, FakeSpace, W_NDimArray)
+    ArrayConstant, FloatConstant, Operator, Variable, RangeConstant, Execute,
+    FunctionCall, FakeSpace)
 
 
 class TestCompiler(object):
@@ -25,30 +26,30 @@ class TestCompiler(object):
         interp = self.compile(code)
         assert isinstance(interp.code.statements[0].expr, ArrayConstant)
         st = interp.code.statements[0]
-        assert st.expr.items == [NumberConstant(1), NumberConstant(2),
-                                 NumberConstant(3)]
+        assert st.expr.items == [FloatConstant(1), FloatConstant(2),
+                                 FloatConstant(3)]
 
     def test_array_literal2(self):
         code = "a = [[1],[2],[3]]"
         interp = self.compile(code)
         assert isinstance(interp.code.statements[0].expr, ArrayConstant)
         st = interp.code.statements[0]
-        assert st.expr.items == [ArrayConstant([NumberConstant(1)]),
-                                 ArrayConstant([NumberConstant(2)]),
-                                 ArrayConstant([NumberConstant(3)])]
+        assert st.expr.items == [ArrayConstant([FloatConstant(1)]),
+                                 ArrayConstant([FloatConstant(2)]),
+                                 ArrayConstant([FloatConstant(3)])]
 
     def test_expr_1(self):
         code = "b = a + 1"
         interp = self.compile(code)
         assert (interp.code.statements[0].expr ==
-                Operator(Variable("a"), "+", NumberConstant(1)))
+                Operator(Variable("a"), "+", FloatConstant(1)))
 
     def test_expr_2(self):
         code = "b = a + b - 3"
         interp = self.compile(code)
         assert (interp.code.statements[0].expr ==
                 Operator(Operator(Variable("a"), "+", Variable("b")), "-",
-                         NumberConstant(3)))
+                         FloatConstant(3)))
 
     def test_expr_3(self):
         # an equivalent of range
@@ -60,13 +61,13 @@ class TestCompiler(object):
         code = "3 + a"
         interp = self.compile(code)
         assert interp.code.statements[0] == Execute(
-            Operator(NumberConstant(3), "+", Variable("a")))
+            Operator(FloatConstant(3), "+", Variable("a")))
 
     def test_array_access(self):
         code = "a -> 3"
         interp = self.compile(code)
         assert interp.code.statements[0] == Execute(
-            Operator(Variable("a"), "->", NumberConstant(3)))
+            Operator(Variable("a"), "->", FloatConstant(3)))
 
     def test_function_call(self):
         code = "sum(a)"
@@ -81,8 +82,7 @@ class TestCompiler(object):
         """
         interp = self.compile(code)
         assert interp.code.statements[0] == Assignment(
-            'a', Operator(Variable('b'), "+", NumberConstant(3)))
-
+            'a', Operator(Variable('b'), "+", FloatConstant(3)))
 
 class TestRunner(object):
     def run(self, code):
@@ -272,14 +272,6 @@ class TestRunner(object):
         """)
         assert interp.results[0].value == 3
 
-    def test_any(self):
-        interp = self.run("""
-        a = [0,0,0,0,0.1,0,0,0,0]
-        b = any(a)
-        b -> 0
-        """)
-        assert interp.results[0].value == 1
-
     def test_where(self):
         interp = self.run('''
         a = [1, 0, 3, 0]
@@ -298,52 +290,4 @@ class TestRunner(object):
         ''')
         assert interp.results[0].real == 0
         assert interp.results[0].imag == 1
-
-    def test_view_none(self):
-        interp = self.run('''
-        a = [1, 0, 3, 0]
-        b = None
-        c = view(a, b)
-        c -> 0
-        ''')
-        assert interp.results[0].value == 1
-
-    def test_view_ndarray(self):
-        interp = self.run('''
-        a = [1, 0, 3, 0]
-        b = ndarray
-        c = view(a, b)
-        c
-        ''')
-        results = interp.results[0]
-        assert isinstance(results, W_NDimArray)
-
-    def test_view_dtype(self):
-        interp = self.run('''
-        a = [1, 0, 3, 0]
-        b = int
-        c = view(a, b)
-        c
-        ''')
-        results = interp.results[0]
-        assert isinstance(results, W_NDimArray)
-
-    def test_astype_dtype(self):
-        interp = self.run('''
-        a = [1, 0, 3, 0]
-        b = int
-        c = astype(a, b)
-        c
-        ''')
-        results = interp.results[0]
-        assert isinstance(results, W_NDimArray)
-        assert results.get_dtype().is_int()
-
-    def test_searchsorted(self):
-        interp = self.run('''
-        a = [1, 4, 5, 6, 9]
-        b = |30| -> ::-1
-        c = searchsorted(a, b)
-        c -> -1
-        ''')
-        assert interp.results[0].value == 0
+        

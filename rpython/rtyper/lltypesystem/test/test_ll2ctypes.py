@@ -11,9 +11,7 @@ from rpython.rtyper.lltypesystem.ll2ctypes import cast_adr_to_int, get_ctypes_ty
 from rpython.rtyper.lltypesystem.ll2ctypes import _llgcopaque
 from rpython.rtyper.annlowlevel import llhelper
 from rpython.rlib import rposix
-from rpython.rlib.rposix import UNDERSCORE_ON_WIN32
 from rpython.translator.tool.cbuild import ExternalCompilationInfo
-from rpython.translator import cdir
 from rpython.tool.udir import udir
 from rpython.rtyper.test.test_llinterp import interpret
 from rpython.annotator.annrpython import RPythonAnnotator
@@ -107,7 +105,7 @@ class TestLL2Ctypes(object):
         #     s1.ptr = & s1.buf;
         S2 = lltype.Struct('S2', ('y', lltype.Signed))
         S1 = lltype.Struct('S',
-                           ('sub', lltype.Struct('SUB',
+                           ('sub', lltype.Struct('SUB', 
                                                  ('ptr', lltype.Ptr(S2)))),
                            ('ptr', lltype.Ptr(S2)),
                            ('buf', S2), # Works when this field is first!
@@ -498,12 +496,11 @@ class TestLL2Ctypes(object):
 
     def test_funcptr_cast(self):
         eci = ExternalCompilationInfo(
-            include_dirs = [cdir],
             separate_module_sources=["""
-            #include "src/precommondefs.h"
             long mul(long x, long y) { return x*y; }
-            RPY_EXPORTED long(*get_mul(long x)) () { return &mul; }
-            """])
+            long(*get_mul(long x)) () { return &mul; }
+            """],
+            export_symbols=['get_mul'])
         get_mul = rffi.llexternal(
             'get_mul', [],
             lltype.Ptr(lltype.FuncType([lltype.Signed], lltype.Signed)),
@@ -747,7 +744,7 @@ class TestLL2Ctypes(object):
     def test_get_errno(self):
         eci = ExternalCompilationInfo(includes=['string.h'])
         if sys.platform.startswith('win'):
-            py.test.skip('writing to invalid fd on windows crashes the process')
+            underscore_on_windows = '_'
             # Note that cpython before 2.7 installs an _invalid_parameter_handler,
             # which is why the test passes there, but this is no longer
             # accepted practice.
@@ -756,23 +753,23 @@ class TestLL2Ctypes(object):
             old_err_mode = ctypes.windll.kernel32.GetErrorMode()
             new_err_mode = old_err_mode | SEM_NOGPFAULTERRORBOX
             ctypes.windll.kernel32.SetErrorMode(new_err_mode)
-        os_write_no_errno = rffi.llexternal(UNDERSCORE_ON_WIN32 + 'write',
+        else:
+            underscore_on_windows = ''
+        strlen = rffi.llexternal('strlen', [rffi.CCHARP], rffi.SIZE_T,
+                                 compilation_info=eci)
+        os_write = rffi.llexternal(underscore_on_windows+'write',
                                    [rffi.INT, rffi.CCHARP, rffi.SIZE_T],
-                                   rffi.SIZE_T, save_err=rffi.RFFI_ERR_NONE)
-        os_write = rffi.llexternal(UNDERSCORE_ON_WIN32 + 'write',
-                                   [rffi.INT, rffi.CCHARP, rffi.SIZE_T],
-                                   rffi.SIZE_T, save_err=rffi.RFFI_SAVE_ERRNO)
+                                   rffi.SIZE_T)
         buffer = lltype.malloc(rffi.CCHARP.TO, 5, flavor='raw')
         written = os_write(12312312, buffer, 5)
         if sys.platform.startswith('win'):
             ctypes.windll.kernel32.SetErrorMode(old_err_mode)
-        assert rffi.cast(rffi.LONG, written) < 0
-        # the next line is a different external function call
-        # without RFFI_SAVE_ERRNO, to check that it doesn't reset errno
-        buffer[0] = '\n'
-        os_write_no_errno(2, buffer, 1)
         lltype.free(buffer, flavor='raw')
-        err = rposix.get_saved_errno()
+        assert rffi.cast(rffi.LONG, written) < 0
+        # the next line is a random external function call,
+        # to check that it doesn't reset errno
+        strlen("hi!")
+        err = rposix.get_errno()
         import errno
         assert err == errno.EBADF
         assert not ALLOCATED     # detects memory leaks in the test
@@ -838,11 +835,8 @@ class TestLL2Ctypes(object):
 
     def test_llexternal_source(self):
         eci = ExternalCompilationInfo(
-            include_dirs = [cdir],
-            separate_module_sources = ["""
-            #include "src/precommondefs.h"
-            RPY_EXPORTED int fn() { return 42; }
-            """],
+            separate_module_sources = ["int fn() { return 42; }"],
+            export_symbols = ['fn'],
         )
         fn = rffi.llexternal('fn', [], rffi.INT, compilation_info=eci)
         res = fn()
@@ -911,17 +905,14 @@ class TestLL2Ctypes(object):
 
     def test_c_callback(self):
         c_source = py.code.Source("""
-        #include "src/precommondefs.h"
-
-        RPY_EXPORTED
         int eating_callback(int arg, int(*call)(int))
         {
             return call(arg);
         }
         """)
 
-        eci = ExternalCompilationInfo(include_dirs=[cdir],
-                                      separate_module_sources=[c_source])
+        eci = ExternalCompilationInfo(separate_module_sources=[c_source],
+                                      export_symbols=['eating_callback'])
 
         args = [rffi.INT, rffi.CCallback([rffi.INT], rffi.INT)]
         eating_callback = rffi.llexternal('eating_callback', args, rffi.INT,
@@ -1242,7 +1233,7 @@ class TestLL2Ctypes(object):
         assert adr1 == adr1_2
 
     def test_object_subclass(self):
-        from rpython.rtyper import rclass
+        from rpython.rtyper.lltypesystem import rclass
         from rpython.rtyper.annlowlevel import cast_instance_to_base_ptr
         from rpython.rtyper.annlowlevel import cast_base_ptr_to_instance
         class S:
@@ -1260,7 +1251,7 @@ class TestLL2Ctypes(object):
         assert res == 123
 
     def test_object_subclass_2(self):
-        from rpython.rtyper import rclass
+        from rpython.rtyper.lltypesystem import rclass
         SCLASS = lltype.GcStruct('SCLASS',
                                  ('parent', rclass.OBJECT),
                                  ('n', lltype.Signed))
@@ -1280,7 +1271,7 @@ class TestLL2Ctypes(object):
         assert res == 123
 
     def test_object_subclass_3(self):
-        from rpython.rtyper import rclass
+        from rpython.rtyper.lltypesystem import rclass
         from rpython.rtyper.annlowlevel import cast_instance_to_base_ptr
         from rpython.rtyper.annlowlevel import cast_base_ptr_to_instance
         class S:
@@ -1299,7 +1290,7 @@ class TestLL2Ctypes(object):
         assert res == 123
 
     def test_object_subclass_4(self):
-        from rpython.rtyper import rclass
+        from rpython.rtyper.lltypesystem import rclass
         SCLASS = lltype.GcStruct('SCLASS',
                                  ('parent', rclass.OBJECT),
                                  ('n', lltype.Signed))
@@ -1320,7 +1311,7 @@ class TestLL2Ctypes(object):
         assert res == 123
 
     def test_object_subclass_5(self):
-        from rpython.rtyper import rclass
+        from rpython.rtyper.lltypesystem import rclass
         from rpython.rtyper.annlowlevel import cast_instance_to_base_ptr
         from rpython.rtyper.annlowlevel import cast_base_ptr_to_instance
         class S:
@@ -1376,7 +1367,7 @@ class TestLL2Ctypes(object):
     def test_opaque_tagged_pointers(self):
         from rpython.rtyper.annlowlevel import cast_base_ptr_to_instance
         from rpython.rtyper.annlowlevel import cast_instance_to_base_ptr
-        from rpython.rtyper import rclass
+        from rpython.rtyper.lltypesystem import rclass
 
         class Opaque(object):
             llopaque = True
@@ -1407,11 +1398,8 @@ class TestPlatform(object):
         tmpdir = udir.join('lib_on_libppaths')
         tmpdir.ensure(dir=1)
         c_file = tmpdir.join('c_file.c')
-        c_file.write('''
-        #include "src/precommondefs.h"
-        RPY_EXPORTED int f(int a, int b) { return (a + b); }
-        ''')
-        eci = ExternalCompilationInfo(include_dirs=[cdir])
+        c_file.write('int f(int a, int b) { return (a + b); }')
+        eci = ExternalCompilationInfo(export_symbols=['f'])
         so = platform.compile([c_file], eci, standalone=False)
         eci = ExternalCompilationInfo(
             libraries = ['c_file'],
@@ -1431,11 +1419,8 @@ class TestPlatform(object):
         tmpdir = udir.join('lib_on_libppaths_prefix')
         tmpdir.ensure(dir=1)
         c_file = tmpdir.join('c_file.c')
-        c_file.write('''
-        #include "src/precommondefs.h"
-        RPY_EXPORTED int f(int a, int b) { return (a + b); }
-        ''')
-        eci = ExternalCompilationInfo(include_dirs=[cdir])
+        c_file.write('int f(int a, int b) { return (a + b); }')
+        eci = ExternalCompilationInfo()
         so = platform.compile([c_file], eci, standalone=False)
         sopath = py.path.local(so)
         sopath.move(sopath.dirpath().join('libc_file.so'))
@@ -1450,31 +1435,3 @@ class TestPlatform(object):
     def test_llgcopaque_eq(self):
         assert _llgcopaque(1) != None
         assert _llgcopaque(0) == None
-
-    def test_array_of_struct(self):
-        A2 = lltype.Array(('a', lltype.Signed), ('b', lltype.Signed))
-        a = lltype.malloc(A2, 10, flavor='raw')
-        a[3].b = 42
-        ac = lltype2ctypes(a[3])
-        assert ac.contents.b == 42
-        ac.contents.a = 17
-        assert a[3].a == 17
-        #lltype.free(a, flavor='raw')
-        py.test.skip("free() not working correctly here...")
-
-    def test_fixedsizedarray_to_ctypes(self):
-        T = lltype.Ptr(rffi.CFixedArray(rffi.INT, 1))
-        inst = lltype.malloc(T.TO, flavor='raw')
-        inst[0] = rffi.cast(rffi.INT, 42)
-        assert inst[0] == 42
-        cinst = lltype2ctypes(inst)
-        assert rffi.cast(lltype.Signed, inst[0]) == 42
-        assert cinst.contents.item0 == 42
-        lltype.free(inst, flavor='raw')
-
-    def test_fixedsizedarray_to_ctypes(self):
-        T = lltype.Ptr(rffi.CFixedArray(rffi.CHAR, 123))
-        inst = lltype.malloc(T.TO, flavor='raw', zero=True)
-        cinst = lltype2ctypes(inst)
-        assert cinst.contents.item0 == 0
-        lltype.free(inst, flavor='raw')

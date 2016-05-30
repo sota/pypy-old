@@ -8,7 +8,7 @@ import os
 
 try:
     from rpython.rlib import rzlib
-except CompilationError:
+except (ImportError, CompilationError):
     rzlib = None
 
 crc_32_tab = [
@@ -67,12 +67,20 @@ crc_32_tab = [
 ]
 crc_32_tab = map(r_uint, crc_32_tab)
 
-def crc32(s, crc=r_uint(0)):
-    crc = ~crc & r_uint(0xffffffffL)
+# XXX hack to get crc32 to work
+
+rcrc_32_tab = [r_uint(i) for i in crc_32_tab]
+
+def crc32(s, crc=0):
+    result = 0
+    crc = ~r_uint(crc) & r_uint(0xffffffffL)
     for c in s:
-        crc = crc_32_tab[(crc ^ r_uint(ord(c))) & 0xffL] ^ (crc >> 8)
+        crc = rcrc_32_tab[(crc ^ r_uint(ord(c))) & 0xffL] ^ (crc >> 8)
         #/* Note:  (crc >> 8) MUST zero fill on left
-    return crc ^ r_uint(0xffffffffL)
+
+        result = crc ^ r_uint(0xffffffffL)
+
+    return result
 
 # parts copied from zipfile library implementation
 
@@ -214,7 +222,7 @@ class RZipFile(object):
     def _GetContents(self, fp):
         endrec = _EndRecData(fp)
         if not endrec:
-            raise BadZipfile("File is not a zip file")
+            raise BadZipfile, "File is not a zip file"
         size_cd = endrec.stuff[5]             # bytes in central directory
         offset_cd = endrec.stuff[6]   # offset of central directory
         self.comment = endrec.comment
@@ -227,7 +235,7 @@ class RZipFile(object):
             centdir = fp.read(46)
             total = total + 46
             if centdir[0:4] != stringCentralDir:
-                raise BadZipfile("Bad magic number for central directory")
+                raise BadZipfile, "Bad magic number for central directory"
             centdir = runpack(structCentralDir, centdir)
             filename = fp.read(centdir[_CD_FILENAME_LENGTH])
             # Create ZipInfo instance to store file information
@@ -255,7 +263,7 @@ class RZipFile(object):
             fp.seek(data.header_offset, 0)
             fheader = fp.read(30)
             if fheader[0:4] != stringFileHeader:
-                raise BadZipfile("Bad magic number for file header")
+                raise BadZipfile, "Bad magic number for file header"
             fheader = runpack(structFileHeader, fheader)
             # file_offset is computed here, since the extra field for
             # the central directory and for the local file header
@@ -266,8 +274,9 @@ class RZipFile(object):
                                 + fheader[_FH_EXTRA_FIELD_LENGTH])
             fname = fp.read(fheader[_FH_FILENAME_LENGTH])
             if fname != data.orig_filename:
-                raise BadZipfile('File name in directory "%s" and '
-                    'header "%s" differ.' % (data.orig_filename, fname))
+                raise BadZipfile, \
+                      'File name in directory "%s" and header "%s" differ.' % (
+                          data.orig_filename, fname)
         fp.seek(self.start_dir, 0)
 
     def getinfo(self, filename):
@@ -295,13 +304,15 @@ class RZipFile(object):
                 finally:
                     rzlib.inflateEnd(stream)
             elif zinfo.compress_type == ZIP_DEFLATED:
-                raise BadZipfile("Cannot decompress file, zlib not installed")
+                raise BadZipfile, \
+                      "Cannot decompress file, zlib not installed"
             else:
-                raise BadZipfile("Unsupported compression method %d for "
-                                 "file %s" % (zinfo.compress_type, filename))
+                raise BadZipfile, \
+                      "Unsupported compression method %d for file %s" % \
+                (zinfo.compress_type, filename)
             crc = crc32(bytes)
             if crc != zinfo.CRC:
-                raise BadZipfile("Bad CRC-32 for file %s" % filename)
+                raise BadZipfile, "Bad CRC-32 for file %s" % filename
             return bytes
         finally:
             fp.close()

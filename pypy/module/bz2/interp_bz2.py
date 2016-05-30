@@ -2,7 +2,7 @@ from __future__ import with_statement
 from rpython.rtyper.tool import rffi_platform as platform
 from rpython.rtyper.lltypesystem import rffi
 from rpython.rtyper.lltypesystem import lltype
-from pypy.interpreter.error import OperationError, oefmt
+from pypy.interpreter.error import OperationError, operationerrfmt
 from pypy.interpreter.baseobjspace import W_Root
 from pypy.interpreter.typedef import TypeDef, interp_attrproperty
 from pypy.interpreter.gateway import interp2app, unwrap_spec
@@ -31,7 +31,7 @@ class CConfig:
     _compilation_info_ = eci
     calling_conv = 'c'
 
-    CHECK_LIBRARY = platform.Has('dump("x", (long)&BZ2_bzCompress)')
+    CHECK_LIBRARY = platform.Has('dump("x", (int)&BZ2_bzCompress)')
 
     off_t = platform.SimpleType("off_t", rffi.LONGLONG)
     size_t = platform.SimpleType("size_t", rffi.ULONG)
@@ -144,12 +144,12 @@ BZ2_bzWrite = external('BZ2_bzWrite', [rffi.INTP, BZFILE, rffi.CCHARP,
 BZ2_bzCompressInit = external('BZ2_bzCompressInit', [bz_stream, rffi.INT,
                               rffi.INT, rffi.INT], rffi.INT)
 BZ2_bzCompressEnd = external('BZ2_bzCompressEnd', [bz_stream], rffi.INT,
-                             releasegil=False)
+                             threadsafe=False)
 BZ2_bzCompress = external('BZ2_bzCompress', [bz_stream, rffi.INT], rffi.INT)
 BZ2_bzDecompressInit = external('BZ2_bzDecompressInit', [bz_stream, rffi.INT,
                                                          rffi.INT], rffi.INT)
 BZ2_bzDecompressEnd = external('BZ2_bzDecompressEnd', [bz_stream], rffi.INT,
-                               releasegil=False)
+                               threadsafe=False)
 BZ2_bzDecompress = external('BZ2_bzDecompress', [bz_stream], rffi.INT)
 
 def _catch_bz2_error(space, bzerror):
@@ -195,7 +195,7 @@ class OutBuffer(object):
         self._allocate_chunk(initial_size)
 
     def _allocate_chunk(self, size):
-        self.raw_buf, self.gc_buf, self.case_num = rffi.alloc_buffer(size)
+        self.raw_buf, self.gc_buf = rffi.alloc_buffer(size)
         self.current_size = size
         self.bzs.c_next_out = self.raw_buf
         rffi.setintfield(self.bzs, 'c_avail_out', size)
@@ -204,10 +204,8 @@ class OutBuffer(object):
         assert 0 <= chunksize <= self.current_size
         raw_buf = self.raw_buf
         gc_buf = self.gc_buf
-        case_num = self.case_num
-        s = rffi.str_from_buffer(raw_buf, gc_buf, case_num,
-                                 self.current_size, chunksize)
-        rffi.keep_buffer_alive_until_here(raw_buf, gc_buf, case_num)
+        s = rffi.str_from_buffer(raw_buf, gc_buf, self.current_size, chunksize)
+        rffi.keep_buffer_alive_until_here(raw_buf, gc_buf)
         self.current_size = 0
         return s
 
@@ -227,8 +225,7 @@ class OutBuffer(object):
 
     def free(self):
         if self.current_size > 0:
-            rffi.keep_buffer_alive_until_here(self.raw_buf, self.gc_buf,
-                                              self.case_num)
+            rffi.keep_buffer_alive_until_here(self.raw_buf, self.gc_buf)
 
     def __enter__(self):
         return self
@@ -247,13 +244,13 @@ class W_BZ2File(W_File):
     def check_mode_ok(self, mode):
         if (not mode or mode[0] not in ['r', 'w', 'a', 'U']):
             space = self.space
-            raise oefmt(space.w_ValueError, "invalid mode: '%s'", mode)
+            raise operationerrfmt(space.w_ValueError,
+                                  "invalid mode: '%s'", mode)
 
     @unwrap_spec(mode=str, buffering=int, compresslevel=int)
     def direct_bz2__init__(self, w_name, mode='r', buffering=-1,
                            compresslevel=9):
         self.direct_close()
-        self.w_name = w_name
         # the stream should always be opened in binary mode
         if "b" not in mode:
             mode = mode + "b"
@@ -380,8 +377,8 @@ class ReadBZ2Filter(Stream):
         elif whence == 0:
             pass
         else:
-            raise oefmt(self.space.w_ValueError,
-                        "Invalid value for whence: %d", whence)
+            raise operationerrfmt(self.space.w_ValueError,
+                                  "Invalid value for whence: %d", whence)
 
         # Make offset relative to the current pos
         # Rewind iff necessary
@@ -462,7 +459,9 @@ class ReadBZ2Filter(Stream):
         return result
 
     def peek(self):
-        return (self.pos, self.buffer)
+        pos = self.pos
+        assert pos >= 0
+        return self.buffer[pos:]
 
     def try_to_find_file_descriptor(self):
         return self.stream.try_to_find_file_descriptor()
@@ -562,7 +561,10 @@ class W_BZ2Compressor(W_Root):
         in_bufsize = datasize
 
         with OutBuffer(self.bzs) as out:
-            with rffi.scoped_nonmovingbuffer(data) as in_buf:
+            with lltype.scoped_alloc(rffi.CCHARP.TO, in_bufsize) as in_buf:
+
+                for i in range(datasize):
+                    in_buf[i] = data[i]
 
                 self.bzs.c_next_in = in_buf
                 rffi.setintfield(self.bzs, 'c_avail_in', in_bufsize)
@@ -660,7 +662,9 @@ class W_BZ2Decompressor(W_Root):
 
         in_bufsize = len(data)
 
-        with rffi.scoped_nonmovingbuffer(data) as in_buf:
+        with lltype.scoped_alloc(rffi.CCHARP.TO, in_bufsize) as in_buf:
+            for i in range(in_bufsize):
+                in_buf[i] = data[i]
             self.bzs.c_next_in = in_buf
             rffi.setintfield(self.bzs, 'c_avail_in', in_bufsize)
 
@@ -711,7 +715,9 @@ def compress(space, data, compresslevel=9):
     with lltype.scoped_alloc(bz_stream.TO, zero=True) as bzs:
         in_bufsize = len(data)
 
-        with rffi.scoped_nonmovingbuffer(data) as in_buf:
+        with lltype.scoped_alloc(rffi.CCHARP.TO, in_bufsize) as in_buf:
+            for i in range(in_bufsize):
+                in_buf[i] = data[i]
             bzs.c_next_in = in_buf
             rffi.setintfield(bzs, 'c_avail_in', in_bufsize)
 
@@ -751,7 +757,9 @@ def decompress(space, data):
         return space.wrap("")
 
     with lltype.scoped_alloc(bz_stream.TO, zero=True) as bzs:
-        with rffi.scoped_nonmovingbuffer(data) as in_buf:
+        with lltype.scoped_alloc(rffi.CCHARP.TO, in_bufsize) as in_buf:
+            for i in range(in_bufsize):
+                in_buf[i] = data[i]
             bzs.c_next_in = in_buf
             rffi.setintfield(bzs, 'c_avail_in', in_bufsize)
 

@@ -7,6 +7,7 @@ from rpython.rlib.rarithmetic import is_valid_int
 
 class BaseCompiledMixin(object):
 
+    type_system = None
     CPUClass = None
     basic = False
 
@@ -28,6 +29,7 @@ class BaseCompiledMixin(object):
 
         self.pre_translation_hook()
         t = self._get_TranslationContext()
+        t.config.translation.type_system = self.type_system # force typesystem-specific options
         if listcomp:
             t.config.translation.list_comprehension_operations = True
 
@@ -57,7 +59,7 @@ class BaseCompiledMixin(object):
 
         t.buildannotator().build_types(function, [int] * len(args),
                                        main_entry_point=True)
-        t.buildrtyper().specialize()
+        t.buildrtyper(type_system=self.type_system).specialize()
         warmrunnerdesc = WarmRunnerDesc(t, translate_support_code=True,
                                         CPUClass=self.CPUClass,
                                         **kwds)
@@ -109,6 +111,7 @@ class BaseCompiledMixin(object):
 
 
 class CCompiledMixin(BaseCompiledMixin):
+    type_system = 'lltype'
     slow = False
 
     def setup_class(cls):
@@ -138,3 +141,25 @@ class CCompiledMixin(BaseCompiledMixin):
 
     def _check_cbuilder(self, cbuilder):
         pass
+
+class CliCompiledMixin(BaseCompiledMixin):
+    type_system = 'ootype'
+
+    def pre_translation_hook(self):
+        from rpython.translator.oosupport.support import patch_os
+        self.olddefs = patch_os()
+
+    def post_translation_hook(self):
+        from rpython.translator.oosupport.support import unpatch_os
+        unpatch_os(self.olddefs) # restore original values
+
+    def _compile_and_run(self, t, entry_point, entry_point_graph, args):
+        from rpython.translator.cli.test.runtest import compile_graph
+        func = compile_graph(entry_point_graph, t, nowrap=True, standalone=True)
+        return func(*args)
+
+    def run_directly(self, fn, args):
+        from rpython.translator.cli.test.runtest import compile_function, get_annotation
+        ann = [get_annotation(x) for x in args]
+        clifunc = compile_function(fn, ann)
+        return clifunc(*args)

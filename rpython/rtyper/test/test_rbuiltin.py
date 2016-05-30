@@ -3,14 +3,15 @@ import os
 
 import py
 
-from rpython.rlib.objectmodel import instantiate, compute_unique_id, current_object_addr_as_int
+from rpython.rlib.debug import llinterpcall
+from rpython.rlib.objectmodel import instantiate, running_on_llinterp, compute_unique_id, current_object_addr_as_int
 from rpython.rlib.rarithmetic import (intmask, longlongmask, r_int64, is_valid_int,
     r_int, r_uint, r_longlong, r_ulonglong)
 from rpython.rlib.rstring import StringBuilder, UnicodeBuilder
 from rpython.rtyper.annlowlevel import hlstr, LowLevelAnnotatorPolicy
 from rpython.rtyper.lltypesystem import lltype, rffi
 from rpython.rtyper.test import test_llinterp
-from rpython.rtyper.test.tool import BaseRtypingTest
+from rpython.rtyper.test.tool import BaseRtypingTest, LLRtypeMixin, OORtypeMixin
 from rpython.tool import udir
 from rpython.translator.translator import graphof
 
@@ -23,7 +24,7 @@ def enum_direct_calls(translator, func):
                 yield op
 
 
-class TestRbuiltin(BaseRtypingTest):
+class BaseTestRbuiltin(BaseRtypingTest):
 
     def test_method_join(self):
         # this is tuned to catch a specific bug:
@@ -232,7 +233,7 @@ class TestRbuiltin(BaseRtypingTest):
         assert self.ll_to_string(res) == 'hello world'
 
     def test_os_lseek(self):
-        self._skip_llinterpreter("os.lseek")
+        self._skip_llinterpreter("os.lseek", skipOO=False)
         tmpfile = str(udir.udir.join("os_lseek_test"))
         f = file(tmpfile, 'w')
         f.write('0123456789')
@@ -283,7 +284,7 @@ class TestRbuiltin(BaseRtypingTest):
         count = 0
         for dir_call in enum_direct_calls(test_llinterp.typer.annotator.translator, wr_open):
             cfptr = dir_call.args[0]
-            assert self.get_callable(cfptr.value).__name__ == 'open'
+            assert self.get_callable(cfptr.value).__name__.startswith('os_open')
             count += 1
         assert count == 1
 
@@ -363,45 +364,12 @@ class TestRbuiltin(BaseRtypingTest):
                 assert res == isinstance([A(), B(), C()][x-1], [A, B, C][y-1]) * 3
 
     def test_isinstance_list(self):
-        def g():
-            pass
         def f(i):
             if i == 0:
                 l = []
             else:
                 l = None
-            g()
             return isinstance(l, list)
-        res = self.interpret(f, [0])
-        assert res is True
-        res = self.interpret(f, [1])
-        assert res is False
-
-    def test_isinstance_str(self):
-        def g():
-            pass
-        def f(i):
-            if i == 0:
-                l = "foobar"
-            else:
-                l = None
-            g()
-            return isinstance(l, str)
-        res = self.interpret(f, [0])
-        assert res is True
-        res = self.interpret(f, [1])
-        assert res is False
-
-    def test_isinstance_unicode(self):
-        def g():
-            pass
-        def f(i):
-            if i == 0:
-                l = u"foobar"
-            else:
-                l = None
-            g()
-            return isinstance(l, unicode)
         res = self.interpret(f, [0])
         assert res is True
         res = self.interpret(f, [1])
@@ -431,15 +399,8 @@ class TestRbuiltin(BaseRtypingTest):
         res = self.interpret(f, [2])
         assert self.class_name(res) == 'B'
 
-    def test_instantiate_nonmovable(self):
-        class A:
-            pass
-        def f():
-            return instantiate(A, nonmovable=True)   # no effect before GC
-        res = self.interpret(f, [])
-        assert self.class_name(res) == 'A'
-
     def test_os_path_join(self):
+        self._skip_llinterpreter("os path oofakeimpl", skipLL=False)
         def fn(a, b):
             return os.path.join(a, b)
         res = self.ll_to_string(self.interpret(fn, ['a', 'b']))
@@ -454,6 +415,26 @@ class TestRbuiltin(BaseRtypingTest):
                 return a
         res = self.interpret(fn, [3.25])
         assert res == 7.25
+
+    def test_debug_llinterpcall(self):
+        S = lltype.Struct('S', ('m', lltype.Signed))
+        SPTR = lltype.Ptr(S)
+        def foo(n):
+            "NOT_RPYTHON"
+            s = lltype.malloc(S, immortal=True)
+            s.m = eval("n*6", locals())
+            return s
+        def fn(n):
+            if running_on_llinterp:
+                return llinterpcall(SPTR, foo, n).m
+            else:
+                return 321
+        res = self.interpret(fn, [7])
+        assert res == 42
+        from rpython.translator.c.test.test_genc import compile
+        f = compile(fn, [int])
+        res = f(7)
+        assert res == 321
 
     def test_id(self):
         class A:
@@ -472,8 +453,9 @@ class TestRbuiltin(BaseRtypingTest):
         assert x0 != x2
         # the following checks are probably too precise, but work at
         # least on top of llinterp
-        assert x1 == intmask(x0)
-        assert x3 == intmask(x2)
+        if type(self) is TestLLtype:
+            assert x1 == intmask(x0)
+            assert x3 == intmask(x2)
 
     def test_id_on_builtins(self):
         def fn():
@@ -528,14 +510,6 @@ class TestRbuiltin(BaseRtypingTest):
             return lltype.cast_primitive(lltype.Signed, v)
         res = self.interpret(llf, [rffi.r_short(123)], policy=LowLevelAnnotatorPolicy())
         assert res == 123
-        def llf(v):
-            return lltype.cast_primitive(lltype.Bool, v)
-        res = self.interpret(llf, [2**24], policy=LowLevelAnnotatorPolicy())
-        assert res == True
-        def llf(v):
-            return lltype.cast_primitive(lltype.Bool, v)
-        res = self.interpret(llf, [rffi.r_longlong(2**48)], policy=LowLevelAnnotatorPolicy())
-        assert res == True
 
     def test_force_cast(self):
         def llfn(v):
@@ -563,6 +537,8 @@ class TestRbuiltin(BaseRtypingTest):
         res = self.interpret(f, [12])
         assert res == 512
 
+
+class TestLLtype(BaseTestRbuiltin, LLRtypeMixin):
     def test_cast(self):
         def llfn(v):
             return rffi.cast(rffi.VOIDP, v)
@@ -583,3 +559,23 @@ class TestRbuiltin(BaseRtypingTest):
         res = self.interpret(llfn, [lltype.nullptr(rffi.VOIDP.TO)])
         assert res == 0
         assert isinstance(res, r_ulonglong)
+
+
+class TestOOtype(BaseTestRbuiltin, OORtypeMixin):
+
+    def test_instantiate_multiple_meta(self):
+        class A:
+            x = 2
+        class B(A):
+            x = 3
+        def do_stuff(cls):
+            return cls.x
+        def f(i):
+            if i == 1:
+                cls = A
+            else:
+                cls = B
+            do_stuff(cls)
+            return instantiate(cls)
+        res = self.interpret(f, [1])
+        assert res.getmeta() # check that it exists

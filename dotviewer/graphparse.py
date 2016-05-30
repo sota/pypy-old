@@ -152,8 +152,7 @@ def parse_dot(graph_id, content, links={}, fixedfont=False):
         try:
             plaincontent = dot2plain_graphviz(content, contenttype)
         except PlainParseError, e:
-            raise
-            ##print e
-            ### failed, retry via codespeak
-            ##plaincontent = dot2plain_codespeak(content, contenttype)
+            print e
+            # failed, retry via codespeak
+            plaincontent = dot2plain_codespeak(content, contenttype)
     return list(parse_plain(graph_id, plaincontent, links, fixedfont))

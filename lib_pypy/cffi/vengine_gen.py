@@ -1,7 +1,4 @@
-#
-# DEPRECATED: implementation for ffi.verify()
-#
-import sys, os
+import sys
 import types
 
 from . import model, ffiplatform
@@ -22,16 +19,6 @@ class VGenericEngine(object):
         # list before filling it.  When we fill it, it will thus also show
         # up in kwds['export_symbols'].
         kwds.setdefault('export_symbols', self.export_symbols)
-
-    def find_module(self, module_name, path, so_suffixes):
-        for so_suffix in so_suffixes:
-            basename = module_name + so_suffix
-            if path is None:
-                path = sys.path
-            for dirname in path:
-                filename = os.path.join(dirname, basename)
-                if os.path.isfile(filename):
-                    return filename
 
     def collect_types(self):
         pass      # not needed in the generic engine
@@ -61,12 +48,10 @@ class VGenericEngine(object):
             modname = self.verifier.get_module_name()
             prnt("void %s%s(void) { }\n" % (prefix, modname))
 
-    def load_library(self, flags=0):
+    def load_library(self):
         # import it with the CFFI backend
         backend = self.ffi._backend
-        # needs to make a path that contains '/', on Posix
-        filename = os.path.join(os.curdir, self.verifier.modulefilename)
-        module = backend.load_library(filename, flags)
+        module = backend.load_library(self.verifier.modulefilename)
         #
         # call loading_gen_struct() to get the struct layout inferred by
         # the C compiler
@@ -79,9 +64,6 @@ class VGenericEngine(object):
         class FFILibrary(types.ModuleType):
             _cffi_generic_module = module
             _cffi_ffi = self.ffi
-            _cffi_dir = []
-            def __dir__(self):
-                return FFILibrary._cffi_dir
         library = FFILibrary("")
         #
         # finally, call the loaded_gen_xxx() functions.  This will set
@@ -90,10 +72,7 @@ class VGenericEngine(object):
         return library
 
     def _get_declarations(self):
-        lst = [(key, tp) for (key, (tp, qual)) in
-                                self.ffi._parser._declarations.items()]
-        lst.sort()
-        return lst
+        return sorted(self.ffi._parser._declarations.items())
 
     def _generate(self, step_name):
         for name, tp in self._get_declarations():
@@ -155,25 +134,15 @@ class VGenericEngine(object):
         context = 'argument of %s' % name
         arglist = [type.get_c_name(' %s' % arg, context)
                    for type, arg in zip(tp.args, argnames)]
-        tpresult = tp.result
-        if isinstance(tpresult, model.StructOrUnion):
-            arglist.insert(0, tpresult.get_c_name(' *r', context))
-            tpresult = model.void_type
         arglist = ', '.join(arglist) or 'void'
         wrappername = '_cffi_f_%s' % name
         self.export_symbols.append(wrappername)
-        if tp.abi:
-            abi = tp.abi + ' '
-        else:
-            abi = ''
-        funcdecl = ' %s%s(%s)' % (abi, wrappername, arglist)
+        funcdecl = ' %s(%s)' % (wrappername, arglist)
         context = 'result of %s' % name
-        prnt(tpresult.get_c_name(funcdecl, context))
+        prnt(tp.result.get_c_name(funcdecl, context))
         prnt('{')
         #
-        if isinstance(tp.result, model.StructOrUnion):
-            result_code = '*r = '
-        elif not isinstance(tp.result, model.VoidType):
+        if not isinstance(tp.result, model.VoidType):
             result_code = 'return '
         else:
             result_code = ''
@@ -189,50 +158,28 @@ class VGenericEngine(object):
             newfunction = self._load_constant(False, tp, name, module)
         else:
             indirections = []
-            base_tp = tp
-            if (any(isinstance(typ, model.StructOrUnion) for typ in tp.args)
-                    or isinstance(tp.result, model.StructOrUnion)):
+            if any(isinstance(type, model.StructOrUnion) for type in tp.args):
                 indirect_args = []
-                for i, typ in enumerate(tp.args):
-                    if isinstance(typ, model.StructOrUnion):
-                        typ = model.PointerType(typ)
-                        indirections.append((i, typ))
-                    indirect_args.append(typ)
-                indirect_result = tp.result
-                if isinstance(indirect_result, model.StructOrUnion):
-                    if indirect_result.fldtypes is None:
-                        raise TypeError("'%s' is used as result type, "
-                                        "but is opaque" % (
-                                            indirect_result._get_c_name(),))
-                    indirect_result = model.PointerType(indirect_result)
-                    indirect_args.insert(0, indirect_result)
-                    indirections.insert(0, ("result", indirect_result))
-                    indirect_result = model.void_type
+                for i, type in enumerate(tp.args):
+                    if isinstance(type, model.StructOrUnion):
+                        type = model.PointerType(type)
+                        indirections.append((i, type))
+                    indirect_args.append(type)
                 tp = model.FunctionPtrType(tuple(indirect_args),
-                                           indirect_result, tp.ellipsis)
+                                           tp.result, tp.ellipsis)
             BFunc = self.ffi._get_cached_btype(tp)
             wrappername = '_cffi_f_%s' % name
             newfunction = module.load_function(BFunc, wrappername)
-            for i, typ in indirections:
-                newfunction = self._make_struct_wrapper(newfunction, i, typ,
-                                                        base_tp)
+            for i, type in indirections:
+                newfunction = self._make_struct_wrapper(newfunction, i, type)
         setattr(library, name, newfunction)
-        type(library)._cffi_dir.append(name)
 
-    def _make_struct_wrapper(self, oldfunc, i, tp, base_tp):
+    def _make_struct_wrapper(self, oldfunc, i, tp):
         backend = self.ffi._backend
         BType = self.ffi._get_cached_btype(tp)
-        if i == "result":
-            ffi = self.ffi
-            def newfunc(*args):
-                res = ffi.new(BType)
-                oldfunc(res, *args)
-                return res[0]
-        else:
-            def newfunc(*args):
-                args = args[:i] + (backend.newp(BType, args[i]),) + args[i+1:]
-                return oldfunc(*args)
-        newfunc._cffi_base_type = base_tp
+        def newfunc(*args):
+            args = args[:i] + (backend.newp(BType, args[i]),) + args[i+1:]
+            return oldfunc(*args)
         return newfunc
 
     # ----------
@@ -269,36 +216,31 @@ class VGenericEngine(object):
         prnt('static void %s(%s *p)' % (checkfuncname, cname))
         prnt('{')
         prnt('  /* only to generate compile-time warnings or errors */')
-        prnt('  (void)p;')
-        for fname, ftype, fbitsize, fqual in tp.enumfields():
+        for fname, ftype, _ in tp.enumfields():
             if (isinstance(ftype, model.PrimitiveType)
-                and ftype.is_integer_type()) or fbitsize >= 0:
+                and ftype.is_integer_type()):
                 # accept all integers, but complain on float or double
                 prnt('  (void)((p->%s) << 1);' % fname)
             else:
                 # only accept exactly the type declared.
                 try:
                     prnt('  { %s = &p->%s; (void)tmp; }' % (
-                        ftype.get_c_name('*tmp', 'field %r'%fname, quals=fqual),
-                        fname))
+                        ftype.get_c_name('*tmp', 'field %r'%fname), fname))
                 except ffiplatform.VerificationError as e:
                     prnt('  /* %s */' % str(e))   # cannot verify it, ignore
         prnt('}')
         self.export_symbols.append(layoutfuncname)
-        prnt('intptr_t %s(intptr_t i)' % (layoutfuncname,))
+        prnt('ssize_t %s(ssize_t i)' % (layoutfuncname,))
         prnt('{')
         prnt('  struct _cffi_aligncheck { char x; %s y; };' % cname)
-        prnt('  static intptr_t nums[] = {')
+        prnt('  static ssize_t nums[] = {')
         prnt('    sizeof(%s),' % cname)
         prnt('    offsetof(struct _cffi_aligncheck, y),')
-        for fname, ftype, fbitsize, fqual in tp.enumfields():
+        for fname, _, fbitsize in tp.enumfields():
             if fbitsize >= 0:
                 continue      # xxx ignore fbitsize for now
             prnt('    offsetof(%s, %s),' % (cname, fname))
-            if isinstance(ftype, model.ArrayType) and ftype.length is None:
-                prnt('    0,  /* %s */' % ftype._get_c_name())
-            else:
-                prnt('    sizeof(((%s *)0)->%s),' % (cname, fname))
+            prnt('    sizeof(((%s *)0)->%s),' % (cname, fname))
         prnt('    -1')
         prnt('  };')
         prnt('  return nums[i];')
@@ -312,7 +254,7 @@ class VGenericEngine(object):
             return     # nothing to do with opaque structs
         layoutfuncname = '_cffi_layout_%s_%s' % (prefix, name)
         #
-        BFunc = self.ffi._typeof_locked("intptr_t(*)(intptr_t)")[0]
+        BFunc = self.ffi.typeof("ssize_t(*)(ssize_t)")
         function = module.load_function(BFunc, layoutfuncname)
         layout = []
         num = 0
@@ -321,7 +263,7 @@ class VGenericEngine(object):
             if x < 0: break
             layout.append(x)
             num += 1
-        if isinstance(tp, model.StructOrUnion) and tp.partial:
+        if isinstance(tp, model.StructType) and tp.partial:
             # use the function()'s sizes and offsets to guide the
             # layout of the struct
             totalsize = layout[0]
@@ -353,15 +295,14 @@ class VGenericEngine(object):
             check(layout[0], ffi.sizeof(BStruct), "wrong total size")
             check(layout[1], ffi.alignof(BStruct), "wrong total alignment")
             i = 2
-            for fname, ftype, fbitsize, fqual in tp.enumfields():
+            for fname, ftype, fbitsize in tp.enumfields():
                 if fbitsize >= 0:
                     continue        # xxx ignore fbitsize for now
                 check(layout[i], ffi.offsetof(BStruct, fname),
                       "wrong offset for field %r" % (fname,))
-                if layout[i+1] != 0:
-                    BField = ffi._get_cached_btype(ftype)
-                    check(layout[i+1], ffi.sizeof(BField),
-                          "wrong size for field %r" % (fname,))
+                BField = ffi._get_cached_btype(ftype)
+                check(layout[i+1], ffi.sizeof(BField),
+                      "wrong size for field %r" % (fname,))
                 i += 2
             assert i == len(layout)
 
@@ -390,20 +331,11 @@ class VGenericEngine(object):
     # ----------
     # constants, likely declared with '#define'
 
-    def _generate_gen_const(self, is_int, name, tp=None, category='const',
-                            check_value=None):
+    def _generate_gen_const(self, is_int, name, tp=None, category='const'):
         prnt = self._prnt
         funcname = '_cffi_%s_%s' % (category, name)
         self.export_symbols.append(funcname)
-        if check_value is not None:
-            assert is_int
-            assert category == 'const'
-            prnt('int %s(char *out_error)' % funcname)
-            prnt('{')
-            self._check_int_constant_value(name, check_value)
-            prnt('  return 0;')
-            prnt('}')
-        elif is_int:
+        if is_int:
             assert category == 'const'
             prnt('int %s(long long *out_value)' % funcname)
             prnt('{')
@@ -412,17 +344,12 @@ class VGenericEngine(object):
             prnt('}')
         else:
             assert tp is not None
-            assert check_value is None
+            prnt(tp.get_c_name(' %s(void)' % funcname, name),)
+            prnt('{')
             if category == 'var':
                 ampersand = '&'
             else:
                 ampersand = ''
-            extra = ''
-            if category == 'const' and isinstance(tp, model.StructOrUnion):
-                extra = 'const *'
-                ampersand = '&'
-            prnt(tp.get_c_name(' %s%s(void)' % (extra, funcname), name))
-            prnt('{')
             prnt('  return (%s%s);' % (ampersand, name))
             prnt('}')
         prnt()
@@ -433,77 +360,29 @@ class VGenericEngine(object):
 
     _loading_gen_constant = _loaded_noop
 
-    def _load_constant(self, is_int, tp, name, module, check_value=None):
+    def _load_constant(self, is_int, tp, name, module):
         funcname = '_cffi_const_%s' % name
-        if check_value is not None:
-            assert is_int
-            self._load_known_int_constant(module, funcname)
-            value = check_value
-        elif is_int:
-            BType = self.ffi._typeof_locked("long long*")[0]
-            BFunc = self.ffi._typeof_locked("int(*)(long long*)")[0]
+        if is_int:
+            BFunc = self.ffi.typeof("int(*)(long long*)")
             function = module.load_function(BFunc, funcname)
-            p = self.ffi.new(BType)
+            p = self.ffi.new("long long*")
             negative = function(p)
             value = int(p[0])
             if value < 0 and not negative:
-                BLongLong = self.ffi._typeof_locked("long long")[0]
-                value += (1 << (8*self.ffi.sizeof(BLongLong)))
+                value += (1 << (8*self.ffi.sizeof("long long")))
         else:
-            assert check_value is None
-            fntypeextra = '(*)(void)'
-            if isinstance(tp, model.StructOrUnion):
-                fntypeextra = '*' + fntypeextra
-            BFunc = self.ffi._typeof_locked(tp.get_c_name(fntypeextra, name))[0]
+            BFunc = self.ffi.typeof(tp.get_c_name('(*)(void)', name))
             function = module.load_function(BFunc, funcname)
             value = function()
-            if isinstance(tp, model.StructOrUnion):
-                value = value[0]
         return value
 
     def _loaded_gen_constant(self, tp, name, module, library):
         is_int = isinstance(tp, model.PrimitiveType) and tp.is_integer_type()
         value = self._load_constant(is_int, tp, name, module)
         setattr(library, name, value)
-        type(library)._cffi_dir.append(name)
 
     # ----------
     # enums
-
-    def _check_int_constant_value(self, name, value):
-        prnt = self._prnt
-        if value <= 0:
-            prnt('  if ((%s) > 0 || (long)(%s) != %dL) {' % (
-                name, name, value))
-        else:
-            prnt('  if ((%s) <= 0 || (unsigned long)(%s) != %dUL) {' % (
-                name, name, value))
-        prnt('    char buf[64];')
-        prnt('    if ((%s) <= 0)' % name)
-        prnt('        sprintf(buf, "%%ld", (long)(%s));' % name)
-        prnt('    else')
-        prnt('        sprintf(buf, "%%lu", (unsigned long)(%s));' %
-             name)
-        prnt('    sprintf(out_error, "%s has the real value %s, not %s",')
-        prnt('            "%s", buf, "%d");' % (name[:100], value))
-        prnt('    return -1;')
-        prnt('  }')
-
-    def _load_known_int_constant(self, module, funcname):
-        BType = self.ffi._typeof_locked("char[]")[0]
-        BFunc = self.ffi._typeof_locked("int(*)(char*)")[0]
-        function = module.load_function(BFunc, funcname)
-        p = self.ffi.new(BType, 256)
-        if function(p) < 0:
-            error = self.ffi.string(p)
-            if sys.version_info >= (3,):
-                error = str(error, 'utf-8')
-            raise ffiplatform.VerificationError(error)
-
-    def _enum_funcname(self, prefix, name):
-        # "$enum_$1" => "___D_enum____D_1"
-        name = name.replace('$', '___D_')
-        return '_cffi_e_%s_%s' % (prefix, name)
 
     def _generate_gen_enum_decl(self, tp, name, prefix='enum'):
         if tp.partial:
@@ -511,13 +390,19 @@ class VGenericEngine(object):
                 self._generate_gen_const(True, enumerator)
             return
         #
-        funcname = self._enum_funcname(prefix, name)
+        funcname = '_cffi_e_%s_%s' % (prefix, name)
         self.export_symbols.append(funcname)
         prnt = self._prnt
         prnt('int %s(char *out_error)' % funcname)
         prnt('{')
         for enumerator, enumvalue in zip(tp.enumerators, tp.enumvalues):
-            self._check_int_constant_value(enumerator, enumvalue)
+            prnt('  if (%s != %d) {' % (enumerator, enumvalue))
+            prnt('    snprintf(out_error, 255,'
+                             '"%s has the real value %d, not %d",')
+            prnt('            "%s", (int)%s, %d);' % (
+                enumerator, enumerator, enumvalue))
+            prnt('    return -1;')
+            prnt('  }')
         prnt('  return 0;')
         prnt('}')
         prnt()
@@ -529,49 +414,38 @@ class VGenericEngine(object):
             tp.enumvalues = tuple(enumvalues)
             tp.partial_resolved = True
         else:
-            funcname = self._enum_funcname(prefix, name)
-            self._load_known_int_constant(module, funcname)
+            BFunc = self.ffi.typeof("int(*)(char*)")
+            funcname = '_cffi_e_%s_%s' % (prefix, name)
+            function = module.load_function(BFunc, funcname)
+            p = self.ffi.new("char[]", 256)
+            if function(p) < 0:
+                error = self.ffi.string(p)
+                if sys.version_info >= (3,):
+                    error = str(error, 'utf-8')
+                raise ffiplatform.VerificationError(error)
 
     def _loaded_gen_enum(self, tp, name, module, library):
         for enumerator, enumvalue in zip(tp.enumerators, tp.enumvalues):
             setattr(library, enumerator, enumvalue)
-            type(library)._cffi_dir.append(enumerator)
 
     # ----------
     # macros: for now only for integers
 
     def _generate_gen_macro_decl(self, tp, name):
-        if tp == '...':
-            check_value = None
-        else:
-            check_value = tp     # an integer
-        self._generate_gen_const(True, name, check_value=check_value)
+        assert tp == '...'
+        self._generate_gen_const(True, name)
 
     _loading_gen_macro = _loaded_noop
 
     def _loaded_gen_macro(self, tp, name, module, library):
-        if tp == '...':
-            check_value = None
-        else:
-            check_value = tp     # an integer
-        value = self._load_constant(True, tp, name, module,
-                                    check_value=check_value)
+        value = self._load_constant(True, tp, name, module)
         setattr(library, name, value)
-        type(library)._cffi_dir.append(name)
 
     # ----------
     # global variables
 
     def _generate_gen_variable_decl(self, tp, name):
         if isinstance(tp, model.ArrayType):
-            if tp.length == '...':
-                prnt = self._prnt
-                funcname = '_cffi_sizeof_%s' % (name,)
-                self.export_symbols.append(funcname)
-                prnt("size_t %s(void)" % funcname)
-                prnt("{")
-                prnt("  return sizeof(%s);" % (name,))
-                prnt("}")
             tp_ptr = model.PointerType(tp.item)
             self._generate_gen_const(False, name, tp_ptr)
         else:
@@ -583,18 +457,6 @@ class VGenericEngine(object):
     def _loaded_gen_variable(self, tp, name, module, library):
         if isinstance(tp, model.ArrayType):   # int a[5] is "constant" in the
                                               # sense that "a=..." is forbidden
-            if tp.length == '...':
-                funcname = '_cffi_sizeof_%s' % (name,)
-                BFunc = self.ffi._typeof_locked('size_t(*)(void)')[0]
-                function = module.load_function(BFunc, funcname)
-                size = function()
-                BItemType = self.ffi._get_cached_btype(tp.item)
-                length, rest = divmod(size, self.ffi.sizeof(BItemType))
-                if rest != 0:
-                    raise ffiplatform.VerificationError(
-                        "bad size: %r does not seem to be an array of %s" %
-                        (name, tp.item))
-                tp = tp.resolve_length(length)
             tp_ptr = model.PointerType(tp.item)
             value = self._load_constant(False, tp_ptr, name, module)
             # 'value' is a <cdata 'type *'> which we have to replace with
@@ -603,20 +465,18 @@ class VGenericEngine(object):
                 BArray = self.ffi._get_cached_btype(tp)
                 value = self.ffi.cast(BArray, value)
             setattr(library, name, value)
-            type(library)._cffi_dir.append(name)
             return
         # remove ptr=<cdata 'int *'> from the library instance, and replace
         # it by a property on the class, which reads/writes into ptr[0].
         funcname = '_cffi_var_%s' % name
-        BFunc = self.ffi._typeof_locked(tp.get_c_name('*(*)(void)', name))[0]
+        BFunc = self.ffi.typeof(tp.get_c_name('*(*)(void)', name))
         function = module.load_function(BFunc, funcname)
         ptr = function()
         def getter(library):
             return ptr[0]
         def setter(library, value):
             ptr[0] = value
-        setattr(type(library), name, property(getter, setter))
-        type(library)._cffi_dir.append(name)
+        setattr(library.__class__, name, property(getter, setter))
 
 cffimod_header = r'''
 #include <stdio.h>
@@ -625,47 +485,20 @@ cffimod_header = r'''
 #include <errno.h>
 #include <sys/types.h>   /* XXX for ssize_t on some platforms */
 
-/* this block of #ifs should be kept exactly identical between
-   c/_cffi_backend.c, cffi/vengine_cpy.py, cffi/vengine_gen.py */
-#if defined(_MSC_VER)
-# include <malloc.h>   /* for alloca() */
-# if _MSC_VER < 1600   /* MSVC < 2010 */
-   typedef __int8 int8_t;
-   typedef __int16 int16_t;
-   typedef __int32 int32_t;
-   typedef __int64 int64_t;
-   typedef unsigned __int8 uint8_t;
-   typedef unsigned __int16 uint16_t;
-   typedef unsigned __int32 uint32_t;
-   typedef unsigned __int64 uint64_t;
-   typedef __int8 int_least8_t;
-   typedef __int16 int_least16_t;
-   typedef __int32 int_least32_t;
-   typedef __int64 int_least64_t;
-   typedef unsigned __int8 uint_least8_t;
-   typedef unsigned __int16 uint_least16_t;
-   typedef unsigned __int32 uint_least32_t;
-   typedef unsigned __int64 uint_least64_t;
-   typedef __int8 int_fast8_t;
-   typedef __int16 int_fast16_t;
-   typedef __int32 int_fast32_t;
-   typedef __int64 int_fast64_t;
-   typedef unsigned __int8 uint_fast8_t;
-   typedef unsigned __int16 uint_fast16_t;
-   typedef unsigned __int32 uint_fast32_t;
-   typedef unsigned __int64 uint_fast64_t;
-   typedef __int64 intmax_t;
-   typedef unsigned __int64 uintmax_t;
-# else
-#  include <stdint.h>
-# endif
-# if _MSC_VER < 1800   /* MSVC < 2013 */
-   typedef unsigned char _Bool;
-# endif
+#ifdef _WIN32
+#  include <Windows.h>
+#  define snprintf _snprintf
+typedef __int8 int8_t;
+typedef __int16 int16_t;
+typedef __int32 int32_t;
+typedef __int64 int64_t;
+typedef unsigned __int8 uint8_t;
+typedef unsigned __int16 uint16_t;
+typedef unsigned __int32 uint32_t;
+typedef unsigned __int64 uint64_t;
+typedef SSIZE_T ssize_t;
+typedef unsigned char _Bool;
 #else
-# include <stdint.h>
-# if (defined (__SVR4) && defined (__sun)) || defined(_AIX)
-#  include <alloca.h>
-# endif
+#  include <stdint.h>
 #endif
 '''

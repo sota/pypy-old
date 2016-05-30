@@ -1,99 +1,72 @@
 import __builtin__
+import types
 from pypy.interpreter import special
 from pypy.interpreter.baseobjspace import ObjSpace, W_Root
-from pypy.interpreter.error import OperationError, oefmt
+from pypy.interpreter.error import OperationError, operationerrfmt
 from pypy.interpreter.typedef import get_unique_interplevel_subclass
-from pypy.objspace.std import frame, transparent, callmethod
+from pypy.objspace.std import (builtinshortcut, stdtypedef, frame, model,
+                               transparent, callmethod)
 from pypy.objspace.descroperation import DescrOperation, raiseattrerror
 from rpython.rlib.objectmodel import instantiate, specialize, is_annotation_constant
 from rpython.rlib.debug import make_sure_not_resized
 from rpython.rlib.rarithmetic import base_int, widen, is_valid_int
-from rpython.rlib.objectmodel import import_from_mixin
+from rpython.rlib.objectmodel import we_are_translated
 from rpython.rlib import jit
 
 # Object imports
-from pypy.objspace.std.basestringtype import basestring_typedef
 from pypy.objspace.std.boolobject import W_BoolObject
-from pypy.objspace.std.bufferobject import W_Buffer
-from pypy.objspace.std.bytearrayobject import W_BytearrayObject
-from pypy.objspace.std.bytesobject import W_AbstractBytesObject, W_BytesObject, wrapstr
 from pypy.objspace.std.complexobject import W_ComplexObject
-from pypy.objspace.std.dictmultiobject import W_DictMultiObject, W_DictObject
+from pypy.objspace.std.dictmultiobject import W_DictMultiObject
 from pypy.objspace.std.floatobject import W_FloatObject
-from pypy.objspace.std.intobject import W_IntObject, setup_prebuilt, wrapint
-from pypy.objspace.std.iterobject import W_AbstractSeqIterObject, W_SeqIterObject
+from pypy.objspace.std.intobject import W_IntObject
 from pypy.objspace.std.listobject import W_ListObject
 from pypy.objspace.std.longobject import W_LongObject, newlong
-from pypy.objspace.std.memoryobject import W_MemoryView
 from pypy.objspace.std.noneobject import W_NoneObject
 from pypy.objspace.std.objectobject import W_ObjectObject
+from pypy.objspace.std.iterobject import W_SeqIterObject
 from pypy.objspace.std.setobject import W_SetObject, W_FrozensetObject
 from pypy.objspace.std.sliceobject import W_SliceObject
-from pypy.objspace.std.tupleobject import W_AbstractTupleObject, W_TupleObject
-from pypy.objspace.std.typeobject import W_TypeObject, TypeCache
-from pypy.objspace.std.unicodeobject import W_UnicodeObject, wrapunicode
+from pypy.objspace.std.stringobject import W_StringObject
+from pypy.objspace.std.unicodeobject import W_UnicodeObject
+from pypy.objspace.std.tupleobject import W_AbstractTupleObject
+from pypy.objspace.std.typeobject import W_TypeObject
 
+# types
+from pypy.objspace.std.inttype import wrapint
+from pypy.objspace.std.stringtype import wrapstr
+from pypy.objspace.std.unicodetype import wrapunicode
 
-class StdObjSpace(ObjSpace):
+class StdObjSpace(ObjSpace, DescrOperation):
     """The standard object space, implementing a general-purpose object
     library in Restricted Python."""
-    import_from_mixin(DescrOperation)
 
     def initialize(self):
-        """NOT_RPYTHON: only for initializing the space
+        "NOT_RPYTHON: only for initializing the space."
+        # setup all the object types and implementations
+        self.model = model.StdTypeModel(self.config)
 
-        Setup all the object types and implementations.
-        """
-
-        setup_prebuilt(self)
         self.FrameClass = frame.build_frame(self)
-        self.StringObjectCls = W_BytesObject
+        self.StringObjectCls = W_StringObject
+
         self.UnicodeObjectCls = W_UnicodeObject
+
+        self._install_multimethods()
 
         # singletons
         self.w_None = W_NoneObject.w_None
         self.w_False = W_BoolObject.w_False
         self.w_True = W_BoolObject.w_True
-        self.w_NotImplemented = self.wrap(special.NotImplemented())
-        self.w_Ellipsis = self.wrap(special.Ellipsis())
+        self.w_NotImplemented = self.wrap(special.NotImplemented(self))
+        self.w_Ellipsis = self.wrap(special.Ellipsis(self))
 
         # types
-        builtin_type_classes = {
-            W_BoolObject.typedef: W_BoolObject,
-            W_Buffer.typedef: W_Buffer,
-            W_BytearrayObject.typedef: W_BytearrayObject,
-            W_BytesObject.typedef: W_BytesObject,
-            W_ComplexObject.typedef: W_ComplexObject,
-            W_DictMultiObject.typedef: W_DictMultiObject,
-            W_FloatObject.typedef: W_FloatObject,
-            W_IntObject.typedef: W_IntObject,
-            W_AbstractSeqIterObject.typedef: W_AbstractSeqIterObject,
-            W_ListObject.typedef: W_ListObject,
-            W_LongObject.typedef: W_LongObject,
-            W_MemoryView.typedef: W_MemoryView,
-            W_NoneObject.typedef: W_NoneObject,
-            W_ObjectObject.typedef: W_ObjectObject,
-            W_SetObject.typedef: W_SetObject,
-            W_FrozensetObject.typedef: W_FrozensetObject,
-            W_SliceObject.typedef: W_SliceObject,
-            W_TupleObject.typedef: W_TupleObject,
-            W_TypeObject.typedef: W_TypeObject,
-            W_UnicodeObject.typedef: W_UnicodeObject,
-        }
-        if self.config.objspace.std.withstrbuf:
-            builtin_type_classes[W_BytesObject.typedef] = W_AbstractBytesObject
-
         self.builtin_types = {}
-        self._interplevel_classes = {}
-        for typedef, cls in builtin_type_classes.items():
+        for typedef in self.model.pythontypes:
             w_type = self.gettypeobject(typedef)
             self.builtin_types[typedef.name] = w_type
             setattr(self, 'w_' + typedef.name, w_type)
-            self._interplevel_classes[w_type] = cls
         self.builtin_types["NotImplemented"] = self.w_NotImplemented
         self.builtin_types["Ellipsis"] = self.w_Ellipsis
-        self.w_basestring = self.builtin_types['basestring'] = \
-            self.gettypeobject(basestring_typedef)
 
         # exceptions & builtins
         self.make_builtins()
@@ -107,8 +80,43 @@ class StdObjSpace(ObjSpace):
         if self.config.objspace.std.withtproxy:
             transparent.setup(self)
 
+        self.setup_isinstance_cache()
+
     def get_builtin_types(self):
         return self.builtin_types
+
+    def _install_multimethods(self):
+        """Install all the MultiMethods into the space instance."""
+        for name, mm in model.MM.__dict__.items():
+            if not isinstance(mm, model.StdObjSpaceMultiMethod):
+                continue
+            if not hasattr(self, name):
+                # int_w, str_w...: these do not return a wrapped object
+                if name.endswith('_w'):
+                    func = mm.install_not_sliced(self.model.typeorder,
+                                                 baked_perform_call=True)
+                else:
+                    unsliced = mm.install_not_sliced(self.model.typeorder,
+                                                     baked_perform_call=False)
+                    exprargs, expr, miniglobals, fallback = unsliced
+                    func = stdtypedef.make_perform_trampoline('__mm_'+name,
+                                                              exprargs, expr,
+                                                              miniglobals, mm)
+
+                boundmethod = types.MethodType(func, self, self.__class__)
+                setattr(self, name, boundmethod)  # store into 'space' instance
+            elif self.config.objspace.std.builtinshortcut:
+                if name.startswith('inplace_'):
+                    fallback_name = name[len('inplace_'):]
+                    if fallback_name in ('or', 'and'):
+                        fallback_name += '_'
+                    fallback_mm = model.MM.__dict__[fallback_name]
+                else:
+                    fallback_mm = None
+                builtinshortcut.install(self, mm, fallback_mm)
+        if self.config.objspace.std.builtinshortcut:
+            builtinshortcut.install_is_true(self, model.MM.nonzero,
+                                            model.MM.len)
 
     def createexecutioncontext(self):
         # add space specific fields to execution context
@@ -122,15 +130,11 @@ class StdObjSpace(ObjSpace):
         return self.gettypeobject(cls.typedef)
 
     def gettypeobject(self, typedef):
-        # typeobject.TypeCache maps a TypeDef instance to its
+        # stdtypedef.TypeCache maps each StdTypeDef instance to its
         # unique-for-this-space W_TypeObject instance
         assert typedef is not None
-        return self.fromcache(TypeCache).getorbuild(typedef)
+        return self.fromcache(stdtypedef.TypeCache).getorbuild(typedef)
 
-    def wrapbytes(self, x):
-        return wrapstr(self, x)
-
-    @specialize.argtype(1)
     def wrap(self, x):
         "Wraps the Python value 'x' into one of the wrapper classes."
         # You might notice that this function is rather conspicuously
@@ -173,6 +177,7 @@ class StdObjSpace(ObjSpace):
             else:
                 return W_LongObject.fromrarith_int(x)
         return self._wrap_not_rpython(x)
+    wrap._annspecialcase_ = "specialize:wrap"
 
     def _wrap_not_rpython(self, x):
         "NOT_RPYTHON"
@@ -248,10 +253,11 @@ class StdObjSpace(ObjSpace):
 
     def unwrap(self, w_obj):
         """NOT_RPYTHON"""
-        # _____ this code is here to support testing only _____
-        if isinstance(w_obj, W_Root):
+        if isinstance(w_obj, model.W_Object):
             return w_obj.unwrap(self)
-        raise TypeError("cannot unwrap: %r" % w_obj)
+        if isinstance(w_obj, W_Root):
+            return w_obj
+        raise model.UnwrapError("cannot unwrap: %r" % w_obj)
 
     def newint(self, intval):
         return wrapint(self, intval)
@@ -263,7 +269,7 @@ class StdObjSpace(ObjSpace):
         return W_ComplexObject(realval, imagval)
 
     def unpackcomplex(self, w_complex):
-        from pypy.objspace.std.complexobject import unpackcomplex
+        from pypy.objspace.std.complextype import unpackcomplex
         return unpackcomplex(self, w_complex)
 
     def newlong(self, val): # val is an int
@@ -276,7 +282,7 @@ class StdObjSpace(ObjSpace):
         return newlong(self, val)
 
     def newtuple(self, list_w):
-        from pypy.objspace.std.tupleobject import wraptuple
+        from pypy.objspace.std.tupletype import wraptuple
         assert isinstance(list_w, list)
         make_sure_not_resized(list_w)
         return wraptuple(self, list_w)
@@ -285,14 +291,8 @@ class StdObjSpace(ObjSpace):
         assert not list_w or sizehint == -1
         return W_ListObject(self, list_w, sizehint)
 
-    def newlist_bytes(self, list_s):
-        return W_ListObject.newlist_bytes(self, list_s)
-
-    def newlist_unicode(self, list_u):
-        return W_ListObject.newlist_unicode(self, list_u)
-
-    def newlist_int(self, list_i):
-        return W_ListObject.newlist_int(self, list_i)
+    def newlist_str(self, list_s):
+        return W_ListObject.newlist_str(self, list_s)
 
     def newdict(self, module=False, instance=False, kwargs=False,
                 strdict=False):
@@ -300,24 +300,15 @@ class StdObjSpace(ObjSpace):
                 self, module=module, instance=instance,
                 strdict=strdict, kwargs=kwargs)
 
-    def newset(self, iterable_w=None):
-        if iterable_w is None:
-            return W_SetObject(self, None)
-        return W_SetObject(self, self.newtuple(iterable_w))
-
-    def newfrozenset(self, iterable_w=None):
-        if iterable_w is None:
-            return W_FrozensetObject(self, None)
-        return W_FrozensetObject(self, self.newtuple(iterable_w))
+    def newset(self):
+        from pypy.objspace.std.setobject import newset
+        return W_SetObject(self, None)
 
     def newslice(self, w_start, w_end, w_step):
         return W_SliceObject(w_start, w_end, w_step)
 
     def newseqiter(self, w_obj):
         return W_SeqIterObject(w_obj)
-
-    def newbuffer(self, w_obj):
-        return W_Buffer(w_obj)
 
     def type(self, w_obj):
         jit.promote(w_obj.__class__)
@@ -353,22 +344,28 @@ class StdObjSpace(ObjSpace):
             if cls.typedef.applevel_subclasses_base is not None:
                 cls = cls.typedef.applevel_subclasses_base
             #
+            if not we_are_translated():
+                if issubclass(cls, model.W_Object):
+                    # If cls is missing from model.typeorder, then you
+                    # need to add it there (including the inheritance
+                    # relationship, if any)
+                    assert cls in self.model.typeorder, repr(cls)
+            #
             if (self.config.objspace.std.withmapdict and cls is W_ObjectObject
                     and not w_subtype.needsdel):
                 from pypy.objspace.std.mapdict import get_subclass_of_correct_size
                 subcls = get_subclass_of_correct_size(self, cls, w_subtype)
             else:
                 subcls = get_unique_interplevel_subclass(
-                        self.config, cls, w_subtype.hasdict,
-                        w_subtype.layout.nslots != 0,
+                        self.config, cls, w_subtype.hasdict, w_subtype.nslots != 0,
                         w_subtype.needsdel, w_subtype.weakrefable)
             instance = instantiate(subcls)
             assert isinstance(instance, cls)
             instance.user_setup(self, w_subtype)
         else:
-            raise oefmt(self.w_TypeError,
-                        "%N.__new__(%N): only for the type %N",
-                        w_type, w_subtype, w_type)
+            raise operationerrfmt(self.w_TypeError,
+                "%s.__new__(%s): only for the type %s",
+                w_type.name, w_subtype.getname(self), w_type.name)
         return instance
     allocate_instance._annspecialcase_ = "specialize:arg(1)"
 
@@ -381,7 +378,7 @@ class StdObjSpace(ObjSpace):
                 self.wrap("expected length %d, got %d" % (expected, got)))
 
     def unpackiterable(self, w_obj, expected_length=-1):
-        if isinstance(w_obj, W_AbstractTupleObject) and self._uses_tuple_iter(w_obj):
+        if isinstance(w_obj, W_AbstractTupleObject):
             t = w_obj.getitems_copy()
         elif type(w_obj) is W_ListObject:
             t = w_obj.getitems_copy()
@@ -395,7 +392,7 @@ class StdObjSpace(ObjSpace):
     def fixedview(self, w_obj, expected_length=-1, unroll=False):
         """ Fast paths
         """
-        if isinstance(w_obj, W_AbstractTupleObject) and self._uses_tuple_iter(w_obj):
+        if isinstance(w_obj, W_AbstractTupleObject):
             t = w_obj.tolist()
         elif type(w_obj) is W_ListObject:
             if unroll:
@@ -417,37 +414,32 @@ class StdObjSpace(ObjSpace):
         assert expected_length >= 0
         return self.fixedview(w_obj, expected_length, unroll=True)
 
-    def listview_no_unpack(self, w_obj):
-        if type(w_obj) is W_ListObject:
-            return w_obj.getitems()
-        elif isinstance(w_obj, W_AbstractTupleObject) and self._uses_tuple_iter(w_obj):
-            return w_obj.getitems_copy()
-        elif isinstance(w_obj, W_ListObject) and self._uses_list_iter(w_obj):
-            return w_obj.getitems()
-        else:
-            return None
-
     def listview(self, w_obj, expected_length=-1):
-        t = self.listview_no_unpack(w_obj)
-        if t is None:
+        if type(w_obj) is W_ListObject:
+            t = w_obj.getitems()
+        elif isinstance(w_obj, W_AbstractTupleObject):
+            t = w_obj.getitems_copy()
+        elif isinstance(w_obj, W_ListObject) and self._uses_list_iter(w_obj):
+            t = w_obj.getitems()
+        else:
             return ObjSpace.unpackiterable(self, w_obj, expected_length)
         if expected_length != -1 and len(t) != expected_length:
             raise self._wrap_expected_length(expected_length, len(t))
         return t
 
-    def listview_bytes(self, w_obj):
+    def listview_str(self, w_obj):
         # note: uses exact type checking for objects with strategies,
         # and isinstance() for others.  See test_listobject.test_uses_custom...
         if type(w_obj) is W_ListObject:
-            return w_obj.getitems_bytes()
-        if type(w_obj) is W_DictObject:
-            return w_obj.listview_bytes()
+            return w_obj.getitems_str()
+        if type(w_obj) is W_DictMultiObject:
+            return w_obj.listview_str()
         if type(w_obj) is W_SetObject or type(w_obj) is W_FrozensetObject:
-            return w_obj.listview_bytes()
-        if isinstance(w_obj, W_BytesObject) and self._uses_no_iter(w_obj):
-            return w_obj.listview_bytes()
+            return w_obj.listview_str()
+        if isinstance(w_obj, W_StringObject):
+            return w_obj.listview_str()
         if isinstance(w_obj, W_ListObject) and self._uses_list_iter(w_obj):
-            return w_obj.getitems_bytes()
+            return w_obj.getitems_str()
         return None
 
     def listview_unicode(self, w_obj):
@@ -455,11 +447,11 @@ class StdObjSpace(ObjSpace):
         # and isinstance() for others.  See test_listobject.test_uses_custom...
         if type(w_obj) is W_ListObject:
             return w_obj.getitems_unicode()
-        if type(w_obj) is W_DictObject:
+        if type(w_obj) is W_DictMultiObject:
             return w_obj.listview_unicode()
         if type(w_obj) is W_SetObject or type(w_obj) is W_FrozensetObject:
             return w_obj.listview_unicode()
-        if isinstance(w_obj, W_UnicodeObject) and self._uses_no_iter(w_obj):
+        if isinstance(w_obj, W_UnicodeObject):
             return w_obj.listview_unicode()
         if isinstance(w_obj, W_ListObject) and self._uses_list_iter(w_obj):
             return w_obj.getitems_unicode()
@@ -468,7 +460,7 @@ class StdObjSpace(ObjSpace):
     def listview_int(self, w_obj):
         if type(w_obj) is W_ListObject:
             return w_obj.getitems_int()
-        if type(w_obj) is W_DictObject:
+        if type(w_obj) is W_DictMultiObject:
             return w_obj.listview_int()
         if type(w_obj) is W_SetObject or type(w_obj) is W_FrozensetObject:
             return w_obj.listview_int()
@@ -476,30 +468,14 @@ class StdObjSpace(ObjSpace):
             return w_obj.getitems_int()
         return None
 
-    def listview_float(self, w_obj):
-        if type(w_obj) is W_ListObject:
-            return w_obj.getitems_float()
-        # dict and set don't have FloatStrategy, so we can just ignore them
-        # for now
-        if isinstance(w_obj, W_ListObject) and self._uses_list_iter(w_obj):
-            return w_obj.getitems_float()
-        return None
-
     def view_as_kwargs(self, w_dict):
-        if type(w_dict) is W_DictObject:
+        if type(w_dict) is W_DictMultiObject:
             return w_dict.view_as_kwargs()
         return (None, None)
 
     def _uses_list_iter(self, w_obj):
         from pypy.objspace.descroperation import list_iter
         return self.lookup(w_obj, '__iter__') is list_iter(self)
-
-    def _uses_tuple_iter(self, w_obj):
-        from pypy.objspace.descroperation import tuple_iter
-        return self.lookup(w_obj, '__iter__') is tuple_iter(self)
-
-    def _uses_no_iter(self, w_obj):
-        return self.lookup(w_obj, '__iter__') is None
 
     def sliceindices(self, w_slice, w_length):
         if isinstance(w_slice, W_SliceObject):
@@ -513,18 +489,16 @@ class StdObjSpace(ObjSpace):
                                  self.wrap("Expected tuple of length 3"))
         return self.int_w(l_w[0]), self.int_w(l_w[1]), self.int_w(l_w[2])
 
-    _DescrOperation_is_true = is_true
-    _DescrOperation_getattr = getattr
-
     def is_true(self, w_obj):
         # a shortcut for performance
+        # NOTE! this method is typically overridden by builtinshortcut.py.
         if type(w_obj) is W_BoolObject:
-            return bool(w_obj.intval)
-        return self._DescrOperation_is_true(w_obj)
+            return w_obj.boolval
+        return DescrOperation.is_true(self, w_obj)
 
     def getattr(self, w_obj, w_name):
         if not self.config.objspace.std.getattributeshortcut:
-            return self._DescrOperation_getattr(w_obj, w_name)
+            return DescrOperation.getattr(self, w_obj, w_name)
         # an optional shortcut for performance
 
         w_type = self.type(w_obj)
@@ -577,7 +551,7 @@ class StdObjSpace(ObjSpace):
         element or None on element not found.
 
         performance shortcut to avoid creating the OperationError(KeyError)
-        and allocating W_BytesObject
+        and allocating W_StringObject
         """
         if (isinstance(w_obj, W_DictMultiObject) and
                 not w_obj.user_overridden_class):
@@ -609,12 +583,11 @@ class StdObjSpace(ObjSpace):
             return w_obj.intval
         return ObjSpace.getindex_w(self, w_obj, w_exception, objdescr)
 
-    def unicode_from_object(self, w_obj):
-        from pypy.objspace.std.unicodeobject import unicode_from_object
-        return unicode_from_object(self, w_obj)
-
     def call_method(self, w_obj, methname, *arg_w):
-        return callmethod.call_method_opt(self, w_obj, methname, *arg_w)
+        if self.config.objspace.opcodes.CALL_METHOD:
+            return callmethod.call_method_opt(self, w_obj, methname, *arg_w)
+        else:
+            return ObjSpace.call_method(self, w_obj, methname, *arg_w)
 
     def _type_issubtype(self, w_sub, w_type):
         if isinstance(w_sub, W_TypeObject) and isinstance(w_type, W_TypeObject):
@@ -633,6 +606,63 @@ class StdObjSpace(ObjSpace):
                 if isinstance(w_inst, cls):
                     return True
         return self.type(w_inst).issubtype(w_type)
+
+    def setup_isinstance_cache(self):
+        # This assumes that all classes in the stdobjspace implementing a
+        # particular app-level type are distinguished by a common base class.
+        # Alternatively, you can turn off the cache on specific classes,
+        # like e.g. proxyobject.  It is just a bit less performant but
+        # should not have any bad effect.
+        from pypy.objspace.std.model import W_Root, W_Object
+        #
+        # Build a dict {class: w_typeobject-or-None}.  The value None is used
+        # on classes that are known to be abstract base classes.
+        class2type = {}
+        class2type[W_Root] = None
+        class2type[W_Object] = None
+        for cls in self.model.typeorder.keys():
+            if getattr(cls, 'typedef', None) is None:
+                continue
+            if getattr(cls, 'ignore_for_isinstance_cache', False):
+                continue
+            w_type = self.gettypefor(cls)
+            w_oldtype = class2type.setdefault(cls, w_type)
+            assert w_oldtype is w_type
+        #
+        # Build the real dict {w_typeobject: class-or-base-class}.  For every
+        # w_typeobject we look for the most precise common base class of all
+        # the registered classes.  If no such class is found, we will find
+        # W_Object or W_Root, and complain.  Then you must either add an
+        # artificial common base class, or disable caching on one of the
+        # two classes with ignore_for_isinstance_cache.
+        def getmro(cls):
+            while True:
+                yield cls
+                if cls is W_Root:
+                    break
+                cls = cls.__bases__[0]
+        self._interplevel_classes = {}
+        for cls, w_type in class2type.items():
+            if w_type is None:
+                continue
+            if w_type not in self._interplevel_classes:
+                self._interplevel_classes[w_type] = cls
+            else:
+                cls1 = self._interplevel_classes[w_type]
+                mro1 = list(getmro(cls1))
+                for base in getmro(cls):
+                    if base in mro1:
+                        break
+                if base in class2type and class2type[base] is not w_type:
+                    if class2type.get(base) is None:
+                        msg = ("cannot find a common interp-level base class"
+                               " between %r and %r" % (cls1, cls))
+                    else:
+                        msg = ("%s is a base class of both %r and %r" % (
+                            class2type[base], cls1, cls))
+                    raise AssertionError("%r: %s" % (w_type, msg))
+                class2type[base] = w_type
+                self._interplevel_classes[w_type] = base
 
     @specialize.memo()
     def _get_interplevel_cls(self, w_type):

@@ -1,16 +1,16 @@
 import unittest
-import Tkinter as tkinter
+import Tkinter
 import ttk
 from test.test_support import requires, run_unittest
-from test_ttk.support import AbstractTkTest
+
+import support
 
 requires('gui')
 
-class StyleTest(AbstractTkTest, unittest.TestCase):
+class StyleTest(unittest.TestCase):
 
     def setUp(self):
-        super(StyleTest, self).setUp()
-        self.style = ttk.Style(self.root)
+        self.style = ttk.Style()
 
 
     def test_configure(self):
@@ -18,16 +18,15 @@ class StyleTest(AbstractTkTest, unittest.TestCase):
         style.configure('TButton', background='yellow')
         self.assertEqual(style.configure('TButton', 'background'),
             'yellow')
-        self.assertIsInstance(style.configure('TButton'), dict)
+        self.assertTrue(isinstance(style.configure('TButton'), dict))
 
 
     def test_map(self):
         style = self.style
         style.map('TButton', background=[('active', 'background', 'blue')])
         self.assertEqual(style.map('TButton', 'background'),
-            [('active', 'background', 'blue')] if self.wantobjects else
-            [('active background', 'blue')])
-        self.assertIsInstance(style.map('TButton'), dict)
+            [('active', 'background', 'blue')])
+        self.assertTrue(isinstance(style.map('TButton'), dict))
 
 
     def test_lookup(self):
@@ -44,7 +43,7 @@ class StyleTest(AbstractTkTest, unittest.TestCase):
 
     def test_layout(self):
         style = self.style
-        self.assertRaises(tkinter.TclError, style.layout, 'NotALayout')
+        self.assertRaises(Tkinter.TclError, style.layout, 'NotALayout')
         tv_style = style.layout('Treeview')
 
         # "erase" Treeview layout
@@ -58,15 +57,15 @@ class StyleTest(AbstractTkTest, unittest.TestCase):
         self.assertEqual(style.layout('Treeview'), tv_style)
 
         # should return a list
-        self.assertIsInstance(style.layout('TButton'), list)
+        self.assertTrue(isinstance(style.layout('TButton'), list))
 
         # correct layout, but "option" doesn't exist as option
-        self.assertRaises(tkinter.TclError, style.layout, 'Treeview',
+        self.assertRaises(Tkinter.TclError, style.layout, 'Treeview',
             [('name', {'option': 'inexistent'})])
 
 
     def test_theme_use(self):
-        self.assertRaises(tkinter.TclError, self.style.theme_use,
+        self.assertRaises(Tkinter.TclError, self.style.theme_use,
             'nonexistingname')
 
         curr_theme = self.style.theme_use()

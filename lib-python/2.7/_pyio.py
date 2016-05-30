@@ -25,8 +25,8 @@ __metaclass__ = type
 DEFAULT_BUFFER_SIZE = 8 * 1024  # bytes
 
 # NOTE: Base classes defined here are registered with the "official" ABCs
-# defined in io.py. We don't use real inheritance though, because we don't want
-# to inherit the C implementations.
+# defined in io.py. We don't use real inheritance though, because we don't
+# want to inherit the C implementations.
 
 
 class BlockingIOError(IOError):
@@ -192,45 +192,38 @@ def open(file, mode="r", buffering=-1,
                  (appending and "a" or "") +
                  (updating and "+" or ""),
                  closefd)
-    result = raw
-    try:
-        line_buffering = False
-        if buffering == 1 or buffering < 0 and raw.isatty():
-            buffering = -1
-            line_buffering = True
-        if buffering < 0:
-            buffering = DEFAULT_BUFFER_SIZE
-            try:
-                bs = os.fstat(raw.fileno()).st_blksize
-            except (os.error, AttributeError):
-                pass
-            else:
-                if bs > 1:
-                    buffering = bs
-        if buffering < 0:
-            raise ValueError("invalid buffering size")
-        if buffering == 0:
-            if binary:
-                return result
-            raise ValueError("can't have unbuffered text I/O")
-        if updating:
-            buffer = BufferedRandom(raw, buffering)
-        elif writing or appending:
-            buffer = BufferedWriter(raw, buffering)
-        elif reading:
-            buffer = BufferedReader(raw, buffering)
+    line_buffering = False
+    if buffering == 1 or buffering < 0 and raw.isatty():
+        buffering = -1
+        line_buffering = True
+    if buffering < 0:
+        buffering = DEFAULT_BUFFER_SIZE
+        try:
+            bs = os.fstat(raw.fileno()).st_blksize
+        except (os.error, AttributeError):
+            pass
         else:
-            raise ValueError("unknown mode: %r" % mode)
-        result = buffer
+            if bs > 1:
+                buffering = bs
+    if buffering < 0:
+        raise ValueError("invalid buffering size")
+    if buffering == 0:
         if binary:
-            return result
-        text = TextIOWrapper(buffer, encoding, errors, newline, line_buffering)
-        result = text
-        text.mode = mode
-        return result
-    except:
-        result.close()
-        raise
+            return raw
+        raise ValueError("can't have unbuffered text I/O")
+    if updating:
+        buffer = BufferedRandom(raw, buffering)
+    elif writing or appending:
+        buffer = BufferedWriter(raw, buffering)
+    elif reading:
+        buffer = BufferedReader(raw, buffering)
+    else:
+        raise ValueError("unknown mode: %r" % mode)
+    if binary:
+        return buffer
+    text = TextIOWrapper(buffer, encoding, errors, newline, line_buffering)
+    text.mode = mode
+    return text
 
 
 class DocDescriptor:
@@ -305,7 +298,7 @@ class IOBase:
     def seek(self, pos, whence=0):
         """Change stream position.
 
-        Change the stream position to byte offset pos. Argument pos is
+        Change the stream position to byte offset offset. offset is
         interpreted relative to the position indicated by whence.  Values
         for whence are:
 
@@ -347,10 +340,8 @@ class IOBase:
         This method has no effect if the file is already closed.
         """
         if not self.__closed:
-            try:
-                self.flush()
-            finally:
-                self.__closed = True
+            self.flush()
+            self.__closed = True
 
     def __del__(self):
         """Destructor.  Calls close()."""
@@ -775,7 +766,7 @@ class _BufferedIOMixin(BufferedIOBase):
         clsname = self.__class__.__name__
         try:
             name = self.name
-        except Exception:
+        except AttributeError:
             return "<_pyio.{0}>".format(clsname)
         else:
             return "<_pyio.{0} name={1!r}>".format(clsname, name)
@@ -892,18 +883,12 @@ class BytesIO(BufferedIOBase):
         return pos
 
     def readable(self):
-        if self.closed:
-            raise ValueError("I/O operation on closed file.")
         return True
 
     def writable(self):
-        if self.closed:
-            raise ValueError("I/O operation on closed file.")
         return True
 
     def seekable(self):
-        if self.closed:
-            raise ValueError("I/O operation on closed file.")
         return True
 
 
@@ -1216,10 +1201,8 @@ class BufferedRWPair(BufferedIOBase):
         return self.writer.flush()
 
     def close(self):
-        try:
-            self.writer.close()
-        finally:
-            self.reader.close()
+        self.writer.close()
+        self.reader.close()
 
     def isatty(self):
         return self.reader.isatty() or self.writer.isatty()
@@ -1468,7 +1451,7 @@ class TextIOWrapper(TextIOBase):
     enabled.  With this enabled, on input, the lines endings '\n', '\r',
     or '\r\n' are translated to '\n' before being returned to the
     caller. Conversely, on output, '\n' is translated to the system
-    default line separator, os.linesep. If newline is any other of its
+    default line seperator, os.linesep. If newline is any other of its
     legal values, that newline becomes the newline when the file is read
     and it is returned untranslated. On output, '\n' is converted to the
     newline.
@@ -1540,7 +1523,7 @@ class TextIOWrapper(TextIOBase):
     def __repr__(self):
         try:
             name = self.name
-        except Exception:
+        except AttributeError:
             return "<_pyio.TextIOWrapper encoding='{0}'>".format(self.encoding)
         else:
             return "<_pyio.TextIOWrapper name={0!r} encoding='{1}'>".format(
@@ -1563,8 +1546,6 @@ class TextIOWrapper(TextIOBase):
         return self._buffer
 
     def seekable(self):
-        if self.closed:
-            raise ValueError("I/O operation on closed file.")
         return self._seekable
 
     def readable(self):
@@ -1579,10 +1560,8 @@ class TextIOWrapper(TextIOBase):
 
     def close(self):
         if self.buffer is not None and not self.closed:
-            try:
-                self.flush()
-            finally:
-                self.buffer.close()
+            self.flush()
+            self.buffer.close()
 
     @property
     def closed(self):
@@ -2006,13 +1985,7 @@ class StringIO(TextIOWrapper):
 
     def getvalue(self):
         self.flush()
-        decoder = self._decoder or self._get_decoder()
-        old_state = decoder.getstate()
-        decoder.reset()
-        try:
-            return decoder.decode(self.buffer.getvalue(), final=True)
-        finally:
-            decoder.setstate(old_state)
+        return self.buffer.getvalue().decode(self._encoding, self._errors)
 
     def __repr__(self):
         # TextIOWrapper tells the encoding in its repr. In StringIO,

@@ -17,8 +17,7 @@ we have it for compatibility with CPython.
 #define staticforward static
 
 #define PyObject_HEAD  \
-    Py_ssize_t ob_refcnt;        \
-    Py_ssize_t ob_pypy_link;     \
+    long ob_refcnt;       \
     struct _typeobject *ob_type;
 
 #define PyObject_VAR_HEAD		\
@@ -26,7 +25,7 @@ we have it for compatibility with CPython.
 	Py_ssize_t ob_size; /* Number of items in variable part */
 
 #define PyObject_HEAD_INIT(type)	\
-	1, 0, type,
+	1, type,
 
 #define PyVarObject_HEAD_INIT(type, size)	\
 	PyObject_HEAD_INIT(type) size,
@@ -41,19 +40,19 @@ typedef struct {
 
 #ifdef PYPY_DEBUG_REFCOUNT
 /* Slow version, but useful for debugging */
-#define Py_INCREF(ob)   (Py_IncRef((PyObject *)(ob)))
-#define Py_DECREF(ob)   (Py_DecRef((PyObject *)(ob)))
-#define Py_XINCREF(ob)  (Py_IncRef((PyObject *)(ob)))
-#define Py_XDECREF(ob)  (Py_DecRef((PyObject *)(ob)))
+#define Py_INCREF(ob)   (Py_IncRef((PyObject *)ob))
+#define Py_DECREF(ob)   (Py_DecRef((PyObject *)ob))
+#define Py_XINCREF(ob)  (Py_IncRef((PyObject *)ob))
+#define Py_XDECREF(ob)  (Py_DecRef((PyObject *)ob))
 #else
 /* Fast version */
-#define Py_INCREF(ob)   (((PyObject *)(ob))->ob_refcnt++)
-#define Py_DECREF(op)                                   \
+#define Py_INCREF(ob)   (((PyObject *)ob)->ob_refcnt++)
+#define Py_DECREF(ob)                                   \
     do {                                                \
-        if (--((PyObject *)(op))->ob_refcnt != 0)       \
-            ;                                           \
+        if (((PyObject *)ob)->ob_refcnt > 1)            \
+            ((PyObject *)ob)->ob_refcnt--;              \
         else                                            \
-            _Py_Dealloc((PyObject *)(op));              \
+            Py_DecRef((PyObject *)ob);                  \
     } while (0)
 
 #define Py_XINCREF(op) do { if ((op) == NULL) ; else Py_INCREF(op); } while (0)
@@ -380,8 +379,6 @@ typedef struct {
     PyObject *ht_name, *ht_slots;
 } PyHeapTypeObject;
 
-#define PyObject_Bytes PyObject_Str
-
 /* Flag bits for printing: */
 #define Py_PRINT_RAW	1	/* No string quotes etc. */
 
@@ -566,13 +563,13 @@ typedef union _gc_head {
 #define Py_TRASHCAN_SAFE_END(pyObj)
 
 /* Copied from CPython ----------------------------- */
-PyAPI_FUNC(int) PyObject_AsReadBuffer(PyObject *, const void **, Py_ssize_t *);
-PyAPI_FUNC(int) PyObject_AsWriteBuffer(PyObject *, void **, Py_ssize_t *);
-PyAPI_FUNC(int) PyObject_CheckReadBuffer(PyObject *);
+int PyObject_AsReadBuffer(PyObject *, const void **, Py_ssize_t *);
+int PyObject_AsWriteBuffer(PyObject *, void **, Py_ssize_t *);
+int PyObject_CheckReadBuffer(PyObject *);
 
 
 /* PyPy internal ----------------------------------- */
-PyAPI_FUNC(int) PyPyType_Register(PyTypeObject *);
+int PyPyType_Register(PyTypeObject *);
 #define PyObject_Length PyObject_Size
 #define _PyObject_GC_Del PyObject_GC_Del
 

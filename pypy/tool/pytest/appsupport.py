@@ -1,5 +1,3 @@
-from inspect import CO_VARARGS, CO_VARKEYWORDS
-
 import py
 from pypy.interpreter import gateway, pycode
 from pypy.interpreter.error import OperationError
@@ -25,7 +23,7 @@ class AppCode(object):
         #    self.path = space.unwrap(space.getattr(
         self.path = py.path.local(space.str_w(self.w_file))
         self.space = space
-
+    
     def fullsource(self):
         filename = self.space.str_w(self.w_file)
         source = py.code.Source(py.std.linecache.getlines(filename))
@@ -37,13 +35,8 @@ class AppCode(object):
             return None
     fullsource = property(fullsource, None, None, "Full source of AppCode")
 
-    def getargs(self, var=False):
-        raw = self.raw
-        argcount = raw.co_argcount
-        if var:
-            argcount += raw.co_flags & CO_VARARGS
-            argcount += raw.co_flags & CO_VARKEYWORDS
-        return raw.co_varnames[:argcount]
+    def getargs(self):
+        return self.raw.co_varnames[:self.raw.co_argcount]
 
 class AppFrame(py.code.Frame):
 
@@ -58,15 +51,12 @@ class AppFrame(py.code.Frame):
         self.w_locals = space.getattr(pyframe, space.wrap('f_locals'))
         self.f_locals = self.w_locals   # for py.test's recursion detection
 
-    def get_w_globals(self):
-        return self.w_globals
-
     def eval(self, code, **vars):
         space = self.space
         for key, w_value in vars.items():
             space.setitem(self.w_locals, space.wrap(key), w_value)
         if isinstance(code, str):
-            return space.eval(code, self.get_w_globals(), self.w_locals)
+            return space.eval(code, self.w_globals, self.w_locals)
         pyc = pycode.PyCode._from_code(space, code)
         return pyc.exec_host_bytecode(self.w_globals, self.w_locals)
     exec_ = eval
@@ -80,10 +70,10 @@ class AppFrame(py.code.Frame):
     def is_true(self, w_value):
         return self.space.is_true(w_value)
 
-    def getargs(self, var=False):
+    def getargs(self):
         space = self.space
         retval = []
-        for arg in self.code.getargs(var):
+        for arg in self.code.getargs():
             w_val = space.finditem(self.w_locals, space.wrap(arg))
             if w_val is None:
                 w_val = space.wrap('<no value found>')
@@ -102,7 +92,6 @@ class AppExceptionInfo(py.code.ExceptionInfo):
         debug_excs = getattr(operr, 'debug_excs', [])
         if debug_excs:
             self._excinfo = debug_excs[0]
-        self.value = self.operr.errorstr(self.space)  # XXX
 
     def __repr__(self):
         return "<AppExceptionInfo %s>" % self.operr.errorstr(self.space)
@@ -110,28 +99,27 @@ class AppExceptionInfo(py.code.ExceptionInfo):
     def exconly(self, tryshort=True):
         return '(application-level) ' + self.operr.errorstr(self.space)
 
-    def errisinstance(self, exc):
-        clsname = exc.__name__
+    def errisinstance(self, exc): 
+        clsname = exc.__name__ 
         # we can only check for builtin exceptions
         # as there is no canonical applevel one for custom interplevel ones
         if exc.__module__ != "exceptions":
-            return False
-        try:
-            w_exc = getattr(self.space, 'w_' + clsname)
-        except KeyboardInterrupt:
-            raise
-        except:
-            pass
-        else:
-            return self.operr.match(self.space, w_exc)
-        return False
+            return False 
+        try: 
+            w_exc = getattr(self.space, 'w_' + clsname) 
+        except KeyboardInterrupt: 
+            raise 
+        except: 
+            pass 
+        else: 
+            return self.operr.match(self.space, w_exc) 
+        return False 
 
     def __str__(self):
         return '(application-level) ' + self.operr.errorstr(self.space)
 
 class AppTracebackEntry(py.code.Traceback.Entry):
     exprinfo = None
-    frame = None
 
     def __init__(self, space, tb):
         self.frame = AppFrame(space, space.getattr(tb, space.wrap('tb_frame')))
@@ -147,11 +135,8 @@ class AppTracebackEntry(py.code.Traceback.Entry):
         # XXX this reinterpret() is only here to prevent reinterpretation.
         return self.exprinfo
 
-    def ishidden(self):
-        return False
-
-class AppTraceback(py.code.Traceback):
-    Entry = AppTracebackEntry
+class AppTraceback(py.code.Traceback): 
+    Entry = AppTracebackEntry 
 
     def __init__(self, space, apptb):
         l = []
@@ -159,7 +144,7 @@ class AppTraceback(py.code.Traceback):
             l.append(self.Entry(space, apptb))
             apptb = space.getattr(apptb, space.wrap('tb_next'))
         list.__init__(self, l)
-
+    
 # ____________________________________________________________
 
 def build_pytest_assertion(space):
@@ -171,10 +156,10 @@ def build_pytest_assertion(space):
 ##        # Argh! we may see app-level helpers in the frame stack!
 ##        #       that's very probably very bad...
 ##        ^^^the above comment may be outdated, but we are not sure
-
+        
         # if the assertion provided a message, don't do magic
         args_w, kwargs_w = __args__.unpack()
-        if args_w:
+        if args_w: 
             w_msg = args_w[0]
         else:
             frame = space.getexecutioncontext().gettopframe()
@@ -182,7 +167,7 @@ def build_pytest_assertion(space):
             try:
                 source = runner.statement
                 source = str(source).strip()
-            except py.error.ENOENT:
+            except py.error.ENOENT: 
                 source = None
             from pypy import conftest
             if source and py.test.config._assertstate.mode != "off":
@@ -195,7 +180,7 @@ def build_pytest_assertion(space):
         space.setattr(w_self, space.wrap('msg'), w_msg)
 
     # build a new AssertionError class to replace the original one.
-    w_BuiltinAssertionError = space.getitem(space.builtin.w_dict,
+    w_BuiltinAssertionError = space.getitem(space.builtin.w_dict, 
                                             space.wrap('AssertionError'))
     w_metaclass = space.type(w_BuiltinAssertionError)
     w_init = space.wrap(gateway.interp2app_temp(my_init))
@@ -240,8 +225,7 @@ def pypyraises(space, w_ExpectedException, w_expr, __args__):
         frame = space.getexecutioncontext().gettopframe()
         w_locals = frame.getdictscope()
         pycode = frame.pycode
-        filename = "<%s:%s>" %(pycode.co_filename,
-                               space.int_w(frame.fget_f_lineno(space)))
+        filename = "<%s:%s>" %(pycode.co_filename, frame.f_lineno)
         lines = [x + "\n" for x in expr.split("\n")]
         py.std.linecache.cache[filename] = (1, None, lines, filename)
         w_locals = space.call_method(w_locals, 'copy')
@@ -251,7 +235,7 @@ def pypyraises(space, w_ExpectedException, w_expr, __args__):
         #if filename.endswith("pyc"):
         #    filename = filename[:-1]
         try:
-            space.exec_(str(source), frame.get_w_globals(), w_locals,
+            space.exec_(str(source), frame.w_globals, w_locals,
                         filename=filename)
         except OperationError, e:
             if e.match(space, w_ExpectedException):
@@ -269,9 +253,9 @@ def pypyraises(space, w_ExpectedException, w_expr, __args__):
 
 app_raises = gateway.interp2app_temp(pypyraises)
 
-def pypyskip(space, w_message):
-    """skip a test at app-level. """
-    msg = space.unwrap(w_message)
+def pypyskip(space, w_message): 
+    """skip a test at app-level. """ 
+    msg = space.unwrap(w_message) 
     py.test.skip(msg)
 
 app_skip = gateway.interp2app_temp(pypyskip)
@@ -286,3 +270,7 @@ def raises_w(space, w_ExpectedException, *args, **kwds):
     except py.test.raises.Exception, e:
         e.tbindex = getattr(e, 'tbindex', -1) - 1
         raise
+
+def eq_w(space, w_obj1, w_obj2): 
+    """ return interp-level boolean of eq(w_obj1, w_obj2). """ 
+    return space.is_true(space.eq(w_obj1, w_obj2))

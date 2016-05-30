@@ -21,8 +21,9 @@ typedef struct _ts {
 #define Py_END_ALLOW_THREADS	PyEval_RestoreThread(_save); \
 		 }
 
-enum {PyGILState_LOCKED, PyGILState_UNLOCKED};
-typedef int PyGILState_STATE;
+typedef
+    enum {PyGILState_LOCKED, PyGILState_UNLOCKED}
+        PyGILState_STATE;
 
 #define PyThreadState_GET() PyThreadState_Get()
 

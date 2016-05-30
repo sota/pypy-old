@@ -12,7 +12,7 @@ def setup_module(mod):
         raise OSError("'make' failed (see stderr)")
 
 class AppTestOVERLOADS:
-    spaceconfig = dict(usemodules=['cppyy', '_rawffi', 'itertools'])
+    spaceconfig = dict(usemodules=['cppyy', 'array'])
 
     def setup_class(cls):
         env = os.environ

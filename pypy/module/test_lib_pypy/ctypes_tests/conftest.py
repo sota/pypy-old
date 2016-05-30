@@ -8,7 +8,6 @@ def pytest_ignore_collect(path):
 def compile_so_file():
     from rpython.translator.platform import platform
     from rpython.translator.tool.cbuild import ExternalCompilationInfo
-    from rpython.translator import cdir
     udir = pytest.ensuretemp('_ctypes_test')
     cfile = py.path.local(__file__).dirpath().join("_ctypes_test.c")
 
@@ -16,8 +15,7 @@ def compile_so_file():
         libraries = ['oleaut32']
     else:
         libraries = []
-    eci = ExternalCompilationInfo(libraries=libraries,
-                                  include_dirs=[cdir])
+    eci = ExternalCompilationInfo(libraries=libraries)
 
     return platform.compile([cfile], eci, str(udir.join('_ctypes_test')),
                             standalone=False)

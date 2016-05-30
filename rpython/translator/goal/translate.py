@@ -7,24 +7,26 @@ Command-line options for translate:
 
 import os
 import sys
+from rpython.conftest import cache_dir
+
 import py
+# clean up early rpython/_cache
+try:
+    py.path.local(cache_dir).remove()
+except Exception:
+    pass
+
 from rpython.config.config import (to_optparse, OptionDescription, BoolOption,
     ArbitraryOption, StrOption, IntOption, Config, ChoiceOption, OptHelpFormatter)
 from rpython.config.translationoption import (get_combined_translation_config,
-    set_opt_level, OPT_LEVELS, DEFAULT_OPT_LEVEL, set_platform, CACHE_DIR)
-
-# clean up early rpython/_cache
-try:
-    py.path.local(CACHE_DIR).remove()
-except Exception:
-    pass
+    set_opt_level, final_check_config, OPT_LEVELS, DEFAULT_OPT_LEVEL, set_platform)
 
 
 GOALS = [
     ("annotate", "do type inference", "-a --annotate", ""),
     ("rtype", "do rtyping", "-t --rtype", ""),
     ("pyjitpl", "JIT generation step", "--pyjitpl", ""),
-    ("jittest", "JIT test with llgraph backend", "--pyjittest", ""),
+    ("jittest", "JIT test with llgraph backend", "--jittest", ""),
     ("backendopt", "do backend optimizations", "--backendopt", ""),
     ("source", "create source", "-s --source", ""),
     ("compile", "compile", "-c --compile", " (default goal)"),
@@ -145,10 +147,6 @@ def parse_options_and_load_target():
     else:
         show_help(translateconfig, opt_parser, None, config)
 
-    # print the version of the host
-    # (if it's PyPy, it includes the hg checksum)
-    log.info(sys.version)
-
     # apply the platform settings
     set_platform(config)
 
@@ -177,6 +175,9 @@ def parse_options_and_load_target():
     # based on the config
     if 'handle_config' in targetspec_dic:
         targetspec_dic['handle_config'](config, translateconfig)
+
+    # perform checks (if any) on the final config
+    final_check_config(config)
 
     return targetspec_dic, translateconfig, config, args
 
@@ -244,19 +245,17 @@ def main():
         tb = None
         if got_error:
             import traceback
-            stacktrace_errmsg = ["Error:\n"]
+            errmsg = ["Error:\n"]
             exc, val, tb = sys.exc_info()
-            stacktrace_errmsg.extend([" %s" % line for line in traceback.format_tb(tb)])
-            summary_errmsg = traceback.format_exception_only(exc, val)
+            errmsg.extend([" %s" % line for line in traceback.format_exception(exc, val, tb)])
             block = getattr(val, '__annotator_block', None)
             if block:
                 class FileLike:
                     def write(self, s):
-                        summary_errmsg.append(" %s" % s)
-                summary_errmsg.append("Processing block:\n")
+                        errmsg.append(" %s" % s)
+                errmsg.append("Processing block:\n")
                 t.about(block, FileLike())
-            log.info(''.join(stacktrace_errmsg))
-            log.ERROR(''.join(summary_errmsg))
+            log.ERROR(''.join(errmsg))
         else:
             log.event('Done.')
 
@@ -284,6 +283,8 @@ def main():
                                                        default_goal='compile')
         log_config(translateconfig, "translate.py configuration")
         if config.translation.jit:
+            if 'jitpolicy' not in targetspec_dic:
+                raise Exception('target has no jitpolicy defined.')
             if (translateconfig.goals != ['annotate'] and
                 translateconfig.goals != ['rtype']):
                 drv.set_extra_goals(['pyjitpl'])
@@ -308,9 +309,7 @@ def main():
                 samefile = this_exe.samefile(exe_name)
                 assert not samefile, (
                     'Output file %s is the currently running '
-                    'interpreter (please move the executable, and '
-                    'possibly its associated libpypy-c, somewhere else '
-                    'before you execute it)' % exe_name)
+                    'interpreter (use --output=...)' % exe_name)
             except EnvironmentError:
                 pass
 

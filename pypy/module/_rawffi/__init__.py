@@ -2,7 +2,6 @@
 """
 
 from pypy.interpreter.mixedmodule import MixedModule
-from pypy.module._rawffi import alt
 
 class Module(MixedModule):
     interpleveldefs = {
@@ -20,7 +19,6 @@ class Module(MixedModule):
         'wcharp2unicode'     : 'interp_rawffi.wcharp2unicode',
         'charp2rawstring'    : 'interp_rawffi.charp2rawstring',
         'wcharp2rawunicode'  : 'interp_rawffi.wcharp2rawunicode',
-        'rawstring2charp'    : 'interp_rawffi.rawstring2charp',
         'CallbackPtr'        : 'callback.W_CallbackPtr',
         '_num_of_allocated_objects' : 'tracker.num_of_allocated_objects',
         'get_libc'           : 'interp_rawffi.get_libc',
@@ -29,14 +27,9 @@ class Module(MixedModule):
         'get_last_error'     : 'interp_rawffi.get_last_error',
         'set_last_error'     : 'interp_rawffi.set_last_error',
         'SegfaultException'  : 'space.new_exception_class("_rawffi.SegfaultException")',
-        'exit'               : 'interp_exit.exit',
     }
 
     appleveldefs = {
-    }
-
-    submodules = {
-        'alt': alt.Module,
     }
 
     def buildloaders(cls):

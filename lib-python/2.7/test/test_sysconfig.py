@@ -7,15 +7,13 @@ import shutil
 import subprocess
 from copy import copy, deepcopy
 
-from test.test_support import (run_unittest, TESTFN, unlink, get_attribute,
-                               import_module, check_impl_detail)
+from test.test_support import run_unittest, TESTFN, unlink, get_attribute
 
 import sysconfig
 from sysconfig import (get_paths, get_platform, get_config_vars,
                        get_path, get_path_names, _INSTALL_SCHEMES,
                        _get_default_scheme, _expand_vars,
                        get_scheme_names, get_config_var)
-import _osx_support
 
 class TestSysConfig(unittest.TestCase):
 
@@ -139,7 +137,6 @@ class TestSysConfig(unittest.TestCase):
                    ('Darwin Kernel Version 8.11.1: '
                     'Wed Oct 10 18:23:28 PDT 2007; '
                     'root:xnu-792.25.20~1/RELEASE_I386'), 'PowerPC'))
-        _osx_support._remove_original_values(get_config_vars())
         get_config_vars()['MACOSX_DEPLOYMENT_TARGET'] = '10.3'
 
         get_config_vars()['CFLAGS'] = ('-fno-strict-aliasing -DNDEBUG -g '
@@ -159,7 +156,6 @@ class TestSysConfig(unittest.TestCase):
                    ('Darwin Kernel Version 8.11.1: '
                     'Wed Oct 10 18:23:28 PDT 2007; '
                     'root:xnu-792.25.20~1/RELEASE_I386'), 'i386'))
-        _osx_support._remove_original_values(get_config_vars())
         get_config_vars()['MACOSX_DEPLOYMENT_TARGET'] = '10.3'
 
         get_config_vars()['CFLAGS'] = ('-fno-strict-aliasing -DNDEBUG -g '
@@ -175,7 +171,6 @@ class TestSysConfig(unittest.TestCase):
             sys.maxint = maxint
 
         # macbook with fat binaries (fat, universal or fat64)
-        _osx_support._remove_original_values(get_config_vars())
         get_config_vars()['MACOSX_DEPLOYMENT_TARGET'] = '10.4'
         get_config_vars()['CFLAGS'] = ('-arch ppc -arch i386 -isysroot '
                                        '/Developer/SDKs/MacOSX10.4u.sdk  '
@@ -184,7 +179,6 @@ class TestSysConfig(unittest.TestCase):
 
         self.assertEqual(get_platform(), 'macosx-10.4-fat')
 
-        _osx_support._remove_original_values(get_config_vars())
         get_config_vars()['CFLAGS'] = ('-arch x86_64 -arch i386 -isysroot '
                                        '/Developer/SDKs/MacOSX10.4u.sdk  '
                                        '-fno-strict-aliasing -fno-common '
@@ -192,21 +186,18 @@ class TestSysConfig(unittest.TestCase):
 
         self.assertEqual(get_platform(), 'macosx-10.4-intel')
 
-        _osx_support._remove_original_values(get_config_vars())
         get_config_vars()['CFLAGS'] = ('-arch x86_64 -arch ppc -arch i386 -isysroot '
                                        '/Developer/SDKs/MacOSX10.4u.sdk  '
                                        '-fno-strict-aliasing -fno-common '
                                        '-dynamic -DNDEBUG -g -O3')
         self.assertEqual(get_platform(), 'macosx-10.4-fat3')
 
-        _osx_support._remove_original_values(get_config_vars())
         get_config_vars()['CFLAGS'] = ('-arch ppc64 -arch x86_64 -arch ppc -arch i386 -isysroot '
                                        '/Developer/SDKs/MacOSX10.4u.sdk  '
                                        '-fno-strict-aliasing -fno-common '
                                        '-dynamic -DNDEBUG -g -O3')
         self.assertEqual(get_platform(), 'macosx-10.4-universal')
 
-        _osx_support._remove_original_values(get_config_vars())
         get_config_vars()['CFLAGS'] = ('-arch x86_64 -arch ppc64 -isysroot '
                                        '/Developer/SDKs/MacOSX10.4u.sdk  '
                                        '-fno-strict-aliasing -fno-common '
@@ -214,8 +205,7 @@ class TestSysConfig(unittest.TestCase):
 
         self.assertEqual(get_platform(), 'macosx-10.4-fat64')
 
-        for arch in ('ppc', 'i386', 'x86_64', 'ppc64'):
-            _osx_support._remove_original_values(get_config_vars())
+        for arch in ('ppc', 'i386', 'ppc64', 'x86_64'):
             get_config_vars()['CFLAGS'] = ('-arch %s -isysroot '
                                            '/Developer/SDKs/MacOSX10.4u.sdk  '
                                            '-fno-strict-aliasing -fno-common '
@@ -246,25 +236,12 @@ class TestSysConfig(unittest.TestCase):
 
     def test_get_config_h_filename(self):
         config_h = sysconfig.get_config_h_filename()
-        # import_module skips the test when the CPython C Extension API
-        # appears to not be supported
-        self.assertTrue(os.path.isfile(config_h) or
-                        not import_module('_testcapi'), config_h)
+        self.assertTrue(os.path.isfile(config_h), config_h)
 
     def test_get_scheme_names(self):
         wanted = ('nt', 'nt_user', 'os2', 'os2_home', 'osx_framework_user',
                   'posix_home', 'posix_prefix', 'posix_user', 'pypy')
         self.assertEqual(get_scheme_names(), wanted)
-
-    @unittest.skipIf(check_impl_detail(pypy=True),
-                     'Test is not PyPy compatible')
-    @unittest.skipIf(sys.platform.startswith('win'),
-                     'Test is not Windows compatible')
-    def test_get_makefile_filename(self):
-        makefile = sysconfig.get_makefile_filename()
-        self.assertTrue(os.path.isfile(makefile), makefile)
-        # Issue 22199
-        self.assertEqual(sysconfig._get_makefile_filename(), makefile)
 
     def test_symlink(self):
         # Issue 7880

@@ -18,10 +18,14 @@ from rpython.rtyper.lltypesystem.lltype import cast_ptr_to_int as gc_id
 def weakref_create_getlazy(objgetter):
     return weakref_create(objgetter())
 
+malloc_nonmovable = malloc
 
 def shrink_array(p, smallersize):
     return False
 
+
+def thread_prepare():
+    pass
 
 def thread_run():
     pass
@@ -31,13 +35,3 @@ def thread_start():
 
 def thread_die():
     pass
-
-def pin(obj):
-    return False
-
-def unpin(obj):
-    raise AssertionError("pin() always returns False, "
-                         "so unpin() should not be called")
-
-def _is_pinned(obj):
-    return False

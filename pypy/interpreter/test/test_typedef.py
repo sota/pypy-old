@@ -341,28 +341,6 @@ class TestTypeDef:
         assert space.is_true(space.ne(w_a, w_b))
         assert not space.is_true(space.ne(w_b, w_c))
 
-    def test_class_attr(self):
-        class W_SomeType(W_Root):
-            pass
-
-        seen = []
-        def make_me(space):
-            seen.append(1)
-            return space.wrap("foobar")
-
-        W_SomeType.typedef = typedef.TypeDef(
-            'some_type',
-            abc = typedef.ClassAttr(make_me)
-            )
-        assert seen == []
-        self.space.appexec([W_SomeType()], """(x):
-            assert type(x).abc == "foobar"
-            assert x.abc == "foobar"
-            assert type(x).abc == "foobar"
-        """)
-        assert seen == [1]
-
-
 class AppTestTypeDef:
 
     def setup_class(cls):
@@ -401,7 +379,6 @@ class AppTestTypeDef:
         assert bm.im_class is B
         assert bm.__doc__ == "aaa"
         assert bm.x == 3
-        assert type(bm).__doc__ == "instancemethod(function, instance, class)\n\nCreate an instance method object."
         raises(AttributeError, setattr, bm, 'x', 15)
         l = []
         assert l.append.__self__ is l
@@ -410,16 +387,3 @@ class AppTestTypeDef:
         # because it's a regular method, and .__objclass__
         # differs from .im_class in case the method is
         # defined in some parent class of l's actual class
-
-    def test_classmethod_im_class(self):
-        class Foo(object):
-            @classmethod
-            def bar(cls):
-                pass
-        assert Foo.bar.im_class is type
-
-    def test_func_closure(self):
-        x = 2
-        def f():
-            return x
-        assert f.__closure__[0].cell_contents is x

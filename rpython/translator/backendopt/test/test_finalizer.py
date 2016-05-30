@@ -10,16 +10,18 @@ from rpython.conftest import option
 from rpython.rlib import rgc
 
 
-class TestFinalizerAnalyzer(object):
+class BaseFinalizerAnalyzerTests(object):
     """ Below are typical destructors that we encounter in pypy
     """
 
+    type_system = None
+    
     def analyze(self, func, sig, func_to_analyze=None, backendopt=False):
         if func_to_analyze is None:
             func_to_analyze = func
         t = TranslationContext()
         t.buildannotator().build_types(func, sig)
-        t.buildrtyper().specialize()
+        t.buildrtyper(type_system=self.type_system).specialize()
         if backendopt:
             backend_optimizations(t)
         if option.view:
@@ -59,10 +61,14 @@ def test_various_ops():
                                                           v3], None))
     assert not f.analyze(SpaceOperation('bare_setfield', [v1, Constant('z'),
                                                           v4], None))
+    
+        
+class TestLLType(BaseFinalizerAnalyzerTests):
+    type_system = 'lltype'
 
     def test_malloc(self):
         S = lltype.GcStruct('S')
-
+        
         def f():
             return lltype.malloc(S)
 
@@ -71,7 +77,7 @@ def test_various_ops():
 
     def test_raw_free_getfield(self):
         S = lltype.Struct('S')
-
+        
         class A(object):
             def __init__(self):
                 self.x = lltype.malloc(S, flavor='raw')
@@ -94,7 +100,7 @@ def test_various_ops():
         def g():
             p = lltype.malloc(C, 3, flavor='raw')
             f(p)
-
+        
         def f(p):
             c(rffi.ptradd(p, 0))
             lltype.free(p, flavor='raw')
@@ -106,7 +112,7 @@ def test_various_ops():
         class B(object):
             def __init__(self):
                 self.counter = 1
-
+        
         class A(object):
             def __init__(self):
                 self.x = B()
@@ -131,3 +137,6 @@ def test_various_ops():
             pass
         self.analyze(g, []) # did not explode
         py.test.raises(FinalizerError, self.analyze, f, [])
+
+class TestOOType(BaseFinalizerAnalyzerTests):
+    type_system = 'ootype'

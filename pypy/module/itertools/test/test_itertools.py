@@ -225,12 +225,6 @@ class AppTestItertools:
             assert it.next() == x
         raises(StopIteration, it.next)
 
-        # CPython implementation allows floats
-        it = itertools.islice([1, 2, 3, 4, 5], 0.0, 3.0, 2.0)
-        for x in [1, 3]:
-            assert it.next() == x
-        raises(StopIteration, it.next)
-
         it = itertools.islice([1, 2, 3], 0, None)
         for x in [1, 2, 3]:
             assert it.next() == x
@@ -242,19 +236,6 @@ class AppTestItertools:
         assert list(itertools.islice(xrange(10), None)) == range(10)
         assert list(itertools.islice(xrange(10), None,None)) == range(10)
         assert list(itertools.islice(xrange(10), None,None,None)) == range(10)
-
-        # check source iterator is not referenced from islice()
-        # after the latter has been exhausted
-        import weakref
-        for args in [(1,), (None,), (0, None, 2)]:
-            it = (x for x in (1, 2, 3))
-            wr = weakref.ref(it)
-            it = itertools.islice(it, *args)
-            assert wr() is not None
-            list(it)  # exhaust the iterator
-            import gc; gc.collect()
-            assert wr() is None
-            raises(StopIteration, next, it)
 
     def test_islice_dropitems_exact(self):
         import itertools
@@ -322,11 +303,6 @@ class AppTestItertools:
         raises(ValueError, itertools.islice, [], 0, 0, 0)
 
         raises(TypeError, itertools.islice, [], 0, 0, 0, 0)
-
-        # why not TypeError? Because CPython
-        raises(ValueError, itertools.islice, [], "a", 1, 2)
-        raises(ValueError, itertools.islice, [], 0, "a", 2)
-        raises(ValueError, itertools.islice, [], 0, 1, "a")
 
     def test_chain(self):
         import itertools
@@ -881,28 +857,6 @@ class AppTestItertools26:
         assert prod.next() == ()
         raises (StopIteration, prod.next)
 
-    def test_product_powers_of_two(self):
-        from itertools import product
-        assert list(product()) == [()]
-        assert list(product('ab')) == [('a',), ('b',)]
-        assert list(product('ab', 'cd')) == [
-            ('a', 'c'), ('a', 'd'),
-            ('b', 'c'), ('b', 'd')]
-        assert list(product('ab', 'cd', 'ef')) == [
-            ('a', 'c', 'e'), ('a', 'c', 'f'),
-            ('a', 'd', 'e'), ('a', 'd', 'f'),
-            ('b', 'c', 'e'), ('b', 'c', 'f'),
-            ('b', 'd', 'e'), ('b', 'd', 'f')]
-
-    def test_product_empty_item(self):
-        from itertools import product
-        assert list(product('')) == []
-        assert list(product('ab', '')) == []
-        assert list(product('', 'cd')) == []
-        assert list(product('ab', 'cd', '')) == []
-        assert list(product('ab', '', 'ef')) == []
-        assert list(product('', 'cd', 'ef')) == []
-
     def test_permutations(self):
         from itertools import permutations
         assert list(permutations('AB')) == [('A', 'B'), ('B', 'A')]
@@ -1091,18 +1045,3 @@ class AppTestItertools27:
                 assert list(itertools.islice(c2, 3)) == expected
                 c3 = pickle.loads(pickle.dumps(c))
                 assert list(itertools.islice(c3, 3)) == expected
-
-    def test_islice_attack(self):
-        import itertools
-        class Iterator(object):
-            first = True
-            def __iter__(self):
-                return self
-            def next(self):
-                if self.first:
-                    self.first = False
-                    list(islice)
-                return 52
-        myiter = Iterator()
-        islice = itertools.islice(myiter, 5, 8)
-        raises(StopIteration, islice.next)

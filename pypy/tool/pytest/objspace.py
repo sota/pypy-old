@@ -37,6 +37,7 @@ def maketestobjspace(config=None):
     space.setitem(space.builtin.w_dict, space.wrap('skip'),
                   space.wrap(appsupport.app_skip))
     space.raises_w = appsupport.raises_w.__get__(space)
+    space.eq_w = appsupport.eq_w.__get__(space)
     return space
 
 
@@ -48,6 +49,9 @@ class TinyObjSpace(object):
             if key == 'usemodules':
                 if info is not None:
                     for modname in value:
+                        if modname == 'time':
+                            continue   # always either 'time' or 'rctime',
+                                       # and any is fine
                         ok = info.get('objspace.usemodules.%s' % modname,
                                       False)
                         if not ok:
@@ -89,9 +93,6 @@ class TinyObjSpace(object):
 
     def is_true(self, obj):
         return bool(obj)
-
-    def is_none(self, obj):
-        return obj is None
 
     def str_w(self, w_str):
         return w_str

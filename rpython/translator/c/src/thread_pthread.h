@@ -59,26 +59,14 @@ struct RPyOpaque_ThreadLock {
 
 /* prototypes */
 
-RPY_EXTERN
+long RPyThreadGetIdent(void);
 long RPyThreadStart(void (*func)(void));
-RPY_EXTERN
 int RPyThreadLockInit(struct RPyOpaque_ThreadLock *lock);
-RPY_EXTERN
 void RPyOpaqueDealloc_ThreadLock(struct RPyOpaque_ThreadLock *lock);
-RPY_EXTERN
 int RPyThreadAcquireLock(struct RPyOpaque_ThreadLock *lock, int waitflag);
-RPY_EXTERN
 RPyLockStatus RPyThreadAcquireLockTimed(struct RPyOpaque_ThreadLock *lock,
 					RPY_TIMEOUT_T timeout, int intr_flag);
-RPY_EXTERN
-long RPyThreadReleaseLock(struct RPyOpaque_ThreadLock *lock);
-RPY_EXTERN
+void RPyThreadReleaseLock(struct RPyOpaque_ThreadLock *lock);
 long RPyThreadGetStackSize(void);
-RPY_EXTERN
 long RPyThreadSetStackSize(long);
-RPY_EXTERN
 void RPyThreadAfterFork(void);
-
-
-#define lock_test_and_set(ptr, value)  __sync_lock_test_and_set(ptr, value)
-#define lock_release(ptr)              __sync_lock_release(ptr)

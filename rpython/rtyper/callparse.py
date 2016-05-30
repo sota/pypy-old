@@ -4,14 +4,9 @@ from rpython.rtyper import rtuple
 from rpython.rtyper.error import TyperError
 from rpython.rtyper.lltypesystem import lltype
 
-class ArgumentsForRtype(ArgumentsForTranslation):
-    def newtuple(self, items):
-        return NewTupleHolder(items)
+class CallPatternTooComplex(TyperError):
+    pass
 
-    def unpackiterable(self, it):
-        assert it.is_tuple()
-        items = it.items()
-        return list(items)
 
 def getrinputs(rtyper, graph):
     """Return the list of reprs of the input arguments to the 'graph'."""
@@ -19,7 +14,7 @@ def getrinputs(rtyper, graph):
 
 def getrresult(rtyper, graph):
     """Return the repr of the result variable of the 'graph'."""
-    if graph.getreturnvar().annotation is not None:
+    if graph.getreturnvar() in rtyper.annotator.bindings:
         return rtyper.bindingrepr(graph.getreturnvar())
     else:
         return lltype.Void
@@ -31,10 +26,11 @@ def getsig(rtyper, graph):
             getrinputs(rtyper, graph),
             getrresult(rtyper, graph))
 
-def callparse(rtyper, graph, hop, r_self=None):
+def callparse(rtyper, graph, hop, opname, r_self=None):
     """Parse the arguments of 'hop' when calling the given 'graph'.
     """
     rinputs = getrinputs(rtyper, graph)
+    space = RPythonCallsSpace()
     def args_h(start):
         return [VarHolder(i, hop.args_s[i])
                         for i in range(start, hop.nb_args)]
@@ -43,11 +39,10 @@ def callparse(rtyper, graph, hop, r_self=None):
     else:
         start = 0
         rinputs[0] = r_self
-    opname = hop.spaceop.opname
     if opname == "simple_call":
-        arguments =  ArgumentsForRtype(args_h(start))
+        arguments =  ArgumentsForTranslation(space, args_h(start))
     elif opname == "call_args":
-        arguments = ArgumentsForRtype.fromshape(
+        arguments = ArgumentsForTranslation.fromshape(space,
                 hop.args_s[start].const, # shape
                 args_h(start+1))
     # parse the arguments according to the function we are calling
@@ -59,8 +54,7 @@ def callparse(rtyper, graph, hop, r_self=None):
     try:
         holders = arguments.match_signature(signature, defs_h)
     except ArgErr, e:
-        raise TyperError("signature mismatch: %s: %s" % (
-            graph.name, e.getmsg()))
+        raise TyperError, "signature mismatch: %s" % e.getmsg(graph.name)
 
     assert len(holders) == len(rinputs), "argument parsing mismatch"
     vlist = []
@@ -143,7 +137,7 @@ class NewTupleHolder(Holder):
         return self.holders
 
     def _emit(self, repr, hop):
-        assert isinstance(repr, rtuple.TupleRepr)
+        assert isinstance(repr, rtuple.AbstractTupleRepr)
         tupleitems_v = []
         for h in self.holders:
             v = h.emit(repr.items_r[len(tupleitems_v)], hop)
@@ -162,3 +156,34 @@ class ItemHolder(Holder):
         r_tup, v_tuple = self.holder.access(hop)
         v = r_tup.getitem_internal(hop, v_tuple, index)
         return hop.llops.convertvar(v, r_tup.items_r[index], repr)
+
+# for parsing call arguments
+class RPythonCallsSpace:
+    """Pseudo Object Space providing almost no real operation.
+    For the Arguments class: if it really needs other operations, it means
+    that the call pattern is too complex for R-Python.
+    """
+    w_tuple = NewTupleHolder
+    def newtuple(self, items):
+        return NewTupleHolder(items)
+
+    def newdict(self):
+        raise CallPatternTooComplex, "'**' argument"
+
+    def unpackiterable(self, it, expected_length=None):
+        if it.is_tuple():
+            items = it.items()
+            if (expected_length is not None and
+                expected_length != len(items)):
+                raise ValueError
+            return list(items)
+        raise CallPatternTooComplex, "'*' argument must be a tuple"
+    fixedview = unpackiterable
+    listview = unpackiterable
+
+    def is_w(self, one, other):
+        return one is other
+
+    def type(self, item):
+        return type(item)
+

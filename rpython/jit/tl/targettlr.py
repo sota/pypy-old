@@ -29,9 +29,14 @@ def load_bytecode(filename):
     return bytecode
 
 def target(driver, args):
-    return entry_point
+    return entry_point, None
 
 # ____________________________________________________________
+
+from rpython.jit.codewriter.policy import JitPolicy
+
+def jitpolicy(driver):
+    return JitPolicy()
 
 if __name__ == '__main__':
     import sys

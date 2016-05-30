@@ -25,20 +25,6 @@ class AppTestTextIO:
         t = _io.TextIOWrapper(b)
         assert t.readable()
         assert t.seekable()
-        #
-        class CustomFile(object):
-            def isatty(self): return 'YES'
-            readable = writable = seekable = lambda self: False
-        t = _io.TextIOWrapper(CustomFile())
-        assert t.isatty() == 'YES'
-
-    def test_default_implementations(self):
-        import _io
-        file = _io._TextIOBase()
-        raises(_io.UnsupportedOperation, file.read)
-        raises(_io.UnsupportedOperation, file.seek, 0)
-        raises(_io.UnsupportedOperation, file.readline)
-        raises(_io.UnsupportedOperation, file.detach)
 
     def test_unreadable(self):
         import _io
@@ -57,13 +43,6 @@ class AppTestTextIO:
         raises(ValueError, f.close)
         raises(ValueError, f.detach)
         raises(ValueError, f.flush)
-
-        # Operations independent of the detached stream should still work
-        repr(f)
-        assert isinstance(f.encoding, str)
-        assert f.errors == "strict"
-        assert not f.line_buffering
-
         assert not b.closed
         b.close()
 
@@ -123,13 +102,6 @@ class AppTestTextIO:
             f.seek(0)
             assert f.read() == data * 2
             assert buf.getvalue() == (data * 2).encode(encoding)
-
-    def test_writelines_error(self):
-        import _io
-        txt = _io.TextIOWrapper(_io.BytesIO())
-        raises(TypeError, txt.writelines, [1, 2, 3])
-        raises(TypeError, txt.writelines, None)
-        raises(TypeError, txt.writelines, b'abc')
 
     def test_tell(self):
         import _io
@@ -227,50 +199,9 @@ class AppTestTextIO:
         b.name = "dummy"
         assert repr(t) == "<_io.TextIOWrapper name='dummy' encoding='utf-8'>"
 
-    def test_flush_error_on_close(self):
-        import _io
-        txt = _io.TextIOWrapper(_io.BytesIO(b""), encoding="ascii")
-        def bad_flush():
-            raise IOError()
-        txt.flush = bad_flush
-        raises(IOError, txt.close)  # exception not swallowed
-        assert txt.closed
-
-    def test_illegal_decoder(self):
-        import _io
-        t = _io.TextIOWrapper(_io.BytesIO(b'aaaaaa'), newline='\n',
-                             encoding='quopri_codec')
-        raises(TypeError, t.read, 1)
-        t = _io.TextIOWrapper(_io.BytesIO(b'aaaaaa'), newline='\n',
-                             encoding='quopri_codec')
-        raises(TypeError, t.readline)
-        t = _io.TextIOWrapper(_io.BytesIO(b'aaaaaa'), newline='\n',
-                             encoding='quopri_codec')
-        raises(TypeError, t.read)
-
-    def test_read_nonbytes(self):
-        import _io
-        class NonbytesStream(_io.StringIO):
-            read1 = _io.StringIO.read
-        t = _io.TextIOWrapper(NonbytesStream(u'a'))
-        raises(TypeError, t.read, 1)
-        t = _io.TextIOWrapper(NonbytesStream(u'a'))
-        raises(TypeError, t.readline)
-        t = _io.TextIOWrapper(NonbytesStream(u'a'))
-        t.read() == u'a'
-
-    def test_uninitialized(self):
-        import _io
-        t = _io.TextIOWrapper.__new__(_io.TextIOWrapper)
-        del t
-        t = _io.TextIOWrapper.__new__(_io.TextIOWrapper)
-        raises(Exception, repr, t)
-        raises(ValueError, t.read, 0)
-        t.__init__(_io.BytesIO())
-        assert t.read(0) == u''
-
 
 class AppTestIncrementalNewlineDecoder:
+
     def test_newline_decoder(self):
         import _io
         def check_newline_decoding_utf8(decoder):

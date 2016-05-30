@@ -43,9 +43,6 @@ class _TriggerThread(threading.Thread):
 
 class BlockingTestMixin:
 
-    def tearDown(self):
-        self.t = None
-
     def do_blocking_test(self, block_func, block_args, trigger_func, trigger_args):
         self.t = _TriggerThread(trigger_func, trigger_args)
         self.t.start()
@@ -82,7 +79,7 @@ class BlockingTestMixin:
                 self.fail("trigger thread ended but event never set")
 
 
-class BaseQueueTest(BlockingTestMixin):
+class BaseQueueTest(unittest.TestCase, BlockingTestMixin):
     def setUp(self):
         self.cum = 0
         self.cumlock = threading.Lock()
@@ -194,13 +191,13 @@ class BaseQueueTest(BlockingTestMixin):
         self.simple_queue_test(q)
 
 
-class QueueTest(BaseQueueTest, unittest.TestCase):
+class QueueTest(BaseQueueTest):
     type2test = Queue.Queue
 
-class LifoQueueTest(BaseQueueTest, unittest.TestCase):
+class LifoQueueTest(BaseQueueTest):
     type2test = Queue.LifoQueue
 
-class PriorityQueueTest(BaseQueueTest, unittest.TestCase):
+class PriorityQueueTest(BaseQueueTest):
     type2test = Queue.PriorityQueue
 
 
@@ -225,7 +222,7 @@ class FailingQueue(Queue.Queue):
             raise FailingQueueException, "You Lose"
         return Queue.Queue._get(self)
 
-class FailingQueueTest(BlockingTestMixin, unittest.TestCase):
+class FailingQueueTest(unittest.TestCase, BlockingTestMixin):
 
     def failing_queue_test(self, q):
         if not q.empty():

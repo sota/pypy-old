@@ -1,15 +1,13 @@
 from rpython.rlib import rmd5
-from rpython.rlib.objectmodel import import_from_mixin
 from pypy.interpreter.baseobjspace import W_Root
 from pypy.interpreter.typedef import TypeDef
 from pypy.interpreter.gateway import interp2app, unwrap_spec
 
 
-class W_MD5(W_Root):
+class W_MD5(W_Root, rmd5.RMD5):
     """
     A subclass of RMD5 that can be exposed to app-level.
     """
-    import_from_mixin(rmd5.RMD5)
 
     def __init__(self, space):
         self.space = space

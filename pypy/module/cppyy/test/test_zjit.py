@@ -120,7 +120,7 @@ class FakeSpace(object):
             return FakeInt(int(obj))
         assert 0
 
-    def float_w(self, w_obj, allow_conversion=True):
+    def float_w(self, w_obj):
         assert isinstance(w_obj, FakeFloat)
         return w_obj.val
 
@@ -132,7 +132,7 @@ class FakeSpace(object):
         return w_obj
     interp_w._annspecialcase_ = 'specialize:arg(1)'
 
-    def getarg_w(self, code, w_obj):    # for retrieving buffers
+    def buffer_w(self, w_obj):
         return FakeBuffer(w_obj)
 
     def exception_match(self, typ, sub):
@@ -141,7 +141,7 @@ class FakeSpace(object):
     def is_w(self, w_one, w_two):
         return w_one is w_two
 
-    def int_w(self, w_obj, allow_conversion=True):
+    def int_w(self, w_obj):
         assert isinstance(w_obj, FakeInt)
         return w_obj.val
 

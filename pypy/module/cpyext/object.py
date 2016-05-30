@@ -6,7 +6,7 @@ from pypy.module.cpyext.api import (
     Py_GE, CONST_STRING, FILEP, fwrite)
 from pypy.module.cpyext.pyobject import (
     PyObject, PyObjectP, create_ref, from_ref, Py_IncRef, Py_DecRef,
-    get_typedescr, _Py_NewReference)
+    track_reference, get_typedescr, _Py_NewReference, RefcountState)
 from pypy.module.cpyext.typeobject import PyTypeObjectPtr
 from pypy.module.cpyext.pyerrors import PyErr_NoMemory, PyErr_BadInternalCall
 from pypy.objspace.std.typeobject import W_TypeObject
@@ -17,8 +17,7 @@ import pypy.module.__builtin__.operation as operation
 @cpython_api([Py_ssize_t], rffi.VOIDP)
 def PyObject_MALLOC(space, size):
     return lltype.malloc(rffi.VOIDP.TO, size,
-                         flavor='raw', zero=True,
-                         add_memory_pressure=True)
+                         flavor='raw', zero=True)
 
 @cpython_api([rffi.VOIDP], lltype.Void)
 def PyObject_FREE(space, ptr):
@@ -32,9 +31,9 @@ def _PyObject_New(space, type):
 def _PyObject_NewVar(space, type, itemcount):
     w_type = from_ref(space, rffi.cast(PyObject, type))
     assert isinstance(w_type, W_TypeObject)
-    typedescr = get_typedescr(w_type.layout.typedef)
+    typedescr = get_typedescr(w_type.instancetypedef)
     py_obj = typedescr.allocate(space, w_type, itemcount=itemcount)
-    #py_obj.c_ob_refcnt = 0 --- will be set to 1 again by PyObject_Init{Var}
+    py_obj.c_ob_refcnt = 0
     if type.c_tp_itemsize == 0:
         w_obj = PyObject_Init(space, py_obj, type)
     else:
@@ -340,7 +339,7 @@ def PyObject_IsInstance(space, w_inst, w_cls):
     of the value of that attribute with cls will be used to determine the result
     of this function."""
     from pypy.module.__builtin__.abstractinst import abstract_isinstance_w
-    return abstract_isinstance_w(space, w_inst, w_cls, allow_override=True)
+    return abstract_isinstance_w(space, w_inst, w_cls)
 
 @cpython_api([PyObject, PyObject], rffi.INT_real, error=-1)
 def PyObject_IsSubclass(space, w_derived, w_cls):
@@ -351,7 +350,7 @@ def PyObject_IsSubclass(space, w_derived, w_cls):
     0. If either derived or cls is not an actual class object (or tuple),
     this function uses the generic algorithm described above."""
     from pypy.module.__builtin__.abstractinst import abstract_issubclass_w
-    return abstract_issubclass_w(space, w_derived, w_cls, allow_override=True)
+    return abstract_issubclass_w(space, w_derived, w_cls)
 
 @cpython_api([PyObject], rffi.INT_real, error=-1)
 def PyObject_AsFileDescriptor(space, w_obj):
@@ -447,8 +446,11 @@ def PyObject_Print(space, w_obj, fp, flags):
 
     count = space.len_w(w_str)
     data = space.str_w(w_str)
-    with rffi.scoped_nonmovingbuffer(data) as buf:
+    buf = rffi.get_nonmovingbuffer(data)
+    try:
         fwrite(buf, 1, count, fp)
+    finally:
+        rffi.free_nonmovingbuffer(data, buf)
     return 0
 
 

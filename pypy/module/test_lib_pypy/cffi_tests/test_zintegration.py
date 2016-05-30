@@ -4,9 +4,6 @@ import imp
 import subprocess
 from pypy.module.test_lib_pypy.cffi_tests.udir import udir
 
-if sys.platform == 'win32':
-    py.test.skip('snippets do not run on win32')
-
 def create_venv(name):
     tmpdir = udir.join(name)
     try:
@@ -15,23 +12,6 @@ def create_venv(name):
                                str(tmpdir)])
     except OSError as e:
         py.test.skip("Cannot execute virtualenv: %s" % (e,))
-
-    try:
-        deepcopy = os.symlink
-    except:
-        import shutil, errno
-        def deepcopy(src, dst):
-            try:
-                shutil.copytree(src, dst)
-            except OSError as e:
-                if e.errno in (errno.ENOTDIR, errno.EINVAL):
-                    shutil.copy(src, dst)
-                else:
-                    print('got errno')
-                    print(e.errno)
-                    print('not')
-                    print(errno.ENOTDIR)
-                    raise
 
     site_packages = None
     for dirpath, dirnames, filenames in os.walk(str(tmpdir)):
@@ -44,15 +24,9 @@ def create_venv(name):
             modules = ('cffi', '_cffi_backend')
         except ImportError:
             modules = ('cffi', '_cffi_backend', 'pycparser')
-            try:
-                import ply
-            except ImportError:
-                pass
-            else:
-                modules += ('ply',)   # needed for older versions of pycparser
         for module in modules:
             target = imp.find_module(module)[1]
-            deepcopy(target, os.path.join(site_packages,
+            os.symlink(target, os.path.join(site_packages,
                                             os.path.basename(target)))
     return tmpdir
 
@@ -71,11 +45,7 @@ def really_run_setup_and_program(dirname, venv_dir, python_snippet):
     python_f.write(py.code.Source(python_snippet))
     try:
         os.chdir(str(SNIPPET_DIR.join(dirname)))
-        if os.name == 'nt':
-            bindir = 'Scripts'
-        else:
-            bindir = 'bin'
-        vp = str(venv_dir.join(bindir).join('python'))
+        vp = str(venv_dir.join('bin/python'))
         subprocess.check_call((vp, 'setup.py', 'clean'))
         subprocess.check_call((vp, 'setup.py', 'install'))
         subprocess.check_call((vp, str(python_f)))
@@ -97,55 +67,50 @@ def run_setup_and_program(dirname, python_snippet):
     assert not os.path.exists(str(SNIPPET_DIR.join(dirname, 'lextab.py')))
     assert not os.path.exists(str(SNIPPET_DIR.join(dirname, 'yacctab.py')))
 
-class TestZIntegration(object):
-    def teardown_class(self):
-        if udir.isdir():
-            udir.remove(ignore_errors=True)
+def test_infrastructure():
+    run_setup_and_program('infrastructure', '''
+    import snip_infrastructure
+    assert snip_infrastructure.func() == 42
+    ''')
 
-    def test_infrastructure(self):
-        run_setup_and_program('infrastructure', '''
-        import snip_infrastructure
-        assert snip_infrastructure.func() == 42
-        ''')
+def test_distutils_module():
+    run_setup_and_program("distutils_module", '''
+    import snip_basic_verify
+    p = snip_basic_verify.C.getpwuid(0)
+    assert snip_basic_verify.ffi.string(p.pw_name) == b"root"
+    ''')
 
-    def test_distutils_module(self):
-        run_setup_and_program("distutils_module", '''
-        import snip_basic_verify
-        p = snip_basic_verify.C.getpwuid(0)
-        assert snip_basic_verify.ffi.string(p.pw_name) == b"root"
-        ''')
+def test_distutils_package_1():
+    run_setup_and_program("distutils_package_1", '''
+    import snip_basic_verify1
+    p = snip_basic_verify1.C.getpwuid(0)
+    assert snip_basic_verify1.ffi.string(p.pw_name) == b"root"
+    ''')
 
-    def test_distutils_package_1(self):
-        run_setup_and_program("distutils_package_1", '''
-        import snip_basic_verify1
-        p = snip_basic_verify1.C.getpwuid(0)
-        assert snip_basic_verify1.ffi.string(p.pw_name) == b"root"
-        ''')
+def test_distutils_package_2():
+    run_setup_and_program("distutils_package_2", '''
+    import snip_basic_verify2
+    p = snip_basic_verify2.C.getpwuid(0)
+    assert snip_basic_verify2.ffi.string(p.pw_name) == b"root"
+    ''')
 
-    def test_distutils_package_2(self):
-        run_setup_and_program("distutils_package_2", '''
-        import snip_basic_verify2
-        p = snip_basic_verify2.C.getpwuid(0)
-        assert snip_basic_verify2.ffi.string(p.pw_name) == b"root"
-        ''')
+def test_setuptools_module():
+    run_setup_and_program("setuptools_module", '''
+    import snip_setuptools_verify
+    p = snip_setuptools_verify.C.getpwuid(0)
+    assert snip_setuptools_verify.ffi.string(p.pw_name) == b"root"
+    ''')
 
-    def test_setuptools_module(self):
-        run_setup_and_program("setuptools_module", '''
-        import snip_setuptools_verify
-        p = snip_setuptools_verify.C.getpwuid(0)
-        assert snip_setuptools_verify.ffi.string(p.pw_name) == b"root"
-        ''')
+def test_setuptools_package_1():
+    run_setup_and_program("setuptools_package_1", '''
+    import snip_setuptools_verify1
+    p = snip_setuptools_verify1.C.getpwuid(0)
+    assert snip_setuptools_verify1.ffi.string(p.pw_name) == b"root"
+    ''')
 
-    def test_setuptools_package_1(self):
-        run_setup_and_program("setuptools_package_1", '''
-        import snip_setuptools_verify1
-        p = snip_setuptools_verify1.C.getpwuid(0)
-        assert snip_setuptools_verify1.ffi.string(p.pw_name) == b"root"
-        ''')
-
-    def test_setuptools_package_2(self):
-        run_setup_and_program("setuptools_package_2", '''
-        import snip_setuptools_verify2
-        p = snip_setuptools_verify2.C.getpwuid(0)
-        assert snip_setuptools_verify2.ffi.string(p.pw_name) == b"root"
-        ''')
+def test_setuptools_package_2():
+    run_setup_and_program("setuptools_package_2", '''
+    import snip_setuptools_verify2
+    p = snip_setuptools_verify2.C.getpwuid(0)
+    assert snip_setuptools_verify2.ffi.string(p.pw_name) == b"root"
+    ''')

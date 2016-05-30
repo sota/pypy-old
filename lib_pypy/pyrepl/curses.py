@@ -19,15 +19,11 @@
 # CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
 # CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
-# If we are running on top of pypy, we import only _minimal_curses.
-# Don't try to fall back to _curses, because that's going to use cffi
-# and fall again more loudly.
-import sys
-if '__pypy__' in sys.builtin_module_names:
+# avoid importing the whole curses, if possible
+try:
     # pypy case
     import _minimal_curses as _curses
-else:
-    # cpython case
+except ImportError:
     try:
         import _curses
     except ImportError:

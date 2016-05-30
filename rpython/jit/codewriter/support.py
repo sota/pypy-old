@@ -1,24 +1,21 @@
 import sys
 
 from rpython.annotator import model as annmodel
-from rpython.rtyper.llannotation import lltype_to_annotation
 from rpython.annotator.policy import AnnotatorPolicy
 from rpython.flowspace.model import Variable, Constant
 from rpython.jit.metainterp.typesystem import deref
 from rpython.rlib import rgc
 from rpython.rlib.jit import elidable, oopspec
 from rpython.rlib.rarithmetic import r_longlong, r_ulonglong, r_uint, intmask
-from rpython.rlib.rarithmetic import LONG_BIT
 from rpython.rtyper import rlist
-from rpython.rtyper.lltypesystem import rlist as rlist_ll
 from rpython.rtyper.annlowlevel import MixLevelHelperAnnotator
 from rpython.rtyper.extregistry import ExtRegistryEntry
 from rpython.rtyper.llinterp import LLInterpreter
-from rpython.rtyper.lltypesystem import lltype, rffi, llmemory, rstr as ll_rstr, rdict as ll_rdict
-from rpython.rtyper import rclass
-from rpython.rtyper.lltypesystem import rordereddict
+from rpython.rtyper.lltypesystem import lltype, rclass, rffi, llmemory, rstr as ll_rstr, rdict as ll_rdict
 from rpython.rtyper.lltypesystem.lloperation import llop
 from rpython.rtyper.lltypesystem.module import ll_math
+from rpython.rtyper.ootypesystem import ootype, rdict as oo_rdict
+from rpython.translator.simplify import get_funcobj
 from rpython.translator.translator import TranslationContext
 from rpython.translator.unsimplify import split_block
 
@@ -34,11 +31,11 @@ def _annotation(a, x):
     if T == lltype.Ptr(ll_rstr.STR):
         t = str
     else:
-        t = lltype_to_annotation(T)
+        t = annmodel.lltype_to_annotation(T)
     return a.typeannotation(t)
 
 def annotate(func, values, inline=None, backendoptimize=True,
-             translationoptions={}):
+             type_system="lltype", translationoptions={}):
     # build the normal ll graphs for ll_function
     t = TranslationContext()
     for key, value in translationoptions.items():
@@ -47,7 +44,7 @@ def annotate(func, values, inline=None, backendoptimize=True,
     a = t.buildannotator(policy=annpolicy)
     argtypes = getargtypes(a, values)
     a.build_types(func, argtypes, main_entry_point=True)
-    rtyper = t.buildrtyper()
+    rtyper = t.buildrtyper(type_system = type_system)
     rtyper.specialize()
     #if inline:
     #    auto_inlining(t, threshold=inline)
@@ -77,7 +74,7 @@ def autodetect_jit_markers_redvars(graph):
             # another block, so the set of alive_v will be different.
             methname = op.args[0].value
             assert methname == 'jit_merge_point', (
-                "reds='auto' is supported only for jit drivers which "
+                "reds='auto' is supported only for jit drivers which " 
                 "calls only jit_merge_point. Found a call to %s" % methname)
             #
             # compute the set of live variables across the jit_marker
@@ -98,9 +95,8 @@ def autodetect_jit_markers_redvars(graph):
             op.args.extend(reds_v)
             if jitdriver.numreds is None:
                 jitdriver.numreds = len(reds_v)
-            elif jitdriver.numreds != len(reds_v):
-                raise AssertionError("there are multiple jit_merge_points "
-                                     "with the same jitdriver")
+            else:
+                assert jitdriver.numreds == len(reds_v), 'inconsistent number of reds_v'
 
 def split_before_jit_merge_point(graph, portalblock, portalopindex):
     """Split the block just before the 'jit_merge_point',
@@ -108,7 +104,7 @@ def split_before_jit_merge_point(graph, portalblock, portalopindex):
     """
     # split the block just before the jit_merge_point()
     if portalopindex > 0:
-        link = split_block(portalblock, portalopindex)
+        link = split_block(None, portalblock, portalopindex)
         portalblock = link.target
     portalop = portalblock.operations[0]
     # split again, this time enforcing the order of the live vars
@@ -116,7 +112,7 @@ def split_before_jit_merge_point(graph, portalblock, portalopindex):
     assert portalop.opname == 'jit_marker'
     assert portalop.args[0].value == 'jit_merge_point'
     greens_v, reds_v = decode_hp_hint_args(portalop)
-    link = split_block(portalblock, 0, greens_v + reds_v)
+    link = split_block(None, portalblock, 0, greens_v + reds_v)
     return link.target
 
 def sort_vars(args_v):
@@ -153,7 +149,7 @@ def decode_hp_hint_args(op):
 def maybe_on_top_of_llinterp(rtyper, fnptr):
     # Run a generated graph on top of the llinterp for testing.
     # When translated, this just returns the fnptr.
-    funcobj = fnptr._obj
+    funcobj = get_funcobj(fnptr)
     if hasattr(funcobj, 'graph'):
         llinterp = LLInterpreter(rtyper)  #, exc_data_ptr=exc_data_ptr)
         def on_top_of_llinterp(*args):
@@ -182,11 +178,11 @@ def _ll_0_newlist(LIST):
     return LIST.ll_newlist(0)
 def _ll_1_newlist(LIST, count):
     return LIST.ll_newlist(count)
+def _ll_2_newlist(LIST, count, item):
+    return rlist.ll_alloc_and_set(LIST, count, item)
 _ll_0_newlist.need_result_type = True
 _ll_1_newlist.need_result_type = True
-
-_ll_1_newlist_clear = rlist._ll_alloc_and_clear
-_ll_1_newlist_clear.need_result_type = True
+_ll_2_newlist.need_result_type = True
 
 def _ll_1_newlist_hint(LIST, hint):
     return LIST.ll_newlist_hint(hint)
@@ -216,7 +212,6 @@ _ll_1_list_len_foldable     = _ll_1_list_len
 
 _ll_5_list_ll_arraycopy = rgc.ll_arraycopy
 
-_ll_3_list_resize_hint_really = rlist_ll._ll_list_resize_hint_really
 
 @elidable
 def _ll_1_gc_identityhash(x):
@@ -231,13 +226,6 @@ def _ll_1_gc_id(ptr):
     return llop.gc_id(lltype.Signed, ptr)
 
 
-def _ll_1_gc_pin(ptr):
-    return llop.gc_pin(lltype.Bool, ptr)
-
-def _ll_1_gc_unpin(ptr):
-    llop.gc_unpin(lltype.Void, ptr)
-
-
 @oopspec("jit.force_virtual(inst)")
 def _ll_1_jit_force_virtual(inst):
     return llop.jit_force_virtual(lltype.typeOf(inst), inst)
@@ -246,12 +234,12 @@ def _ll_1_jit_force_virtual(inst):
 def _ll_2_int_floordiv_ovf_zer(x, y):
     if y == 0:
         raise ZeroDivisionError
-    return _ll_2_int_floordiv_ovf(x, y)
+    if x == -sys.maxint - 1 and y == -1:
+        raise OverflowError
+    return llop.int_floordiv(lltype.Signed, x, y)
 
 def _ll_2_int_floordiv_ovf(x, y):
-    # intentionally not short-circuited to produce only one guard
-    # and to remove the check fully if one of the arguments is known
-    if (x == -sys.maxint - 1) & (y == -1):
+    if x == -sys.maxint - 1 and y == -1:
         raise OverflowError
     return llop.int_floordiv(lltype.Signed, x, y)
 
@@ -263,11 +251,12 @@ def _ll_2_int_floordiv_zer(x, y):
 def _ll_2_int_mod_ovf_zer(x, y):
     if y == 0:
         raise ZeroDivisionError
-    return _ll_2_int_mod_ovf(x, y)
+    if x == -sys.maxint - 1 and y == -1:
+        raise OverflowError
+    return llop.int_mod(lltype.Signed, x, y)
 
 def _ll_2_int_mod_ovf(x, y):
-    #see comment in _ll_2_int_floordiv_ovf
-    if (x == -sys.maxint - 1) & (y == -1):
+    if x == -sys.maxint - 1 and y == -1:
         raise OverflowError
     return llop.int_mod(lltype.Signed, x, y)
 
@@ -283,9 +272,10 @@ def _ll_2_int_lshift_ovf(x, y):
     return result
 
 def _ll_1_int_abs(x):
-    # this version doesn't branch
-    mask = x >> (LONG_BIT - 1)
-    return (x ^ mask) - mask
+    if x < 0:
+        return -x
+    else:
+        return x
 
 def _ll_1_cast_uint_to_float(x):
     # XXX on 32-bit platforms, this should be done using cast_longlong_to_float
@@ -296,10 +286,6 @@ def _ll_1_cast_float_to_uint(x):
     # XXX on 32-bit platforms, this should be done using cast_float_to_longlong
     # (which is a residual call right now in the x86 backend)
     return llop.cast_float_to_uint(lltype.Unsigned, x)
-
-def _ll_0_ll_read_timestamp():
-    from rpython.rlib import rtimer
-    return rtimer.read_timestamp()
 
 
 # math support
@@ -506,6 +492,11 @@ class LLtypeHelpers:
 
     # ---------- dict ----------
 
+    def _ll_0_newdict(DICT):
+        return ll_rdict.ll_newdict(DICT)
+    _ll_0_newdict.need_result_type = True
+
+    _ll_2_dict_delitem = ll_rdict.ll_dict_delitem
     _ll_1_dict_copy = ll_rdict.ll_copy
     _ll_1_dict_clear = ll_rdict.ll_clear
     _ll_2_dict_update = ll_rdict.ll_update
@@ -519,24 +510,19 @@ class LLtypeHelpers:
     _ll_1_dict_values.need_result_type = True
     _ll_1_dict_items .need_result_type = True
 
-    _ll_1_dictiter_next = ll_rdict._ll_dictnext
+    _dictnext_keys   = staticmethod(ll_rdict.ll_dictnext_group['keys'])
+    _dictnext_values = staticmethod(ll_rdict.ll_dictnext_group['values'])
+    _dictnext_items  = staticmethod(ll_rdict.ll_dictnext_group['items'])
+
+    def _ll_1_dictiter_nextkeys(iter):
+        return LLtypeHelpers._dictnext_keys(None, iter)
+    def _ll_1_dictiter_nextvalues(iter):
+        return LLtypeHelpers._dictnext_values(None, iter)
+    def _ll_1_dictiter_nextitems(RES, iter):
+        return LLtypeHelpers._dictnext_items(lltype.Ptr(RES), iter)
+    _ll_1_dictiter_nextitems.need_result_type = True
+
     _ll_1_dict_resize = ll_rdict.ll_dict_resize
-
-    # ---------- ordered dict ----------
-
-    _ll_1_odict_copy = rordereddict.ll_dict_copy
-    _ll_1_odict_clear = rordereddict.ll_dict_clear
-    _ll_2_odict_update = rordereddict.ll_dict_update
-
-    _ll_1_odict_keys   = rordereddict.ll_dict_keys
-    _ll_1_odict_values = rordereddict.ll_dict_values
-    _ll_1_odict_items  = rordereddict.ll_dict_items
-    _ll_1_odict_keys  .need_result_type = True
-    _ll_1_odict_values.need_result_type = True
-    _ll_1_odict_items .need_result_type = True
-
-    _ll_1_odictiter_next = rordereddict._ll_dictnext
-    _ll_1_odict_resize = rordereddict.ll_dict_resize
 
     # ---------- strings and unicode ----------
 
@@ -702,10 +688,6 @@ class LLtypeHelpers:
     build_ll_1_raw_free_no_track_allocation = (
         build_raw_free_builder(track_allocation=False))
 
-    def _ll_1_threadlocalref_get(TP, offset):
-        return llop.threadlocalref_get(TP, offset)
-    _ll_1_threadlocalref_get.need_result_type = 'exact'   # don't deref
-
     def _ll_1_weakref_create(obj):
         return llop.weakref_create(llmemory.WeakRefPtr, obj)
 
@@ -716,6 +698,78 @@ class LLtypeHelpers:
     def _ll_1_gc_add_memory_pressure(num):
         llop.gc_add_memory_pressure(lltype.Void, num)
 
+class OOtypeHelpers:
+
+    # ---------- dict ----------
+
+    def _ll_0_newdict(DICT):
+        return oo_rdict.ll_newdict(DICT)
+    _ll_0_newdict.need_result_type = True
+
+    def _ll_3_dict_setitem(d, key, value):
+        d.ll_set(key, value)
+
+    def _ll_2_dict_contains(d, key):
+        return d.ll_contains(key)
+
+    def _ll_1_dict_clear(d):
+        d.ll_clear()
+
+    _ll_2_dict_getitem = oo_rdict.ll_dict_getitem
+    _ll_2_dict_delitem = oo_rdict.ll_dict_delitem
+    _ll_3_dict_setdefault = oo_rdict.ll_dict_setdefault
+    _ll_3_dict_get = oo_rdict.ll_dict_get
+    _ll_1_dict_copy = oo_rdict.ll_dict_copy
+    _ll_2_dict_update = oo_rdict.ll_dict_update
+
+    # ---------- dict keys(), values(), items(), iter ----------
+
+    _ll_1_dict_keys   = oo_rdict.ll_dict_keys
+    _ll_1_dict_values = oo_rdict.ll_dict_values
+    _ll_1_dict_items  = oo_rdict.ll_dict_items
+    _ll_1_dict_keys  .need_result_type = True
+    _ll_1_dict_values.need_result_type = True
+    _ll_1_dict_items .need_result_type = True
+
+    _dictnext_keys   = staticmethod(oo_rdict.ll_dictnext_group['keys'])
+    _dictnext_values = staticmethod(oo_rdict.ll_dictnext_group['values'])
+    _dictnext_items  = staticmethod(oo_rdict.ll_dictnext_group['items'])
+
+    def _ll_1_dictiter_nextkeys(iter):
+        return OOtypeHelpers._dictnext_keys(None, iter)
+    def _ll_1_dictiter_nextvalues(iter):
+        return OOtypeHelpers._dictnext_values(None, iter)
+    def _ll_1_dictiter_nextitems(RES, iter):
+        return OOtypeHelpers._dictnext_items(RES, iter)
+    _ll_1_dictiter_nextitems.need_result_type = True
+
+    # --------------- oostring and oounicode ----------------
+
+    def _ll_2_oostring_signed_foldable(n, base):
+        return ootype.oostring(n, base)
+
+    def _ll_1_oostring_char_foldable(ch):
+        return ootype.oostring(ch, -1)
+
+    def _ll_1_oostring_unsigned_foldable(n):
+        return ootype.oostring(n, -1)
+
+    def _ll_1_oostring_string_foldable(s):
+        return ootype.oostring(s, -1)
+
+    def _ll_1_oostring_root_foldable(s):
+        return ootype.oostring(s, -1)
+
+    def _ll_2_oounicode_signed_foldable(n, base):
+        return ootype.oounicode(n, base)
+
+    def _ll_1_oounicode_unichar_foldable(ch):
+        return ootype.oounicode(ch, -1)
+
+    def _ll_1_oounicode_string_foldable(s):
+        return ootype.oounicode(s, -1)
+
+# -------------------------------------------------------
 
 def setup_extra_builtin(rtyper, oopspec_name, nb_args, extra=None):
     name = '_ll_%d_%s' % (nb_args, oopspec_name.replace('.', '_'))
@@ -724,7 +778,11 @@ def setup_extra_builtin(rtyper, oopspec_name, nb_args, extra=None):
     try:
         wrapper = globals()[name]
     except KeyError:
-        wrapper = getattr(LLtypeHelpers, name).im_func
+        if rtyper.type_system.name == 'lltypesystem':
+            Helpers = LLtypeHelpers
+        else:
+            Helpers = OOtypeHelpers
+        wrapper = getattr(Helpers, name).im_func
     if extra is not None:
         wrapper = wrapper(*extra)
     return wrapper
@@ -765,6 +823,16 @@ def get_call_oopspec_opargs(fnobj, opargs):
     normalized_opargs = normalize_opargs(argtuple, opargs)
     return oopspec, normalized_opargs
 
+def get_oostring_oopspec(op):
+    T = op.args[0].concretetype
+    if T is not ootype.Signed:
+        args = op.args[:-1]
+    else:
+        args = op.args
+    if isinstance(T, ootype.Instance):
+        T = ootype.ROOT
+    return '%s_%s_foldable' % (op.opname, T._name.lower()), args
+
 def get_identityhash_oopspec(op):
     return 'gc_identityhash', op.args
 
@@ -790,10 +858,15 @@ def get_send_oopspec(SELFTYPE, name):
 
 
 def decode_builtin_call(op):
-    if op.opname == 'direct_call':
-        fnobj = op.args[0].value._obj
+    if op.opname == 'oosend':
+        SELFTYPE, name, opargs = decompose_oosend(op)
+        return get_send_oopspec(SELFTYPE, name), opargs
+    elif op.opname == 'direct_call':
+        fnobj = get_funcobj(op.args[0].value)
         opargs = op.args[1:]
         return get_call_oopspec_opargs(fnobj, opargs)
+    elif op.opname in ('oostring', 'oounicode'):
+        return get_oostring_oopspec(op)
     elif op.opname == 'gc_identityhash':
         return get_identityhash_oopspec(op)
     elif op.opname == 'gc_id':
@@ -809,26 +882,16 @@ def builtin_func_for_spec(rtyper, oopspec_name, ll_args, ll_res,
         return rtyper._builtin_func_for_spec_cache[key]
     except (KeyError, AttributeError):
         pass
-    args_s = [lltype_to_annotation(v) for v in ll_args]
+    args_s = [annmodel.lltype_to_annotation(v) for v in ll_args]
     if '.' not in oopspec_name:    # 'newxxx' operations
         LIST_OR_DICT = ll_res
     else:
         LIST_OR_DICT = ll_args[0]
-    s_result = lltype_to_annotation(ll_res)
+    s_result = annmodel.lltype_to_annotation(ll_res)
     impl = setup_extra_builtin(rtyper, oopspec_name, len(args_s), extra)
     if getattr(impl, 'need_result_type', False):
-        if hasattr(rtyper, 'annotator'):
-            bk = rtyper.annotator.bookkeeper
-            ll_restype = ll_res
-            if impl.need_result_type != 'exact':
-                ll_restype = deref(ll_restype)
-            desc = bk.getdesc(ll_restype)
-        else:
-            class TestingDesc(object):
-                knowntype = int
-                pyobj = None
-            desc = TestingDesc()
-        args_s.insert(0, annmodel.SomePBC([desc]))
+        bk = rtyper.annotator.bookkeeper
+        args_s.insert(0, annmodel.SomePBC([bk.getdesc(deref(ll_res))]))
     #
     if hasattr(rtyper, 'annotator'):  # regular case
         mixlevelann = MixLevelHelperAnnotator(rtyper)
@@ -844,3 +907,15 @@ def builtin_func_for_spec(rtyper, oopspec_name, ll_args, ll_res,
     rtyper._builtin_func_for_spec_cache[key] = (c_func, LIST_OR_DICT)
     #
     return c_func, LIST_OR_DICT
+
+
+def decompose_oosend(op):
+    name = op.args[0].value
+    opargs = op.args[1:]
+    SELFTYPE = opargs[0].concretetype
+    return SELFTYPE, name, opargs
+
+def lookup_oosend_method(op):
+    SELFTYPE, methname, args_v = decompose_oosend(op)
+    _, meth = SELFTYPE._lookup(methname)
+    return SELFTYPE, methname, meth

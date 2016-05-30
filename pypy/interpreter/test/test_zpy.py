@@ -7,13 +7,10 @@ import subprocess
 
 pypypath = py.path.local(pypy.__file__).dirpath("bin", "pyinteractive.py")
 
-def run(*args, **kwds):
-    stdin = kwds.pop('stdin', '')
-    assert not kwds
+def run(*args):
     argslist = map(str, args)
-    popen = subprocess.Popen(argslist, stdin=subprocess.PIPE,
-                                       stdout=subprocess.PIPE)
-    stdout, stderr = popen.communicate(stdin)
+    popen = subprocess.Popen(argslist, stdout=subprocess.PIPE)
+    stdout, stderr = popen.communicate()
     return stdout
 
 
@@ -102,19 +99,3 @@ def test_tb_normalization():
                              stderr=subprocess.PIPE)
     _, stderr = popen.communicate()
     assert stderr.endswith('KeyError: <normalized>\n')
-
-
-def test_pytrace():
-    output = run(sys.executable, pypypath, '-S',
-                 stdin="__pytrace__ = 1\nx = 5\nx")
-    assert ('\t<module>:           LOAD_CONST    0 (5)\n'
-            '\t<module>:           STORE_NAME    0 (x)\n'
-            '\t<module>:           LOAD_CONST    1 (None)\n'
-            '\t<module>:           RETURN_VALUE    0 \n'
-            '>>>> ') in output
-    assert ('\t<module>:           LOAD_NAME    0 (x)\n'
-            '\t<module>:           PRINT_EXPR    0 \n'
-            # '5\n' --- this line sent to stderr
-            '\t<module>:           LOAD_CONST    0 (None)\n'
-            '\t<module>:           RETURN_VALUE    0 \n'
-            '>>>> ') in output

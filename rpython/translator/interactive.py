@@ -1,6 +1,5 @@
 from rpython.translator.translator import TranslationContext
 from rpython.translator import driver
-from rpython.rlib.entrypoint import export_symbol
 
 
 DEFAULTS = {
@@ -15,7 +14,7 @@ class Translation(object):
         self.driver = driver.TranslationDriver(overrides=DEFAULTS)
         self.config = self.driver.config
 
-        self.entry_point = export_symbol(entry_point)
+        self.entry_point = entry_point
         self.context = TranslationContext(config=self.config)
 
         policy = kwds.pop('policy', None)
@@ -32,6 +31,12 @@ class Translation(object):
         self.context.viewcg()
 
     def ensure_setup(self, argtypes=None, policy=None):
+        standalone = argtypes is None
+        if standalone:
+            assert argtypes is None
+        else:
+            if argtypes is None:
+                argtypes = []
         self.driver.setup(self.entry_point, argtypes, policy,
                           empty_translator=self.context)
         self.ann_argtypes = argtypes
@@ -122,3 +127,25 @@ class Translation(object):
         self.ensure_backend('c')
         self.driver.compile_c()
         return self.driver.c_entryp
+
+    def compile_cli(self, **kwds):
+        self.update_options(kwds)
+        self.ensure_backend('cli')
+        self.driver.compile_cli()
+        return self.driver.c_entryp
+
+    def source_cli(self, **kwds):
+        self.update_options(kwds)
+        self.ensure_backend('cli')
+        self.driver.source_cli()
+
+    def compile_jvm(self, **kwds):
+        self.update_options(kwds)
+        self.ensure_backend('jvm')
+        self.driver.compile_jvm()
+        return self.driver.c_entryp
+
+    def source_jvm(self, **kwds):
+        self.update_options(kwds)
+        self.ensure_backend('jvm')
+        self.driver.source_jvm()

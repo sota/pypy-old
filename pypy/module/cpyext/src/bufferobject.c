@@ -783,9 +783,9 @@ buffer_getcharbuf(PyBufferObject *self, Py_ssize_t idx, const char **pp)
     return size;
 }
 
-PyTypeObject *_Py_get_buffer_type(void)
+void init_bufferobject(void)
 {
-    return &PyBuffer_Type;
+    PyType_Ready(&PyBuffer_Type);
 }
 
 static PySequenceMethods buffer_as_sequence = {

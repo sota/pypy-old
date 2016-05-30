@@ -1,12 +1,11 @@
-import sys
 import _continuation
 
-__version__ = "0.4.9"
+__version__ = "0.4.0"
 
 # ____________________________________________________________
 # Exceptions
 
-class GreenletExit(BaseException):
+class GreenletExit(Exception):
     """This special exception does not propagate to the parent greenlet; it
 can be used to kill a single greenlet."""
 
@@ -47,16 +46,16 @@ class greenlet(_continulet):
         if parent is not None:
             self.parent = parent
 
-    def switch(self, *args, **kwds):
+    def switch(self, *args):
         "Switch execution to this greenlet, optionally passing the values "
         "given as argument(s).  Returns the value passed when switching back."
-        return self.__switch('switch', (args, kwds))
+        return self.__switch('switch', args)
 
     def throw(self, typ=GreenletExit, val=None, tb=None):
         "raise exception in greenlet, return value passed when switching back"
         return self.__switch('throw', typ, val, tb)
 
-    def __switch(target, methodname, *baseargs):
+    def __switch(target, methodname, *args):
         current = getcurrent()
         #
         while not (target.__main or _continulet.is_pending(target)):
@@ -66,9 +65,9 @@ class greenlet(_continulet):
                     greenlet_func = _greenlet_start
                 else:
                     greenlet_func = _greenlet_throw
-                _continulet.__init__(target, greenlet_func, *baseargs)
+                _continulet.__init__(target, greenlet_func, *args)
                 methodname = 'switch'
-                baseargs = ()
+                args = ()
                 target.__started = True
                 break
             # already done, go to the parent instead
@@ -76,37 +75,14 @@ class greenlet(_continulet):
             # up the 'parent' explicitly.  Good enough, because a Ctrl-C
             # will show that the program is caught in this loop here.)
             target = target.parent
-            # convert a "raise GreenletExit" into "return GreenletExit"
-            if methodname == 'throw':
-                try:
-                    raise baseargs[0], baseargs[1]
-                except GreenletExit, e:
-                    methodname = 'switch'
-                    baseargs = (((e,), {}),)
-                except:
-                    baseargs = sys.exc_info()[:2] + baseargs[2:]
         #
         try:
             unbound_method = getattr(_continulet, methodname)
-            _tls.leaving = current
-            args, kwds = unbound_method(current, *baseargs, to=target)
+            args = unbound_method(current, *args, to=target)
+        finally:
             _tls.current = current
-        except:
-            _tls.current = current
-            if hasattr(_tls, 'trace'):
-                _run_trace_callback('throw')
-            _tls.leaving = None
-            raise
-        else:
-            if hasattr(_tls, 'trace'):
-                _run_trace_callback('switch')
-            _tls.leaving = None
         #
-        if kwds:
-            if args:
-                return args, kwds
-            return kwds
-        elif len(args) == 1:
+        if len(args) == 1:
             return args[0]
         else:
             return args
@@ -132,34 +108,6 @@ class greenlet(_continulet):
         return f.f_back.f_back.f_back   # go past start(), __switch(), switch()
 
 # ____________________________________________________________
-# Recent additions
-
-GREENLET_USE_GC = True
-GREENLET_USE_TRACING = True
-
-def gettrace():
-    return getattr(_tls, 'trace', None)
-
-def settrace(callback):
-    try:
-        prev = _tls.trace
-        del _tls.trace
-    except AttributeError:
-        prev = None
-    if callback is not None:
-        _tls.trace = callback
-    return prev
-
-def _run_trace_callback(event):
-    try:
-        _tls.trace(event, (_tls.leaving, _tls.current))
-    except:
-        # In case of exceptions trace function is removed
-        if hasattr(_tls, 'trace'):
-            del _tls.trace
-        raise
-
-# ____________________________________________________________
 # Internal stuff
 
 try:
@@ -181,32 +129,18 @@ def _green_create_main():
     _tls.current = gmain
 
 def _greenlet_start(greenlet, args):
+    _tls.current = greenlet
     try:
-        args, kwds = args
-        _tls.current = greenlet
-        try:
-            if hasattr(_tls, 'trace'):
-                _run_trace_callback('switch')
-            res = greenlet.run(*args, **kwds)
-        except GreenletExit, e:
-            res = e
-        finally:
-            _continuation.permute(greenlet, greenlet.parent)
-        return ((res,), None)
+        res = greenlet.run(*args)
+    except GreenletExit, e:
+        res = e
     finally:
-        _tls.leaving = greenlet
+        _continuation.permute(greenlet, greenlet.parent)
+    return (res,)
 
 def _greenlet_throw(greenlet, exc, value, tb):
+    _tls.current = greenlet
     try:
-        _tls.current = greenlet
-        try:
-            if hasattr(_tls, 'trace'):
-                _run_trace_callback('throw')
-            raise exc, value, tb
-        except GreenletExit, e:
-            res = e
-        finally:
-            _continuation.permute(greenlet, greenlet.parent)
-        return ((res,), None)
+        raise exc, value, tb
     finally:
-        _tls.leaving = greenlet
+        _continuation.permute(greenlet, greenlet.parent)

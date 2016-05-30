@@ -22,7 +22,6 @@ from rpython.rlib.rarithmetic import intmask
 from rpython.rlib import objectmodel
 from rpython.tool.identity_dict import identity_dict
 from rpython.rtyper.lltypesystem.lloperation import llop
-from rpython.rtyper.lltypesystem import rstr
 
 #
 #  There is one "vtable" per user class, with the following structure:
@@ -33,7 +32,7 @@ from rpython.rtyper.lltypesystem import rstr
 #          RuntimeTypeInfo * rtti;
 #          Signed subclassrange_min;  //this is also the id of the class itself
 #          Signed subclassrange_max;
-#          RPyString * name;
+#          array { char } * name;
 #          struct object * instantiate();
 #      }
 #
@@ -55,7 +54,7 @@ from rpython.rtyper.lltypesystem import rstr
 #         ...               // extra instance attributes
 #     }
 #
-# there's also a nongcobject
+# there's also a nongcobject 
 
 OBJECT_VTABLE = lltype.ForwardReference()
 CLASSTYPE = Ptr(OBJECT_VTABLE)
@@ -69,8 +68,7 @@ OBJECT_VTABLE.become(Struct('object_vtable',
                             ('subclassrange_min', Signed),
                             ('subclassrange_max', Signed),
                             ('rtti', Ptr(RuntimeTypeInfo)),
-                            ('name', Ptr(rstr.STR)),
-                            ('hash', Signed),
+                            ('name', Ptr(Array(Char))),
                             ('instantiate', Ptr(FuncType([], OBJECTPTR))),
                             hints = {'immutable': True}))
 # non-gc case
@@ -91,7 +89,11 @@ def cast_vtable_to_typeptr(vtable):
     return vtable
 
 def alloc_array_name(name):
-    return rstr.string_repr.convert_const(name)
+    p = malloc(Array(Char), len(name)+1, immortal=True)
+    for i in range(len(name)):
+        p[i] = name[i]
+    p[len(name)] = '\x00'
+    return p
 
 
 class ClassRepr(AbstractClassRepr):
@@ -183,7 +185,6 @@ class ClassRepr(AbstractClassRepr):
         """Initialize the 'self' portion of the 'vtable' belonging to the
         given subclass."""
         if self.classdef is None:
-            vtable.hash = hash(rsubcls)
             # initialize the 'subclassrange_*' and 'name' fields
             if rsubcls.classdef is not None:
                 #vtable.parenttypeptr = rsubcls.rbase.getvtable()
@@ -281,11 +282,16 @@ class ClassRepr(AbstractClassRepr):
         cname = inputconst(Void, mangled_name)
         return llops.genop('getfield', [v_vtable, cname], resulttype=r)
 
-    def rtype_issubtype(self, hop):
+    def rtype_issubtype(self, hop): 
         class_repr = get_type_repr(self.rtyper)
         v_cls1, v_cls2 = hop.inputargs(class_repr, class_repr)
         if isinstance(v_cls2, Constant):
             cls2 = v_cls2.value
+            # XXX re-implement the following optimization
+##            if cls2.subclassrange_max == cls2.subclassrange_min:
+##                # a class with no subclass
+##                return hop.genop('ptr_eq', [v_cls1, v_cls2], resulttype=Bool)
+##            else:
             minid = hop.inputconst(Signed, cls2.subclassrange_min)
             maxid = hop.inputconst(Signed, cls2.subclassrange_max)
             return hop.gendirectcall(ll_issubclass_const, v_cls1, minid,
@@ -305,7 +311,7 @@ class InstanceRepr(AbstractInstanceRepr):
         else:
             ForwardRef = lltype.FORWARDREF_BY_FLAVOR[LLFLAVOR[gcflavor]]
             self.object_type = ForwardRef()
-
+            
         self.iprebuiltinstances = identity_dict()
         self.lowleveltype = Ptr(self.object_type)
         self.gcflavor = gcflavor
@@ -436,10 +442,8 @@ class InstanceRepr(AbstractInstanceRepr):
                     except AttributeError:
                         attrvalue = self.classdef.classdesc.read_attribute(name, None)
                         if attrvalue is None:
-                            # Ellipsis from get_reusable_prebuilt_instance()
-                            if value is not Ellipsis:
-                                warning("prebuilt instance %r has no "
-                                        "attribute %r" % (value, name))
+                            warning("prebuilt instance %r has no attribute %r" % (
+                                    value, name))
                             llattrvalue = r.lowleveltype._defl()
                         else:
                             llattrvalue = r.convert_desc_or_const(attrvalue)
@@ -571,23 +575,26 @@ class InstanceRepr(AbstractInstanceRepr):
         self.setfield(vinst, attr, vvalue, hop.llops,
                       flags=hop.args_s[0].flags)
 
-    def rtype_bool(self, hop):
+    def rtype_is_true(self, hop):
         vinst, = hop.inputargs(self)
         return hop.genop('ptr_nonzero', [vinst], resulttype=Bool)
 
     def ll_str(self, i): # doesn't work for non-gc classes!
+        from rpython.rtyper.lltypesystem import rstr
         from rpython.rtyper.lltypesystem.ll_str import ll_int2hex
         from rpython.rlib.rarithmetic import r_uint
         if not i:
             return rstr.null_str
         instance = cast_pointer(OBJECTPTR, i)
-        # Two choices: the first gives a fast answer but it can change
-        # (typically only once) during the life of the object.
-        #uid = r_uint(cast_ptr_to_int(i))
-        uid = r_uint(llop.gc_id(lltype.Signed, i))
-        #
+        uid = r_uint(cast_ptr_to_int(i))
+        nameLen = len(instance.typeptr.name)
+        nameString = rstr.mallocstr(nameLen-1)
+        i = 0
+        while i < nameLen - 1:
+            nameString.chars[i] = instance.typeptr.name[i]
+            i += 1
         res =                        rstr.instance_str_prefix
-        res = rstr.ll_strconcat(res, instance.typeptr.name)
+        res = rstr.ll_strconcat(res, nameString)
         res = rstr.ll_strconcat(res, rstr.instance_str_infix)
         res = rstr.ll_strconcat(res, ll_int2hex(uid, False))
         res = rstr.ll_strconcat(res, rstr.instance_str_suffix)

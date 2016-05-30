@@ -6,16 +6,13 @@ sources = """
 import sys
 import base64
 import zlib
+import imp
 
 class DictImporter(object):
     def __init__(self, sources):
         self.sources = sources
 
     def find_module(self, fullname, path=None):
-        if fullname == "argparse" and sys.version_info >= (2,7):
-            # we were generated with <python2.7 (which pulls in argparse)
-            # but we are running now on a stdlib which has it, so use that.
-            return None
         if fullname in self.sources:
             return self
         if fullname + '.__init__' in self.sources:
@@ -39,7 +36,7 @@ class DictImporter(object):
         if is_pkg:
             module.__path__ = [fullname]
 
-        do_exec(co, module.__dict__) # noqa
+        do_exec(co, module.__dict__)
         return sys.modules[fullname]
 
     def get_source(self, name):
@@ -60,7 +57,7 @@ if __name__ == "__main__":
         sources = pickle.loads(zlib.decompress(base64.decodestring(sources)))
 
     importer = DictImporter(sources)
-    sys.meta_path.insert(0, importer)
+    sys.meta_path.append(importer)
 
     entry = "@ENTRY@"
-    do_exec(entry, locals()) # noqa
+    do_exec(entry, locals())

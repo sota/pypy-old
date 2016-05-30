@@ -1,11 +1,8 @@
-import sys
+
 import _rawffi
 from _ctypes.basics import _CData, _CDataMeta, keepalive_key,\
      store_reference, ensure_objects, CArgObject
-from _ctypes.array import Array
-from _ctypes.pointer import _Pointer
 import inspect
-
 
 def names_and_fields(self, _fields_, superclass, anonymous_fields=None):
     # _fields_: list of (name, ctype, [optional_bitfield])
@@ -23,7 +20,7 @@ def names_and_fields(self, _fields_, superclass, anonymous_fields=None):
                 or tp._type_ not in "iIhHbBlLqQ"):
                 #XXX: are those all types?
                 #     we just dont get the type name
-                #     in the interp level thrown TypeError
+                #     in the interp levle thrown TypeError
                 #     from rawffi if there are more
                 raise TypeError('bit fields not allowed for type ' + tp.__name__)
 
@@ -36,9 +33,9 @@ def names_and_fields(self, _fields_, superclass, anonymous_fields=None):
     rawfields = []
     for f in all_fields:
         if len(f) > 2:
-            rawfields.append((f[0], f[1]._ffishape_, f[2]))
+            rawfields.append((f[0], f[1]._ffishape, f[2]))
         else:
-            rawfields.append((f[0], f[1]._ffishape_))
+            rawfields.append((f[0], f[1]._ffishape))
 
     _set_shape(self, rawfields, self._is_union)
 
@@ -48,8 +45,8 @@ def names_and_fields(self, _fields_, superclass, anonymous_fields=None):
         value = field[1]
         is_bitfield = (len(field) == 3)
         fields[name] = Field(name,
-                             self._ffistruct_.fieldoffset(name),
-                             self._ffistruct_.fieldsize(name),
+                             self._ffistruct.fieldoffset(name),
+                             self._ffistruct.fieldsize(name),
                              value, i, is_bitfield)
 
     if anonymous_fields:
@@ -58,9 +55,9 @@ def names_and_fields(self, _fields_, superclass, anonymous_fields=None):
             name = field[0]
             value = field[1]
             is_bitfield = (len(field) == 3)
-            startpos = self._ffistruct_.fieldoffset(name)
+            startpos = self._ffistruct.fieldoffset(name)
             if name in anonymous_fields:
-                for subname in value._names_:
+                for subname in value._names:
                     resnames.append(subname)
                     subfield = getattr(value, subname)
                     relpos = startpos + subfield.offset
@@ -71,10 +68,9 @@ def names_and_fields(self, _fields_, superclass, anonymous_fields=None):
             else:
                 resnames.append(name)
         names = resnames
-    self._names_ = names
+    self._names = names
     for name, field in fields.items():
         setattr(self, name, field)
-
 
 class Field(object):
     def __init__(self, name, offset, size, ctype, num, is_bitfield):
@@ -104,29 +100,30 @@ class Field(object):
             suba = obj._subarray(fieldtype, self.name)
             return fieldtype._CData_output(suba, obj, offset)
 
+
     def __set__(self, obj, value):
         fieldtype = self.ctype
         cobj = fieldtype.from_param(value)
-        key = keepalive_key(self.num)
-        if issubclass(fieldtype, _Pointer) and isinstance(cobj, Array):
-            # if our value is an Array we need the whole thing alive
-            store_reference(obj, key, cobj)
-        elif ensure_objects(cobj) is not None:
+        if ensure_objects(cobj) is not None:
+            key = keepalive_key(self.num)
             store_reference(obj, key, cobj._objects)
         arg = cobj._get_buffer_value()
-        if fieldtype._fficompositesize_ is not None:
+        if fieldtype._fficompositesize is not None:
             from ctypes import memmove
             dest = obj._buffer.fieldaddress(self.name)
-            memmove(dest, arg, fieldtype._fficompositesize_)
+            memmove(dest, arg, fieldtype._fficompositesize)
         else:
             obj._buffer.__setattr__(self.name, arg)
 
 
+
+# ________________________________________________________________
+
 def _set_shape(tp, rawfields, is_union=False):
-    tp._ffistruct_ = _rawffi.Structure(rawfields, is_union,
+    tp._ffistruct = _rawffi.Structure(rawfields, is_union,
                                       getattr(tp, '_pack_', 0))
-    tp._ffiargshape_ = tp._ffishape_ = (tp._ffistruct_, 1)
-    tp._fficompositesize_ = tp._ffistruct_.size
+    tp._ffiargshape = tp._ffishape = (tp._ffistruct, 1)
+    tp._fficompositesize = tp._ffistruct.size
 
 
 def struct_setattr(self, name, value):
@@ -143,8 +140,8 @@ def struct_setattr(self, name, value):
         return
     _CDataMeta.__setattr__(self, name, value)
 
-
 class StructOrUnionMeta(_CDataMeta):
+
     def __new__(self, name, cls, typedict):
         res = type.__new__(self, name, cls, typedict)
         if "_abstract_" in typedict:
@@ -152,9 +149,6 @@ class StructOrUnionMeta(_CDataMeta):
         cls = cls or (object,)
         if isinstance(cls[0], StructOrUnionMeta):
             cls[0]._make_final()
-        if '_pack_' in typedict:
-            if not 0 <= typedict['_pack_'] < 2**31:
-                raise ValueError("_pack_ must be a non-negative integer")
         if '_fields_' in typedict:
             if not hasattr(typedict.get('_anonymous_', []), '__iter__'):
                 raise TypeError("Anonymous field must be iterable")
@@ -165,13 +159,15 @@ class StructOrUnionMeta(_CDataMeta):
                 res,
                 typedict['_fields_'], cls[0],
                 typedict.get('_anonymous_', None))
+
         return res
 
     def _make_final(self):
         if self is StructOrUnion:
             return
         if '_fields_' not in self.__dict__:
-            self._fields_ = []  # As a side-effet, this also sets the ffishape.
+            self._fields_ = []
+            _set_shape(self, [], self._is_union)
 
     __setattr__ = struct_setattr
 
@@ -179,18 +175,16 @@ class StructOrUnionMeta(_CDataMeta):
         instance = StructOrUnion.__new__(self)
         if isinstance(address, _rawffi.StructureInstance):
             address = address.buffer
-        # fix the address: turn it into as unsigned, in case it is negative
-        address = address & (sys.maxint * 2 + 1)
-        instance.__dict__['_buffer'] = self._ffistruct_.fromaddress(address)
+        instance.__dict__['_buffer'] = self._ffistruct.fromaddress(address)
         return instance
 
     def _sizeofinstances(self):
-        if not hasattr(self, '_ffistruct_'):
+        if not hasattr(self, '_ffistruct'):
             return 0
-        return self._ffistruct_.size
+        return self._ffistruct.size
 
     def _alignmentofinstances(self):
-        return self._ffistruct_.alignment
+        return self._ffistruct.alignment
 
     def from_param(self, value):
         if isinstance(value, tuple):
@@ -203,19 +197,18 @@ class StructOrUnionMeta(_CDataMeta):
 
     def _CData_output(self, resarray, base=None, index=-1):
         res = StructOrUnion.__new__(self)
-        ffistruct = self._ffistruct_.fromaddress(resarray.buffer)
+        ffistruct = self._ffistruct.fromaddress(resarray.buffer)
         res.__dict__['_buffer'] = ffistruct
         res.__dict__['_base'] = base
         res.__dict__['_index'] = index
         return res
-
+    
     def _CData_retval(self, resbuffer):
         res = StructOrUnion.__new__(self)
         res.__dict__['_buffer'] = resbuffer
         res.__dict__['_base'] = None
         res.__dict__['_index'] = -1
         return res
-
 
 class StructOrUnion(_CData):
     __metaclass__ = StructOrUnionMeta
@@ -224,15 +217,15 @@ class StructOrUnion(_CData):
         self = super(_CData, cls).__new__(cls, *args, **kwds)
         if '_abstract_' in cls.__dict__:
             raise TypeError("abstract class")
-        if hasattr(cls, '_ffistruct_'):
-            self.__dict__['_buffer'] = self._ffistruct_(autofree=True)
+        if hasattr(cls, '_ffistruct'):
+            self.__dict__['_buffer'] = self._ffistruct(autofree=True)
         return self
 
     def __init__(self, *args, **kwds):
         type(self)._make_final()
-        if len(args) > len(self._names_):
+        if len(args) > len(self._names):
             raise TypeError("too many initializers")
-        for name, arg in zip(self._names_, args):
+        for name, arg in zip(self._names, args):
             if name in kwds:
                 raise TypeError("duplicate value for argument %r" % (
                     name,))
@@ -244,7 +237,7 @@ class StructOrUnion(_CData):
         """Return a _rawffi array of length 1 whose address is the same as
         the address of the field 'name' of self."""
         address = self._buffer.fieldaddress(name)
-        A = _rawffi.Array(fieldtype._ffishape_)
+        A = _rawffi.Array(fieldtype._ffishape)
         return A.fromaddress(address, 1)
 
     def _get_buffer_for_param(self):
@@ -259,7 +252,6 @@ class StructOrUnion(_CData):
 
 class StructureMeta(StructOrUnionMeta):
     _is_union = False
-
 
 class Structure(StructOrUnion):
     __metaclass__ = StructureMeta

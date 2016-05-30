@@ -19,11 +19,6 @@ except ImportError:
     threading = None
 
 try:
-    import gzip
-except ImportError:
-    gzip = None
-
-try:
     unicode
 except NameError:
     have_unicode = False
@@ -687,7 +682,6 @@ class KeepaliveServerTestCase2(BaseKeepaliveServerTestCase):
 
 #A test case that verifies that gzip encoding works in both directions
 #(for a request and the response)
-@unittest.skipUnless(gzip, 'gzip not available')
 class GzipServerTestCase(BaseServerTestCase):
     #a request handler that supports keep-alive and logs requests into a
     #class variable
@@ -738,7 +732,7 @@ class GzipServerTestCase(BaseServerTestCase):
         with cm:
             p.pow(6, 8)
 
-    def test_gzip_response(self):
+    def test_gsip_response(self):
         t = self.Transport()
         p = xmlrpclib.ServerProxy(URL, transport=t)
         old = self.requestHandler.encode_threshold
@@ -750,23 +744,6 @@ class GzipServerTestCase(BaseServerTestCase):
         b = t.response_length
         self.requestHandler.encode_threshold = old
         self.assertTrue(a>b)
-
-    def test_gzip_decode_limit(self):
-        max_gzip_decode = 20 * 1024 * 1024
-        data = '\0' * max_gzip_decode
-        encoded = xmlrpclib.gzip_encode(data)
-        decoded = xmlrpclib.gzip_decode(encoded)
-        self.assertEqual(len(decoded), max_gzip_decode)
-
-        data = '\0' * (max_gzip_decode + 1)
-        encoded = xmlrpclib.gzip_encode(data)
-
-        with self.assertRaisesRegexp(ValueError,
-                                     "max gzipped payload length exceeded"):
-            xmlrpclib.gzip_decode(encoded)
-
-        xmlrpclib.gzip_decode(encoded, max_decode=-1)
-
 
 #Test special attributes of the ServerProxy object
 class ServerProxyTestCase(unittest.TestCase):
@@ -1035,7 +1012,11 @@ def test_main():
     xmlrpc_tests.append(SimpleServerTestCase)
     xmlrpc_tests.append(KeepaliveServerTestCase1)
     xmlrpc_tests.append(KeepaliveServerTestCase2)
-    xmlrpc_tests.append(GzipServerTestCase)
+    try:
+        import gzip
+        xmlrpc_tests.append(GzipServerTestCase)
+    except ImportError:
+        pass #gzip not supported in this build
     xmlrpc_tests.append(MultiPathServerTestCase)
     xmlrpc_tests.append(ServerProxyTestCase)
     xmlrpc_tests.append(FailingServerTestCase)

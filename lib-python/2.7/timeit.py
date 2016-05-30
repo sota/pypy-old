@@ -55,6 +55,11 @@ instructions.
 import gc
 import sys
 import time
+try:
+    import itertools
+except ImportError:
+    # Must be an older Python version (see timeit() below)
+    itertools = None
 
 __all__ = ["Timer"]
 
@@ -76,8 +81,7 @@ template = """
 def inner(_it, _timer):
     %(setup)s
     _t0 = _timer()
-    while _it > 0:
-        _it -= 1
+    for _i in _it:
         %(stmt)s
     _t1 = _timer()
     return _t1 - _t0
@@ -92,8 +96,7 @@ def _template_func(setup, func):
     def inner(_it, _timer, _func=func):
         setup()
         _t0 = _timer()
-        while _it > 0:
-            _it -= 1
+        for _i in _it:
             _func()
         _t1 = _timer()
         return _t1 - _t0
@@ -120,12 +123,6 @@ class Timer:
         self.timer = timer
         ns = {}
         if isinstance(stmt, basestring):
-            # Check that the code can be compiled outside a function
-            if isinstance(setup, basestring):
-                compile(setup, dummy_src_name, "exec")
-                compile(setup + '\n' + stmt, dummy_src_name, "exec")
-            else:
-                compile(stmt, dummy_src_name, "exec")
             stmt = reindent(stmt, 8)
             if isinstance(setup, basestring):
                 setup = reindent(setup, 4)
@@ -136,19 +133,9 @@ class Timer:
             else:
                 raise ValueError("setup is neither a string nor callable")
             self.src = src # Save for traceback display
-            def make_inner():
-                # PyPy tweak: recompile the source code each time before
-                # calling inner(). There are situations like Issue #1776
-                # where PyPy tries to reuse the JIT code from before,
-                # but that's not going to work: the first thing the
-                # function does is the "-s" statement, which may declare
-                # new classes (here a namedtuple). We end up with
-                # bridges from the inner loop; more and more of them
-                # every time we call inner().
-                code = compile(src, dummy_src_name, "exec")
-                exec code in globals(), ns
-                return ns["inner"]
-            self.make_inner = make_inner
+            code = compile(src, dummy_src_name, "exec")
+            exec code in globals(), ns
+            self.inner = ns["inner"]
         elif hasattr(stmt, '__call__'):
             self.src = None
             if isinstance(setup, basestring):
@@ -157,8 +144,7 @@ class Timer:
                     exec _setup in globals(), ns
             elif not hasattr(setup, '__call__'):
                 raise ValueError("setup is neither a string nor callable")
-            inner = _template_func(setup, stmt)
-            self.make_inner = lambda: inner
+            self.inner = _template_func(setup, stmt)
         else:
             raise ValueError("stmt is neither a string nor callable")
 
@@ -199,12 +185,15 @@ class Timer:
         to one million.  The main statement, the setup statement and
         the timer function to be used are passed to the constructor.
         """
-        inner = self.make_inner()
+        if itertools:
+            it = itertools.repeat(None, number)
+        else:
+            it = [None] * number
         gcold = gc.isenabled()
         if '__pypy__' not in sys.builtin_module_names:
             gc.disable()    # only do that on CPython
         try:
-            timing = inner(number, self.timer)
+            timing = self.inner(it, self.timer)
         finally:
             if gcold:
                 gc.enable()
@@ -246,10 +235,10 @@ def repeat(stmt="pass", setup="pass", timer=default_timer,
     """Convenience function to create Timer object and call repeat method."""
     return Timer(stmt, setup, timer).repeat(repeat, number)
 
-def main(args=None, _wrap_timer=None):
+def main(args=None):
     """Main program, used when run as a script.
 
-    The optional 'args' argument specifies the command line to be parsed,
+    The optional argument specifies the command line to be parsed,
     defaulting to sys.argv[1:].
 
     The return value is an exit code to be passed to sys.exit(); it
@@ -258,10 +247,6 @@ def main(args=None, _wrap_timer=None):
     When an exception happens during timing, a traceback is printed to
     stderr and the return value is 1.  Exceptions at other times
     (including the template compilation) are not caught.
-
-    '_wrap_timer' is an internal interface used for unit testing.  If it
-    is not None, it must be a callable that accepts a timer function
-    and returns another timer function (used for unit testing).
     """
     if args is None:
         args = sys.argv[1:]
@@ -307,8 +292,6 @@ def main(args=None, _wrap_timer=None):
     # directory)
     import os
     sys.path.insert(0, os.curdir)
-    if _wrap_timer is not None:
-        timer = _wrap_timer(timer)
     t = Timer(stmt, setup, timer)
     if number == 0:
         # determine number so that 0.2 <= total time < 2.0

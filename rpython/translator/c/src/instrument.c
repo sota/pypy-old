@@ -1,15 +1,15 @@
-#include "common_header.h"
 #include <src/instrument.h>
+#include "common_header.h"
 
 #ifdef  PYPY_INSTRUMENT
 
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
-#include <stdlib.h>
-#include <stdio.h>
 #ifndef _WIN32
 #include <sys/mman.h>
+#include <stdlib.h>
+#include <stdio.h>
 #include <unistd.h>
 #else
 #include <windows.h>

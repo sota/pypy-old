@@ -6,7 +6,8 @@
 # XXX We should try to generalize and single out one approach to dynamic
 # XXX code compilation.
 
-import sys, os, inspect, types
+import types
+import sys, os, inspect, new
 import py
 
 def render_docstr(func, indent_str='', closing_str=''):
@@ -127,7 +128,7 @@ def newcode(fromcode, **kwargs):
     for name in names:
         if name not in kwargs:
             kwargs[name] = getattr(fromcode, name)
-    return types.CodeType(
+    return new.code(
              kwargs['co_argcount'],
              kwargs['co_nlocals'],
              kwargs['co_stacksize'],
@@ -168,14 +169,14 @@ def compile2(source, filename='', mode='exec', flags=
     try:
         co = compile2_cache[key]
         #print "***** duplicate code ******* "
-        #print source
-    except KeyError:
-        #if DEBUG:
-        co = py.code.compile(source, filename, mode, flags)
-        #else:
-        #    co = compile(source, filename, mode, flags)
-        compile2_cache[key] = co
-    return co
+        #print source 
+    except KeyError: 
+        #if DEBUG: 
+        co = py.code.compile(source, filename, mode, flags) 
+        #else: 
+        #    co = compile(source, filename, mode, flags) 
+        compile2_cache[key] = co 
+    return co 
 
 compile2_cache = {}
 
@@ -202,7 +203,7 @@ def compile_template(source, resultname):
         localnames = locals.keys()
         localnames.sort()
     values = [locals[key] for key in localnames]
-
+    
     source = source.putaround(
         before = "def container(%s):" % (', '.join(localnames),),
         after  = "# no unindent\n    return %s" % resultname)
@@ -218,8 +219,9 @@ def func_with_new_name(func, newname, globals=None):
     """Make a renamed copy of a function."""
     if globals is None:
         globals = func.func_globals
-    f = types.FunctionType(func.func_code, globals, newname,
-            func.func_defaults, func.func_closure)
+    f = new.function(func.func_code, globals,
+                        newname, func.func_defaults,
+                        func.func_closure)
     if func.func_dict:
         f.func_dict = {}
         f.func_dict.update(func.func_dict)
@@ -294,3 +296,40 @@ def rpython_wrapper(f, template, templateargs=None, **globaldict):
     result.func_defaults = f.func_defaults
     result.func_dict.update(f.func_dict)
     return result
+
+
+def _convert_const_maybe(x, encoding):
+    if isinstance(x, str):
+        return x.decode(encoding)
+    elif isinstance(x, tuple):
+        items = [_convert_const_maybe(item, encoding) for item in x]
+        return tuple(items)
+    return x
+    
+def with_unicode_literals(fn=None, **kwds):
+    """Decorator that replace all string literals with unicode literals.
+    Similar to 'from __future__ import string literals' at function level.
+    Useful to limit changes in the py3k branch.
+    """
+    encoding = kwds.pop('encoding', 'ascii')
+    if kwds:
+        raise TypeError("Unexpected keyword argument(s): %s" % ', '.join(kwds.keys()))
+    def decorator(fn):
+        co = fn.func_code
+        new_consts = []
+        for const in co.co_consts:
+            new_consts.append(_convert_const_maybe(const, encoding))
+        new_consts = tuple(new_consts)
+        new_code = types.CodeType(co.co_argcount, co.co_nlocals, co.co_stacksize,
+                                  co.co_flags, co.co_code, new_consts, co.co_names,
+                                  co.co_varnames, co.co_filename, co.co_name,
+                                  co.co_firstlineno, co.co_lnotab)
+        fn.func_code = new_code
+        return fn
+    #
+    # support the usage of @with_unicode_literals instead of @with_unicode_literals()
+    if fn is not None:
+        assert type(fn) is types.FunctionType
+        return decorator(fn)
+    else:
+        return decorator

@@ -4,7 +4,7 @@ PyCode instances have the same co_xxx arguments as CPython code objects.
 The bytecode interpreter itself is implemented by the PyFrame class.
 """
 
-import dis, imp, struct, types, new, sys, os
+import dis, imp, struct, types, new, sys
 
 from pypy.interpreter import eval
 from pypy.interpreter.signature import Signature
@@ -12,12 +12,11 @@ from pypy.interpreter.error import OperationError
 from pypy.interpreter.gateway import unwrap_spec
 from pypy.interpreter.astcompiler.consts import (
     CO_OPTIMIZED, CO_NEWLOCALS, CO_VARARGS, CO_VARKEYWORDS, CO_NESTED,
-    CO_GENERATOR, CO_KILL_DOCSTRING, CO_YIELD_INSIDE_TRY)
+    CO_GENERATOR)
 from pypy.tool.stdlib_opcode import opcodedesc, HAVE_ARGUMENT
-from rpython.rlib.rarithmetic import intmask, r_longlong
+from rpython.rlib.rarithmetic import intmask
 from rpython.rlib.objectmodel import compute_hash
 from rpython.rlib import jit
-from rpython.rlib.debug import debug_start, debug_stop, debug_print
 
 
 class BytecodeCorruption(Exception):
@@ -32,36 +31,33 @@ def unpack_str_tuple(space,w_str_tuple):
 # Magic numbers for the bytecode version in code objects.
 # See comments in pypy/module/imp/importing.
 cpython_magic, = struct.unpack("<i", imp.get_magic())   # host magic number
-default_magic = (0xf303 + 7) | 0x0a0d0000               # this PyPy's magic
+default_magic = (168686339+2) | 0x0a0d0000              # this PyPy's magic
                                                         # (from CPython 2.7.0)
 
 # cpython_code_signature helper
 def cpython_code_signature(code):
     "([list-of-arg-names], vararg-name-or-None, kwarg-name-or-None)."
     argcount = code.co_argcount
-    varnames = code.co_varnames
     assert argcount >= 0     # annotator hint
-    argnames = list(varnames[:argcount])
+    argnames = list(code.co_varnames[:argcount])
     if code.co_flags & CO_VARARGS:
-        varargname = varnames[argcount]
+        varargname = code.co_varnames[argcount]
         argcount += 1
     else:
         varargname = None
-    kwargname = varnames[argcount] if code.co_flags & CO_VARKEYWORDS else None
+    if code.co_flags & CO_VARKEYWORDS:
+        kwargname = code.co_varnames[argcount]
+        argcount += 1
+    else:
+        kwargname = None
     return Signature(argnames, varargname, kwargname)
 
-class CodeHookCache(object):
-    def __init__(self, space):
-        self._code_hook = None
 
 class PyCode(eval.Code):
     "CPython-style code objects."
-    _immutable_fields_ = ["_signature", "co_argcount", "co_cellvars[*]",
-                          "co_code", "co_consts_w[*]", "co_filename",
-                          "co_firstlineno", "co_flags", "co_freevars[*]",
-                          "co_lnotab", "co_names_w[*]", "co_nlocals",
-                          "co_stacksize", "co_varnames[*]",
-                          "_args_as_cellvars[*]", "w_globals?"]
+    _immutable_ = True
+    _immutable_fields_ = ["co_consts_w[*]", "co_names_w[*]", "co_varnames[*]",
+                          "co_freevars[*]", "co_cellvars[*]", "_args_as_cellvars[*]"]
 
     def __init__(self, space,  argcount, nlocals, stacksize, flags,
                      code, consts, names, varnames, filename,
@@ -86,32 +82,10 @@ class PyCode(eval.Code):
         self.co_name = name
         self.co_firstlineno = firstlineno
         self.co_lnotab = lnotab
-        # store the first globals object that the code object is run in in
-        # here. if a frame is run in that globals object, it does not need to
-        # store it at all
-        self.w_globals = None
         self.hidden_applevel = hidden_applevel
         self.magic = magic
         self._signature = cpython_code_signature(self)
         self._initialize()
-        self._init_ready()
-        self.new_code_hook()
-
-    def frame_stores_global(self, w_globals):
-        if self.w_globals is None:
-            self.w_globals = w_globals
-            return False
-        if self.w_globals is w_globals:
-            return False
-        return True
-
-    def new_code_hook(self):
-        code_hook = self.space.fromcache(CodeHookCache)._code_hook
-        if code_hook is not None:
-            try:
-                self.space.call_function(code_hook, self)
-            except OperationError, e:
-                e.write_unraisable(self.space, "new_code_hook()")
 
     def _initialize(self):
         if self.co_cellvars:
@@ -153,24 +127,10 @@ class PyCode(eval.Code):
             from pypy.objspace.std.mapdict import init_mapdict_cache
             init_mapdict_cache(self)
 
-    def _init_ready(self):
-        "This is a hook for the vmprof module, which overrides this method."
-
     def _cleanup_(self):
         if (self.magic == cpython_magic and
             '__pypy__' not in sys.builtin_module_names):
             raise Exception("CPython host codes should not be rendered")
-        # When translating PyPy, freeze the file name
-        #     <builtin>/lastdirname/basename.py
-        # instead of freezing the complete translation-time path.
-        filename = self.co_filename.lstrip('<').rstrip('>')
-        if filename.lower().endswith('.pyc'):
-            filename = filename[:-1]
-        basename = os.path.basename(filename)
-        lastdirname = os.path.basename(os.path.dirname(filename))
-        if lastdirname:
-            basename = '%s/%s' % (lastdirname, basename)
-        self.co_filename = '<builtin>/%s' % (basename,)
 
     co_names = property(lambda self: [self.space.unwrap(w_name) for w_name in self.co_names_w]) # for trace
 
@@ -229,8 +189,9 @@ class PyCode(eval.Code):
         # speed hack
         fresh_frame = jit.hint(frame, access_directly=True,
                                       fresh_virtualizable=True)
-        args.parse_into_scope(None, fresh_frame.locals_cells_stack_w, func.name,
-                              sig, func.defs_w)
+        args_matched = args.parse_into_scope(None, fresh_frame.locals_stack_w,
+                                             func.name,
+                                             sig, func.defs_w)
         fresh_frame.init_cells()
         return frame.run()
 
@@ -241,8 +202,9 @@ class PyCode(eval.Code):
         # speed hack
         fresh_frame = jit.hint(frame, access_directly=True,
                                       fresh_virtualizable=True)
-        args.parse_into_scope(w_obj, fresh_frame.locals_cells_stack_w, func.name,
-                              sig, func.defs_w)
+        args_matched = args.parse_into_scope(w_obj, fresh_frame.locals_stack_w,
+                                             func.name,
+                                             sig, func.defs_w)
         fresh_frame.init_cells()
         return frame.run()
 
@@ -255,13 +217,6 @@ class PyCode(eval.Code):
             if space.isinstance_w(w_first, space.w_basestring):
                 return w_first
         return space.w_None
-
-    def remove_docstrings(self, space):
-        if self.co_flags & CO_KILL_DOCSTRING:
-            self.co_consts_w[0] = space.w_None
-        for w_co in self.co_consts_w:
-            if isinstance(w_co, PyCode):
-                w_co.remove_docstrings(space)
 
     def _to_code(self):
         """For debugging only."""
@@ -289,9 +244,8 @@ class PyCode(eval.Code):
                         tuple(self.co_cellvars))
 
     def exec_host_bytecode(self, w_globals, w_locals):
-        if sys.version_info < (2, 7):
-            raise Exception("PyPy no longer supports Python 2.6 or lower")
-        frame = self.space.FrameClass(self.space, self, w_globals, None)
+        from pypy.interpreter.pyframe import CPythonFrame
+        frame = CPythonFrame(self.space, self, w_globals, None)
         frame.setdictscope(w_locals)
         return frame.run()
 
@@ -424,9 +378,6 @@ class PyCode(eval.Code):
     def get_repr(self):
         return "<code object %s, file '%s', line %d>" % (
             self.co_name, self.co_filename, self.co_firstlineno)
-
-    def __repr__(self):
-        return self.get_repr()
 
     def repr(self, space):
         return space.wrap(self.get_repr())

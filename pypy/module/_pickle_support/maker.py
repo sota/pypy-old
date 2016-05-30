@@ -3,8 +3,9 @@ from pypy.interpreter.nestedscope import Cell
 from pypy.interpreter.pycode import PyCode
 from pypy.interpreter.function import Function, Method
 from pypy.interpreter.module import Module
+from pypy.interpreter.pyframe import PyFrame
 from pypy.interpreter.pytraceback import PyTraceback
-from pypy.interpreter.generator import GeneratorIteratorWithDel
+from pypy.interpreter.generator import GeneratorIterator
 from rpython.rlib.objectmodel import instantiate
 from pypy.interpreter.gateway import unwrap_spec
 from pypy.objspace.std.iterobject import W_SeqIterObject, W_ReverseSeqIterObject
@@ -58,8 +59,11 @@ def traceback_new(space):
     tb = instantiate(PyTraceback)
     return space.wrap(tb)
 
-def generator_new(space):
-    new_generator = instantiate(GeneratorIteratorWithDel)
+@unwrap_spec(running=int)
+def generator_new(space, w_frame, running):
+    frame = space.interp_w(PyFrame, w_frame, can_be_None=True)
+    new_generator = GeneratorIterator(frame)
+    new_generator.running = running
     return space.wrap(new_generator)
 
 @unwrap_spec(current=int, remaining=int, step=int)

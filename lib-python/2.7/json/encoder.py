@@ -4,21 +4,6 @@ import re
 
 from __pypy__.builders import StringBuilder, UnicodeBuilder
 
-class StringOrUnicodeBuilder(object):
-    def __init__(self):
-        self._builder = StringBuilder()
-    def append(self, string):
-        if (isinstance(string, unicode) and
-                type(self._builder) is StringBuilder):
-            ub = UnicodeBuilder()
-            ub.append(self._builder.build())
-            self._builder = ub
-            self.append = ub.append   # shortcut only
-        self._builder.append(string)
-    def build(self):
-        return self._builder.build()
-
-
 ESCAPE = re.compile(r'[\x00-\x1f\\"\b\f\n\r\t]')
 ESCAPE_ASCII = re.compile(r'([\\"]|[^\ -~])')
 HAS_UTF8 = re.compile(r'[\x80-\xff]')
@@ -34,7 +19,8 @@ ESCAPE_DCT = {
 for i in range(0x20):
     ESCAPE_DCT.setdefault(chr(i), '\\u%04x' % (i,))
 
-INFINITY = float('inf')
+# Assume this produces an infinity on all machines (probably not guaranteed)
+INFINITY = float('1e66666')
 FLOAT_REPR = repr
 
 def raw_encode_basestring(s):
@@ -112,12 +98,9 @@ class JSONEncoder(object):
         encoding of keys that are not str, int, long, float or None.  If
         skipkeys is True, such items are simply skipped.
 
-        If *ensure_ascii* is true (the default), all non-ASCII
-        characters in the output are escaped with \uXXXX sequences,
-        and the results are str instances consisting of ASCII
-        characters only.  If ensure_ascii is False, a result may be a
-        unicode instance.  This usually happens if the input contains
-        unicode strings or the *encoding* parameter is used.
+        If ensure_ascii is true, the output is guaranteed to be str
+        objects with all incoming unicode characters escaped.  If
+        ensure_ascii is false, the output will be unicode object.
 
         If check_circular is true, then lists, dicts, and custom encoded
         objects will be checked for circular references during encoding to
@@ -136,10 +119,7 @@ class JSONEncoder(object):
         If indent is a non-negative integer, then JSON array
         elements and object members will be pretty-printed with that
         indent level.  An indent level of 0 will only insert newlines.
-        None is the most compact representation.  Since the default
-        item separator is ', ',  the output might include trailing
-        whitespace when indent is specified.  You can use
-        separators=(',', ': ') to avoid this.
+        None is the most compact representation.
 
         If specified, separators should be a (item_separator, key_separator)
         tuple.  The default is (', ', ': ').  To get the most compact JSON
@@ -193,7 +173,6 @@ class JSONEncoder(object):
                     pass
                 else:
                     return list(iterable)
-                # Let the base class default method raise the TypeError
                 return JSONEncoder.default(self, o)
 
         """
@@ -213,7 +192,7 @@ class JSONEncoder(object):
         if self.ensure_ascii:
             builder = StringBuilder()
         else:
-            builder = StringOrUnicodeBuilder()
+            builder = UnicodeBuilder()
         self.__encode(o, markers, builder, 0)
         return builder.build()
 
@@ -529,10 +508,3 @@ class JSONEncoder(object):
                                           _current_indent_level):
                 yield chunk
             self.__remove_markers(markers, o)
-
-
-# overwrite some helpers here with more efficient versions
-try:
-    from _pypyjson import raw_encode_basestring_ascii
-except ImportError:
-    pass

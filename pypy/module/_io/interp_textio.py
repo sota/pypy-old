@@ -1,13 +1,13 @@
 import sys
 
 from pypy.interpreter.baseobjspace import W_Root
-from pypy.interpreter.error import OperationError, oefmt
+from pypy.interpreter.error import OperationError
 from pypy.interpreter.gateway import WrappedDefault, interp2app, unwrap_spec
 from pypy.interpreter.typedef import (
     GetSetProperty, TypeDef, generic_new_descr, interp_attrproperty,
     interp_attrproperty_w)
 from pypy.module._codecs import interp_codecs
-from pypy.module._io.interp_iobase import W_IOBase, convert_size, trap_eintr
+from pypy.module._io.interp_iobase import W_IOBase, convert_size
 from rpython.rlib.rarithmetic import intmask, r_uint, r_ulonglong
 from rpython.rlib.rbigint import rbigint
 from rpython.rlib.rstring import UnicodeBuilder
@@ -178,7 +178,7 @@ class W_IncrementalNewlineDecoder(W_Root):
             space.call_method(self.w_decoder, "setstate", w_state)
 
 W_IncrementalNewlineDecoder.typedef = TypeDef(
-    '_io.IncrementalNewlineDecoder',
+    'IncrementalNewlineDecoder',
     __new__ = generic_new_descr(W_IncrementalNewlineDecoder),
     __init__  = interp2app(W_IncrementalNewlineDecoder.descr_init),
 
@@ -196,6 +196,11 @@ class W_TextIOBase(W_IOBase):
     def __init__(self, space):
         W_IOBase.__init__(self, space)
 
+    def _unsupportedoperation(self, space, message):
+        w_exc = space.getattr(space.getbuiltinmodule('_io'),
+                              space.wrap('UnsupportedOperation'))
+        raise OperationError(w_exc, space.wrap(message))
+
     def read_w(self, space, w_size=None):
         self._unsupportedoperation(space, "read")
 
@@ -211,8 +216,6 @@ class W_TextIOBase(W_IOBase):
     def errors_get_w(self, space):
         return space.w_None
 
-    def newlines_get_w(self, space):
-        return space.w_None
 
     def _find_line_ending(self, line, start, end):
         size = end - start
@@ -257,15 +260,13 @@ class W_TextIOBase(W_IOBase):
 
 
 W_TextIOBase.typedef = TypeDef(
-    '_io._TextIOBase', W_IOBase.typedef,
+    '_TextIOBase', W_IOBase.typedef,
     __new__ = generic_new_descr(W_TextIOBase),
 
     read = interp2app(W_TextIOBase.read_w),
     readline = interp2app(W_TextIOBase.readline_w),
-    write = interp2app(W_TextIOBase.write_w),
     detach = interp2app(W_TextIOBase.detach_w),
     encoding = interp_attrproperty_w("w_encoding", W_TextIOBase),
-    newlines = GetSetProperty(W_TextIOBase.newlines_get_w),
     errors = GetSetProperty(W_TextIOBase.errors_get_w),
 )
 
@@ -330,13 +331,6 @@ class PositionSnapshot:
     def __init__(self, flags, input):
         self.flags = flags
         self.input = input
-
-
-def check_decoded(space, w_decoded):
-    if not space.isinstance_w(w_decoded, space.w_unicode):
-        msg = "decoder should return a string result, not '%T'"
-        raise oefmt(space.w_TypeError, msg, w_decoded)
-
 
 class W_TextIOWrapper(W_TextIOBase):
     def __init__(self, space):
@@ -431,19 +425,15 @@ class W_TextIOWrapper(W_TextIOBase):
         if self.state == STATE_ZERO:
             raise OperationError(space.w_ValueError, space.wrap(
                 "I/O operation on uninitialized object"))
-
-    def _check_attached(self, space):
-        if self.state == STATE_DETACHED:
+        elif self.state == STATE_DETACHED:
             raise OperationError(space.w_ValueError, space.wrap(
                 "underlying buffer has been detached"))
-        self._check_init(space)
 
     def _check_closed(self, space, message=None):
         self._check_init(space)
         W_TextIOBase._check_closed(self, space, message)
 
     def descr_repr(self, space):
-        self._check_init(space)
         w_name = space.findattr(self, space.wrap("name"))
         if w_name is None:
             w_name_str = space.wrap("")
@@ -455,41 +445,36 @@ class W_TextIOWrapper(W_TextIOBase):
         )
 
     def readable_w(self, space):
-        self._check_attached(space)
+        self._check_init(space)
         return space.call_method(self.w_buffer, "readable")
 
     def writable_w(self, space):
-        self._check_attached(space)
+        self._check_init(space)
         return space.call_method(self.w_buffer, "writable")
 
     def seekable_w(self, space):
-        self._check_attached(space)
+        self._check_init(space)
         return space.call_method(self.w_buffer, "seekable")
 
-    def isatty_w(self, space):
-        self._check_attached(space)
-        return space.call_method(self.w_buffer, "isatty")
-
     def fileno_w(self, space):
-        self._check_attached(space)
+        self._check_init(space)
         return space.call_method(self.w_buffer, "fileno")
 
     def closed_get_w(self, space):
-        self._check_attached(space)
+        self._check_init(space)
         return space.getattr(self.w_buffer, space.wrap("closed"))
 
     def newlines_get_w(self, space):
-        self._check_attached(space)
+        self._check_init(space)
         if self.w_decoder is None:
             return space.w_None
         return space.findattr(self.w_decoder, space.wrap("newlines"))
 
     def name_get_w(self, space):
-        self._check_attached(space)
+        self._check_init(space)
         return space.getattr(self.w_buffer, space.wrap("name"))
 
     def flush_w(self, space):
-        self._check_attached(space)
         self._check_closed(space)
         self.telling = self.seekable
         self._writeflush(space)
@@ -497,20 +482,17 @@ class W_TextIOWrapper(W_TextIOBase):
 
     @unwrap_spec(w_pos = WrappedDefault(None))
     def truncate_w(self, space, w_pos=None):
-        self._check_attached(space)
+        self._check_init(space)
 
         space.call_method(self, "flush")
         return space.call_method(self.w_buffer, "truncate", w_pos)
 
     def close_w(self, space):
-        self._check_attached(space)
+        self._check_init(space)
         if not space.is_true(space.getattr(self.w_buffer,
                                            space.wrap("closed"))):
-            try:
-                space.call_method(self, "flush")
-            finally:
-                ret = space.call_method(self.w_buffer, "close")
-            return ret
+            space.call_method(self, "flush")
+            return space.call_method(self.w_buffer, "close")
 
     # _____________________________________________________________
     # read methods
@@ -566,16 +548,9 @@ class W_TextIOWrapper(W_TextIOBase):
         # Read a chunk, decode it, and put the result in self._decoded_chars
         w_input = space.call_method(self.w_buffer, "read1",
                                     space.wrap(self.chunk_size))
-
-        if not space.isinstance_w(w_input, space.w_str):
-            msg = "decoder getstate() should have returned a bytes " \
-                  "object not '%T'"
-            raise oefmt(space.w_TypeError, msg, w_input)
-
         eof = space.len_w(w_input) == 0
         w_decoded = space.call_method(self.w_decoder, "decode",
                                       w_input, space.wrap(eof))
-        check_decoded(space, w_decoded)
         self._set_decoded_chars(space.unicode_w(w_decoded))
         if space.len_w(w_decoded) > 0:
             eof = False
@@ -589,7 +564,6 @@ class W_TextIOWrapper(W_TextIOBase):
         return not eof
 
     def next_w(self, space):
-        self._check_attached(space)
         self.telling = False
         try:
             return W_TextIOBase.next_w(self, space)
@@ -599,19 +573,16 @@ class W_TextIOWrapper(W_TextIOBase):
             raise
 
     def read_w(self, space, w_size=None):
-        self._check_attached(space)
         self._check_closed(space)
         if not self.w_decoder:
             raise OperationError(space.w_IOError, space.wrap("not readable"))
 
         size = convert_size(space, w_size)
         self._writeflush(space)
-
         if size < 0:
             # Read everything
             w_bytes = space.call_method(self.w_buffer, "read")
             w_decoded = space.call_method(self.w_decoder, "decode", w_bytes, space.w_True)
-            check_decoded(space, w_decoded)
             w_result = space.wrap(self._get_decoded_chars(-1))
             w_final = space.add(w_result, w_decoded)
             self.snapshot = None
@@ -629,19 +600,13 @@ class W_TextIOWrapper(W_TextIOBase):
             if remaining <= 0: # Done
                 break
 
-            try:
-                if not self._read_chunk(space):
-                    # EOF
-                    break
-            except OperationError, e:
-                if trap_eintr(space, e):
-                    continue
-                raise
+            if not self._read_chunk(space):
+                # EOF
+                break
 
         return space.wrap(builder.build())
 
     def readline_w(self, space, w_limit=None):
-        self._check_attached(space)
         self._check_closed(space)
         self._writeflush(space)
 
@@ -656,14 +621,9 @@ class W_TextIOWrapper(W_TextIOBase):
             # First, get some data if necessary
             has_data = True
             while not self.decoded_chars:
-                try:
-                    if not self._read_chunk(space):
-                        has_data = False
-                        break
-                except OperationError, e:
-                    if trap_eintr(space, e):
-                        continue
-                    raise
+                if not self._read_chunk(space):
+                    has_data = False
+                    break
             if not has_data:
                 # end of file
                 self._set_decoded_chars(None)
@@ -737,15 +697,11 @@ class W_TextIOWrapper(W_TextIOBase):
     # write methods
 
     def write_w(self, space, w_text):
-        self._check_attached(space)
+        self._check_init(space)
         self._check_closed(space)
 
         if not self.w_encoder:
             raise OperationError(space.w_IOError, space.wrap("not writable"))
-
-        if not space.isinstance_w(w_text, space.w_unicode):
-            msg = "unicode argument expected, got '%T'"
-            raise oefmt(space.w_TypeError, msg, w_text)
 
         text = space.unicode_w(w_text)
         textlen = len(text)
@@ -798,18 +754,10 @@ class W_TextIOWrapper(W_TextIOBase):
         self.pending_bytes = None
         self.pending_bytes_count = 0
 
-        while True:
-            try:
-                space.call_method(self.w_buffer, "write", space.wrap(pending_bytes))
-            except OperationError, e:
-                if trap_eintr(space, e):
-                    continue
-                raise
-            else:
-                break
+        space.call_method(self.w_buffer, "write", space.wrap(pending_bytes))
 
     def detach_w(self, space):
-        self._check_attached(space)
+        self._check_init(space)
         space.call_method(self, "flush")
         w_buffer = self.w_buffer
         self.w_buffer = None
@@ -842,7 +790,7 @@ class W_TextIOWrapper(W_TextIOBase):
 
     @unwrap_spec(whence=int)
     def seek_w(self, space, w_pos, whence=0):
-        self._check_attached(space)
+        self._check_closed(space)
 
         if not self.seekable:
             raise OperationError(space.w_IOError, space.wrap(
@@ -899,17 +847,11 @@ class W_TextIOWrapper(W_TextIOBase):
             # Just like _read_chunk, feed the decoder and save a snapshot.
             w_chunk = space.call_method(self.w_buffer, "read",
                                         space.wrap(cookie.bytes_to_feed))
-            if not space.isinstance_w(w_chunk, space.w_str):
-                msg = "underlying read() should have returned " \
-                      "a bytes object, not '%T'"
-                raise oefmt(space.w_TypeError, msg, w_chunk)
-
             self.snapshot = PositionSnapshot(cookie.dec_flags,
                                              space.str_w(w_chunk))
 
             w_decoded = space.call_method(self.w_decoder, "decode",
                                           w_chunk, space.wrap(cookie.need_eof))
-            check_decoded(space, w_decoded)
             self._set_decoded_chars(space.unicode_w(w_decoded))
 
             # Skip chars_to_skip of the decoded characters
@@ -978,7 +920,6 @@ class W_TextIOWrapper(W_TextIOBase):
             while i < len(input):
                 w_decoded = space.call_method(self.w_decoder, "decode",
                                               space.wrap(input[i]))
-                check_decoded(space, w_decoded)
                 chars_decoded += len(space.unicode_w(w_decoded))
 
                 cookie.bytes_to_feed += 1
@@ -1003,7 +944,6 @@ class W_TextIOWrapper(W_TextIOBase):
                 w_decoded = space.call_method(self.w_decoder, "decode",
                                               space.wrap(""),
                                               space.wrap(1)) # final=1
-                check_decoded(space, w_decoded)
                 chars_decoded += len(space.unicode_w(w_decoded))
                 cookie.need_eof = 1
 
@@ -1018,11 +958,11 @@ class W_TextIOWrapper(W_TextIOBase):
         return space.newlong_from_rbigint(cookie.pack())
 
     def chunk_size_get_w(self, space):
-        self._check_attached(space)
+        self._check_init(space)
         return space.wrap(self.chunk_size)
 
     def chunk_size_set_w(self, space, w_size):
-        self._check_attached(space)
+        self._check_init(space)
         size = space.int_w(w_size)
         if size <= 0:
             raise OperationError(space.w_ValueError,
@@ -1031,10 +971,11 @@ class W_TextIOWrapper(W_TextIOBase):
         self.chunk_size = size
 
 W_TextIOWrapper.typedef = TypeDef(
-    '_io.TextIOWrapper', W_TextIOBase.typedef,
+    'TextIOWrapper', W_TextIOBase.typedef,
     __new__ = generic_new_descr(W_TextIOWrapper),
     __init__  = interp2app(W_TextIOWrapper.descr_init),
     __repr__ = interp2app(W_TextIOWrapper.descr_repr),
+    __module__ = "_io",
 
     next = interp2app(W_TextIOWrapper.next_w),
     read = interp2app(W_TextIOWrapper.read_w),
@@ -1051,7 +992,6 @@ W_TextIOWrapper.typedef = TypeDef(
     readable = interp2app(W_TextIOWrapper.readable_w),
     writable = interp2app(W_TextIOWrapper.writable_w),
     seekable = interp2app(W_TextIOWrapper.seekable_w),
-    isatty = interp2app(W_TextIOWrapper.isatty_w),
     fileno = interp2app(W_TextIOWrapper.fileno_w),
     name = GetSetProperty(W_TextIOWrapper.name_get_w),
     buffer = interp_attrproperty_w("w_buffer", cls=W_TextIOWrapper),

@@ -1,12 +1,10 @@
 from rpython.annotator import model as annmodel
-from rpython.rtyper.llannotation import SomePtr
 from rpython.rlib.debug import ll_assert
 from rpython.rlib.nonconst import NonConstant
 from rpython.rlib import rgc
 from rpython.rtyper import rmodel
 from rpython.rtyper.annlowlevel import llhelper
 from rpython.rtyper.lltypesystem import lltype, llmemory
-from rpython.rtyper.llannotation import SomeAddress
 from rpython.memory.gctransform.framework import (
      BaseFrameworkGCTransformer, BaseRootWalker, sizeofaddr)
 from rpython.rtyper.rbuiltin import gen_cast
@@ -16,11 +14,11 @@ class ShadowStackFrameworkGCTransformer(BaseFrameworkGCTransformer):
     def annotate_walker_functions(self, getfn):
         self.incr_stack_ptr = getfn(self.root_walker.incr_stack,
                                    [annmodel.SomeInteger()],
-                                   SomeAddress(),
+                                   annmodel.SomeAddress(),
                                    inline = True)
         self.decr_stack_ptr = getfn(self.root_walker.decr_stack,
                                    [annmodel.SomeInteger()],
-                                   SomeAddress(),
+                                   annmodel.SomeAddress(),
                                    inline = True)
 
     def build_root_walker(self):
@@ -73,13 +71,16 @@ class ShadowStackRootWalker(BaseRootWalker):
             return top
         self.decr_stack = decr_stack
 
+        root_iterator = get_root_iterator(gctransformer)
         def walk_stack_root(callback, start, end):
+            root_iterator.setcontext(NonConstant(llmemory.NULL))
             gc = self.gc
             addr = end
-            while addr != start:
-                addr -= sizeofaddr
-                if gc.points_to_valid_gc_object(addr):
-                    callback(gc, addr)
+            while True:
+                addr = root_iterator.nextleft(gc, start, addr)
+                if addr == llmemory.NULL:
+                    return
+                callback(gc, addr)
         self.rootstackhook = walk_stack_root
 
         self.shadow_stack_pool = ShadowStackPool(gcdata)
@@ -99,7 +100,7 @@ class ShadowStackRootWalker(BaseRootWalker):
         self.shadow_stack_pool.initial_setup()
         BaseRootWalker.setup_root_walker(self)
 
-    def walk_stack_roots(self, collect_stack_root, is_minor=False):
+    def walk_stack_roots(self, collect_stack_root):
         gcdata = self.gcdata
         self.rootstackhook(collect_stack_root,
                            gcdata.root_stack_base, gcdata.root_stack_top)
@@ -132,12 +133,8 @@ class ShadowStackRootWalker(BaseRootWalker):
             gcdata.root_stack_top/root_stack_base is the one corresponding
             to the current thread.
             No GC operation here, e.g. no mallocs or storing in a dict!
-
-            Note that here specifically we don't call rthread.get_ident(),
-            but rthread.get_or_make_ident().  We are possibly in a fresh
-            new thread, so we need to be careful.
             """
-            tid = rthread.get_or_make_ident()
+            tid = get_tid()
             if gcdata.active_tid != tid:
                 switch_shadow_stacks(tid)
 
@@ -180,7 +177,7 @@ class ShadowStackRootWalker(BaseRootWalker):
                 thread_stacks[gcdata.active_tid] = old_ref
             #
             # no GC operation from here -- switching shadowstack!
-            shadow_stack_pool.save_current_state_away(old_ref)
+            shadow_stack_pool.save_current_state_away(old_ref, llmemory.NULL)
             if new_ref:
                 shadow_stack_pool.restore_state_from(new_ref)
             else:
@@ -214,21 +211,71 @@ class ShadowStackRootWalker(BaseRootWalker):
         # no thread_before_fork_ptr here
         self.thread_after_fork_ptr = getfn(thread_after_fork,
                                            [annmodel.SomeInteger(),
-                                            SomeAddress()],
+                                            annmodel.SomeAddress()],
                                            annmodel.s_None,
                                            minimal_transform=False)
 
     def need_stacklet_support(self, gctransformer, getfn):
-        from rpython.rlib import _stacklet_shadowstack
-        _stacklet_shadowstack.complete_destrptr(gctransformer)
+        shadow_stack_pool = self.shadow_stack_pool
+        SHADOWSTACKREF = get_shadowstackref(self, gctransformer)
+
+        def gc_shadowstackref_new():
+            ssref = shadow_stack_pool.allocate(SHADOWSTACKREF)
+            return lltype.cast_opaque_ptr(llmemory.GCREF, ssref)
+
+        def gc_shadowstackref_context(gcref):
+            ssref = lltype.cast_opaque_ptr(lltype.Ptr(SHADOWSTACKREF), gcref)
+            return ssref.context
+
+        def gc_save_current_state_away(gcref, ncontext):
+            ssref = lltype.cast_opaque_ptr(lltype.Ptr(SHADOWSTACKREF), gcref)
+            shadow_stack_pool.save_current_state_away(ssref, ncontext)
+
+        def gc_forget_current_state():
+            shadow_stack_pool.forget_current_state()
+
+        def gc_restore_state_from(gcref):
+            ssref = lltype.cast_opaque_ptr(lltype.Ptr(SHADOWSTACKREF), gcref)
+            shadow_stack_pool.restore_state_from(ssref)
+
+        def gc_start_fresh_new_state():
+            shadow_stack_pool.start_fresh_new_state()
+
+        s_gcref = annmodel.SomePtr(llmemory.GCREF)
+        s_addr = annmodel.SomeAddress()
+        self.gc_shadowstackref_new_ptr = getfn(gc_shadowstackref_new,
+                                               [], s_gcref,
+                                               minimal_transform=False)
+        self.gc_shadowstackref_context_ptr = getfn(gc_shadowstackref_context,
+                                                   [s_gcref], s_addr,
+                                                   inline=True)
+        self.gc_save_current_state_away_ptr = getfn(gc_save_current_state_away,
+                                                    [s_gcref, s_addr],
+                                                    annmodel.s_None,
+                                                    inline=True)
+        self.gc_forget_current_state_ptr = getfn(gc_forget_current_state,
+                                                 [], annmodel.s_None,
+                                                 inline=True)
+        self.gc_restore_state_from_ptr = getfn(gc_restore_state_from,
+                                               [s_gcref], annmodel.s_None,
+                                               inline=True)
+        self.gc_start_fresh_new_state_ptr = getfn(gc_start_fresh_new_state,
+                                                  [], annmodel.s_None,
+                                                  inline=True)
 
 # ____________________________________________________________
 
 class ShadowStackPool(object):
-    """Manages a pool of shadowstacks.
+    """Manages a pool of shadowstacks.  The MAX most recently used
+    shadowstacks are fully allocated and can be directly jumped into.
+    The rest are stored in a more virtual-memory-friendly way, i.e.
+    with just the right amount malloced.  Before they can run, they
+    must be copied into a full shadowstack.  XXX NOT IMPLEMENTED SO FAR!
     """
     _alloc_flavor_ = "raw"
     root_stack_depth = 163840
+
+    #MAX = 20  not implemented yet
 
     def __init__(self, gcdata):
         self.unused_full_stack = llmemory.NULL
@@ -242,7 +289,7 @@ class ShadowStackPool(object):
         """Allocate an empty SHADOWSTACKREF object."""
         return lltype.malloc(SHADOWSTACKREF, zero=True)
 
-    def save_current_state_away(self, shadowstackref):
+    def save_current_state_away(self, shadowstackref, ncontext):
         """Save the current state away into 'shadowstackref'.
         This either works, or raise MemoryError and nothing is done.
         To do a switch, first call save_current_state_away() or
@@ -252,15 +299,17 @@ class ShadowStackPool(object):
         self._prepare_unused_stack()
         shadowstackref.base = self.gcdata.root_stack_base
         shadowstackref.top  = self.gcdata.root_stack_top
+        shadowstackref.context = ncontext
         ll_assert(shadowstackref.base <= shadowstackref.top,
                   "save_current_state_away: broken shadowstack")
+        #shadowstackref.fullstack = True
         #
-        # cannot use llop.gc_writebarrier() here, because
+        # cannot use llop.gc_assume_young_pointers() here, because
         # we are in a minimally-transformed GC helper :-/
         gc = self.gcdata.gc
-        if hasattr(gc.__class__, 'write_barrier'):
+        if hasattr(gc.__class__, 'assume_young_pointers'):
             shadowstackadr = llmemory.cast_ptr_to_adr(shadowstackref)
-            gc.write_barrier(shadowstackadr)
+            gc.assume_young_pointers(shadowstackadr)
         #
         self.gcdata.root_stack_top = llmemory.NULL  # to detect missing restore
 
@@ -288,6 +337,7 @@ class ShadowStackPool(object):
     def _cleanup(self, shadowstackref):
         shadowstackref.base = llmemory.NULL
         shadowstackref.top = llmemory.NULL
+        shadowstackref.context = llmemory.NULL
 
     def _prepare_unused_stack(self):
         if self.unused_full_stack == llmemory.NULL:
@@ -295,6 +345,25 @@ class ShadowStackPool(object):
             self.unused_full_stack = llmemory.raw_malloc(root_stack_size)
             if self.unused_full_stack == llmemory.NULL:
                 raise MemoryError
+
+
+def get_root_iterator(gctransformer):
+    if hasattr(gctransformer, '_root_iterator'):
+        return gctransformer._root_iterator     # if already built
+    class RootIterator(object):
+        def _freeze_(self):
+            return True
+        def setcontext(self, context):
+            pass
+        def nextleft(self, gc, start, addr):
+            while addr != start:
+                addr -= sizeofaddr
+                if gc.points_to_valid_gc_object(addr):
+                    return addr
+            return llmemory.NULL
+    result = RootIterator()
+    gctransformer._root_iterator = result
+    return result
 
 
 def get_shadowstackref(root_walker, gctransformer):
@@ -305,33 +374,46 @@ def get_shadowstackref(root_walker, gctransformer):
     SHADOWSTACKREF = lltype.GcStruct('ShadowStackRef',
                                      ('base', llmemory.Address),
                                      ('top', llmemory.Address),
+                                     ('context', llmemory.Address),
+                                     #('fullstack', lltype.Bool),
                                      rtti=True)
     SHADOWSTACKREFPTR.TO.become(SHADOWSTACKREF)
 
-    def customtrace(gc, obj, callback, arg):
-        obj = llmemory.cast_adr_to_ptr(obj, SHADOWSTACKREFPTR)
-        addr = obj.top
-        start = obj.base
-        while addr != start:
-            addr -= sizeofaddr
-            gc._trace_callback(callback, arg, addr)
-
     gc = gctransformer.gcdata.gc
-    assert not hasattr(gc, 'custom_trace_dispatcher')
-    # ^^^ create_custom_trace_funcs() must not run before this
-    gctransformer.translator.rtyper.custom_trace_funcs.append(
-        (SHADOWSTACKREF, customtrace))
+    root_iterator = get_root_iterator(gctransformer)
+
+    def customtrace(obj, prev):
+        obj = llmemory.cast_adr_to_ptr(obj, SHADOWSTACKREFPTR)
+        if not prev:
+            root_iterator.setcontext(obj.context)
+            prev = obj.top
+        return root_iterator.nextleft(gc, obj.base, prev)
+
+    CUSTOMTRACEFUNC = lltype.FuncType([llmemory.Address, llmemory.Address],
+                                      llmemory.Address)
+    customtraceptr = llhelper(lltype.Ptr(CUSTOMTRACEFUNC), customtrace)
 
     def shadowstack_destructor(shadowstackref):
+        if root_walker.stacklet_support:
+            from rpython.rlib import _rffi_stacklet as _c
+            h = shadowstackref.context
+            h = llmemory.cast_adr_to_ptr(h, _c.handle)
+            shadowstackref.context = llmemory.NULL
+        #
         base = shadowstackref.base
         shadowstackref.base    = llmemory.NULL
         shadowstackref.top     = llmemory.NULL
         llmemory.raw_free(base)
+        #
+        if root_walker.stacklet_support:
+            if h:
+                _c.destroy(h)
 
     destrptr = gctransformer.annotate_helper(shadowstack_destructor,
                                              [SHADOWSTACKREFPTR], lltype.Void)
 
-    lltype.attachRuntimeTypeInfo(SHADOWSTACKREF, destrptr=destrptr)
+    lltype.attachRuntimeTypeInfo(SHADOWSTACKREF, customtraceptr=customtraceptr,
+                                 destrptr=destrptr)
 
     gctransformer._SHADOWSTACKREF = SHADOWSTACKREF
     return SHADOWSTACKREF

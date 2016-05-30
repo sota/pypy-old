@@ -1,4 +1,6 @@
-# Copyright 2001-2013 by Vinay Sajip. All Rights Reserved.
+#!/usr/bin/env python
+#
+# Copyright 2001-2010 by Vinay Sajip. All Rights Reserved.
 #
 # Permission to use, copy, modify, and distribute this software and its
 # documentation for any purpose and without fee is hereby granted,
@@ -16,7 +18,7 @@
 
 """Test harness for the logging module. Run all tests.
 
-Copyright (C) 2001-2013 Vinay Sajip. All Rights Reserved.
+Copyright (C) 2001-2010 Vinay Sajip. All Rights Reserved.
 """
 
 import logging
@@ -29,7 +31,6 @@ import cStringIO
 import gc
 import json
 import os
-import random
 import re
 import select
 import socket
@@ -39,7 +40,6 @@ import sys
 import tempfile
 from test.test_support import captured_stdout, run_with_locale, run_unittest
 import textwrap
-import time
 import unittest
 import warnings
 import weakref
@@ -65,8 +65,7 @@ class BaseTest(unittest.TestCase):
             self.saved_handlers = logging._handlers.copy()
             self.saved_handler_list = logging._handlerList[:]
             self.saved_loggers = logger_dict.copy()
-            self.saved_name_to_level = logging._nameToLevel.copy()
-            self.saved_level_to_name = logging._levelToName.copy()
+            self.saved_level_names = logging._levelNames.copy()
         finally:
             logging._releaseLock()
 
@@ -98,10 +97,8 @@ class BaseTest(unittest.TestCase):
         self.root_logger.setLevel(self.original_logging_level)
         logging._acquireLock()
         try:
-            logging._levelToName.clear()
-            logging._levelToName.update(self.saved_level_to_name)
-            logging._nameToLevel.clear()
-            logging._nameToLevel.update(self.saved_name_to_level)
+            logging._levelNames.clear()
+            logging._levelNames.update(self.saved_level_names)
             logging._handlers.clear()
             logging._handlers.update(self.saved_handlers)
             logging._handlerList[:] = self.saved_handler_list
@@ -277,24 +274,6 @@ class BuiltinLevelsTest(BaseTest):
 
     def test_invalid_name(self):
         self.assertRaises(TypeError, logging.getLogger, any)
-
-    def test_get_level_name(self):
-        """Test getLevelName returns level constant."""
-        # NOTE(flaper87): Bug #1517
-        self.assertEqual(logging.getLevelName('NOTSET'), 0)
-        self.assertEqual(logging.getLevelName('DEBUG'), 10)
-        self.assertEqual(logging.getLevelName('INFO'), 20)
-        self.assertEqual(logging.getLevelName('WARN'), 30)
-        self.assertEqual(logging.getLevelName('WARNING'), 30)
-        self.assertEqual(logging.getLevelName('ERROR'), 40)
-        self.assertEqual(logging.getLevelName('CRITICAL'), 50)
-
-        self.assertEqual(logging.getLevelName(0), 'NOTSET')
-        self.assertEqual(logging.getLevelName(10), 'DEBUG')
-        self.assertEqual(logging.getLevelName(20), 'INFO')
-        self.assertEqual(logging.getLevelName(30), 'WARNING')
-        self.assertEqual(logging.getLevelName(40), 'ERROR')
-        self.assertEqual(logging.getLevelName(50), 'CRITICAL')
 
 class BasicFilterTest(BaseTest):
 
@@ -733,30 +712,9 @@ class ConfigFileTest(BaseTest):
     datefmt=
     """
 
-    disable_test = """
-    [loggers]
-    keys=root
-
-    [handlers]
-    keys=screen
-
-    [formatters]
-    keys=
-
-    [logger_root]
-    level=DEBUG
-    handlers=screen
-
-    [handler_screen]
-    level=DEBUG
-    class=StreamHandler
-    args=(sys.stdout,)
-    formatter=
-    """
-
-    def apply_config(self, conf, **kwargs):
+    def apply_config(self, conf):
         file = cStringIO.StringIO(textwrap.dedent(conf))
-        logging.config.fileConfig(file, **kwargs)
+        logging.config.fileConfig(file)
 
     def test_config0_ok(self):
         # A simple config file which overrides the default settings.
@@ -859,15 +817,6 @@ class ConfigFileTest(BaseTest):
             ], stream=output)
             # Original logger output is empty.
             self.assert_log_lines([])
-
-    def test_logger_disabling(self):
-        self.apply_config(self.disable_test)
-        logger = logging.getLogger('foo')
-        self.assertFalse(logger.disabled)
-        self.apply_config(self.disable_test)
-        self.assertTrue(logger.disabled)
-        self.apply_config(self.disable_test, disable_existing_loggers=False)
-        self.assertFalse(logger.disabled)
 
 class LogRecordStreamHandler(StreamRequestHandler):
 
@@ -1078,24 +1027,6 @@ class EncodingTest(BaseTest):
         s = stream.getvalue()
         #Compare against what the data should be when encoded in CP-1251
         self.assertEqual(s, '\xe4\xee \xf1\xe2\xe8\xe4\xe0\xed\xe8\xff\n')
-
-    def test_encoding_utf16_unicode(self):
-        # Issue #19267
-        log = logging.getLogger("test")
-        message = u'b\u0142\u0105d'
-        writer_class = codecs.getwriter('utf-16-le')
-        writer_class.encoding = 'utf-16-le'
-        stream = cStringIO.StringIO()
-        writer = writer_class(stream, 'strict')
-        handler = logging.StreamHandler(writer)
-        log.addHandler(handler)
-        try:
-            log.warning(message)
-        finally:
-            log.removeHandler(handler)
-            handler.close()
-        s = stream.getvalue()
-        self.assertEqual(s, 'b\x00B\x01\x05\x01d\x00\n\x00')
 
 
 class WarningsTest(BaseTest):
@@ -1652,36 +1583,6 @@ class ConfigDictTest(BaseTest):
         },
     }
 
-    out_of_order = {
-        "version": 1,
-        "formatters": {
-            "mySimpleFormatter": {
-                "format": "%(asctime)s (%(name)s) %(levelname)s: %(message)s"
-            }
-        },
-        "handlers": {
-            "fileGlobal": {
-                "class": "logging.StreamHandler",
-                "level": "DEBUG",
-                "formatter": "mySimpleFormatter"
-            },
-            "bufferGlobal": {
-                "class": "logging.handlers.MemoryHandler",
-                "capacity": 5,
-                "formatter": "mySimpleFormatter",
-                "target": "fileGlobal",
-                "level": "DEBUG"
-                }
-        },
-        "loggers": {
-            "mymodule": {
-                "level": "DEBUG",
-                "handlers": ["bufferGlobal"],
-                "propagate": "true"
-            }
-        }
-    }
-
     def apply_config(self, conf):
         logging.config.dictConfig(conf)
 
@@ -1936,10 +1837,6 @@ class ConfigDictTest(BaseTest):
             # Original logger output is empty.
             self.assert_log_lines([])
 
-    def test_out_of_order(self):
-        self.apply_config(self.out_of_order)
-        handler = logging.getLogger('mymodule').handlers[0]
-        self.assertIsInstance(handler.target, logging.Handler)
 
 class ManagerTest(BaseTest):
     def test_manager_loggerclass(self):
@@ -1976,47 +1873,6 @@ class ChildLoggerTest(BaseTest):
         self.assertTrue(c2 is c3)
 
 
-class HandlerTest(BaseTest):
-
-    @unittest.skipIf(os.name == 'nt', 'WatchedFileHandler not appropriate for Windows.')
-    @unittest.skipUnless(threading, 'Threading required for this test.')
-    def test_race(self):
-        # Issue #14632 refers.
-        def remove_loop(fname, tries):
-            for _ in range(tries):
-                try:
-                    os.unlink(fname)
-                except OSError:
-                    pass
-                time.sleep(0.004 * random.randint(0, 4))
-
-        del_count = 500
-        log_count = 500
-
-        for delay in (False, True):
-            fd, fn = tempfile.mkstemp('.log', 'test_logging-3-')
-            os.close(fd)
-            remover = threading.Thread(target=remove_loop, args=(fn, del_count))
-            remover.daemon = True
-            remover.start()
-            h = logging.handlers.WatchedFileHandler(fn, delay=delay)
-            f = logging.Formatter('%(asctime)s: %(levelname)s: %(message)s')
-            h.setFormatter(f)
-            try:
-                for _ in range(log_count):
-                    time.sleep(0.005)
-                    r = logging.makeLogRecord({'msg': 'testing' })
-                    h.handle(r)
-            finally:
-                remover.join()
-                try:
-                    h.close()
-                except ValueError:
-                    pass
-                if os.path.exists(fn):
-                    os.unlink(fn)
-
-
 # Set the locale to the platform-dependent default.  I have no idea
 # why the test does this, but in any case we save the current locale
 # first and restore it at the end.
@@ -2026,7 +1882,7 @@ def test_main():
                  CustomLevelsAndFiltersTest, MemoryHandlerTest,
                  ConfigFileTest, SocketHandlerTest, MemoryTest,
                  EncodingTest, WarningsTest, ConfigDictTest, ManagerTest,
-                 ChildLoggerTest, HandlerTest)
+                 ChildLoggerTest)
 
 if __name__ == "__main__":
     test_main()

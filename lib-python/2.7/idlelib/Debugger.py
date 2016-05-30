@@ -1,5 +1,6 @@
 import os
 import bdb
+import types
 from Tkinter import *
 from idlelib.WindowList import ListedToplevel
 from idlelib.ScrolledList import ScrolledList
@@ -252,8 +253,8 @@ class Debugger:
         if self.vsource.get():
             self.sync_source_line()
 
-    def show_frame(self, stackitem):
-        self.frame = stackitem[0]  # lineno is stackitem[1]
+    def show_frame(self, (frame, lineno)):
+        self.frame = frame
         self.show_variables()
 
     localsviewer = None
@@ -322,7 +323,7 @@ class Debugger:
 class StackViewer(ScrolledList):
 
     def __init__(self, master, flist, gui):
-        if macosxSupport.isAquaTk():
+        if macosxSupport.runningAsOSXApp():
             # At least on with the stock AquaTk version on OSX 10.4 you'll
             # get an shaking GUI that eventually kills IDLE if the width
             # argument is specified.

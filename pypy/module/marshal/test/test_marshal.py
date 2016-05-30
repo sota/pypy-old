@@ -2,8 +2,6 @@ from rpython.tool.udir import udir
 
 
 class AppTestMarshal:
-    spaceconfig = {'usemodules': ['array']}
-
     def setup_class(cls):
         tmpfile = udir.join('AppTestMarshal.tmp')
         cls.w_tmpfile = cls.space.wrap(str(tmpfile))
@@ -11,20 +9,14 @@ class AppTestMarshal:
     def w_marshal_check(self, case):
         import marshal, StringIO
         s = marshal.dumps(case)
-        print(repr(s))
+        print repr(s)
         x = marshal.loads(s)
         assert x == case and type(x) is type(case)
-
-        exc = raises(TypeError, marshal.loads, memoryview(s))
-        assert str(exc.value) == "must be string or read-only buffer, not memoryview"
-
-        import sys
-        if '__pypy__' in sys.builtin_module_names:
-            f = StringIO.StringIO()
-            marshal.dump(case, f)
-            f.seek(0)
-            x = marshal.load(f)
-            assert x == case and type(x) is type(case)
+        f = StringIO.StringIO()
+        marshal.dump(case, f)
+        f.seek(0)
+        x = marshal.load(f)
+        assert x == case and type(x) is type(case)
         return x
 
     def test_None(self):
@@ -179,30 +171,18 @@ class AppTestMarshal:
         import marshal
         types = (float, complex, int, long, tuple, list, dict, set, frozenset)
         for cls in types:
-            print(cls)
             class subtype(cls):
                 pass
-            exc = raises(ValueError, marshal.dumps, subtype)
-            assert str(exc.value) == 'unmarshallable object'
-            exc = raises(ValueError, marshal.dumps, subtype())
-            assert str(exc.value) == 'unmarshallable object'
-
-    def test_valid_subtypes(self):
-        import marshal
-        from array import array
-        class subtype(array):
-            pass
-        assert marshal.dumps(subtype('c', 'test')) == marshal.dumps(array('c', 'test'))
+            raises(ValueError, marshal.dumps, subtype)
 
     def test_bad_typecode(self):
         import marshal
         exc = raises(ValueError, marshal.loads, chr(1))
-        assert str(exc.value) == "bad marshal data (unknown type code)"
+        assert r"'\x01'" in exc.value.message
 
 
 class AppTestSmallLong(AppTestMarshal):
-    spaceconfig = AppTestMarshal.spaceconfig.copy()
-    spaceconfig["objspace.std.withsmalllong"] = True
+    spaceconfig = {"objspace.std.withsmalllong": True}
 
     def test_smalllong(self):
         import __pypy__

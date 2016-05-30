@@ -26,6 +26,9 @@ class FakeCPU:
         assert num == 0x1C3
         return FakeFailDescr()
 
+    def get_failargs_limit(self):
+        return 1000
+
 class FakeMC:
     def __init__(self):
         self.content = []
@@ -48,13 +51,13 @@ class TestRegallocPushPop(object):
                 asmmemmgr_blocks = None
         cpu = ACTUAL_CPU(None, None)
         cpu.setup()
-        if cpu.HAS_CODEMAP:
-            cpu.codemap.setup()
         looptoken = FakeToken()
         asm = cpu.assembler
         asm.setup_once()
         asm.setup(looptoken)
-        self.xrm = X86XMMRegisterManager(None, assembler=asm)
+        self.fm = X86FrameManager(0)
+        self.xrm = X86XMMRegisterManager(None, frame_manager=self.fm,
+                                         assembler=asm)
         callback(asm)
         asm.mc.RET()
         rawstart = asm.materialize_loop(looptoken)
@@ -72,6 +75,29 @@ class TestRegallocPushPop(object):
         res = self.do_test(callback)
         assert res == 42
 
+    def test_push_stack(self):
+        def callback(asm):
+            loc = self.fm.frame_pos(5, INT)
+            asm.mc.SUB_ri(esp.value, 64)
+            asm.mov(imm(42), loc)
+            asm.regalloc_push(loc)
+            asm.regalloc_pop(eax)
+            asm.mc.ADD_ri(esp.value, 64)
+        res = self.do_test(callback)
+        assert res == 42
+
+    def test_pop_stack(self):
+        def callback(asm):
+            loc = self.fm.frame_pos(5, INT)
+            asm.mc.SUB_ri(esp.value, 64)
+            asm.mov(imm(42), edx)
+            asm.regalloc_push(edx)
+            asm.regalloc_pop(loc)
+            asm.mov(loc, eax)
+            asm.mc.ADD_ri(esp.value, 64)
+        res = self.do_test(callback)
+        assert res == 42
+
     def test_simple_xmm(self):
         def callback(asm):
             c = ConstFloat(longlong.getfloatstorage(-42.5))
@@ -83,8 +109,32 @@ class TestRegallocPushPop(object):
         res = self.do_test(callback)
         assert res == -42
 
-    def test_xmm_pushes_8_bytes(self):
+    def test_push_stack_xmm(self):
         def callback(asm):
+            c = ConstFloat(longlong.getfloatstorage(-42.5))
+            loc = self.xrm.convert_to_imm(c)
+            loc2 = self.fm.frame_pos(4, FLOAT)
+            asm.mc.SUB_ri(esp.value, 64)
+            asm.mov(loc, xmm5)
+            asm.mov(xmm5, loc2)
+            asm.regalloc_push(loc2)
+            asm.regalloc_pop(xmm0)
+            asm.mc.ADD_ri(esp.value, 64)
+            asm.mc.CVTTSD2SI(eax, xmm0)
+        res = self.do_test(callback)
+        assert res == -42
+
+    def test_pop_stack_xmm(self):
+        def callback(asm):
+            c = ConstFloat(longlong.getfloatstorage(-42.5))
+            loc = self.xrm.convert_to_imm(c)
+            loc2 = self.fm.frame_pos(4, FLOAT)
+            asm.mc.SUB_ri(esp.value, 64)
+            asm.mov(loc, xmm5)
             asm.regalloc_push(xmm5)
-            asm.mc.ADD(esp, imm(8))
-        self.do_test(callback)
+            asm.regalloc_pop(loc2)
+            asm.mov(loc2, xmm0)
+            asm.mc.ADD_ri(esp.value, 64)
+            asm.mc.CVTTSD2SI(eax, xmm0)
+        res = self.do_test(callback)
+        assert res == -42

@@ -1,12 +1,12 @@
 """The unicode/str format() method"""
 
-import sys
 import string
 
-from pypy.interpreter.error import OperationError, oefmt
-from rpython.rlib import rstring, runicode, rlocale, rfloat, jit
+from pypy.interpreter.error import OperationError
+from rpython.rlib import rstring, runicode, rlocale, rarithmetic, rfloat, jit
 from rpython.rlib.objectmodel import specialize
 from rpython.rlib.rfloat import copysign, formatd
+from rpython.tool import sourcetools
 
 
 @specialize.argtype(1)
@@ -19,12 +19,14 @@ def _parse_int(space, s, start, end):
     result = 0
     i = start
     while i < end:
-        digit = ord(s[i]) - ord('0')
-        if 0 <= digit <= 9:
-            if result > (sys.maxint - digit) / 10:
-                raise oefmt(space.w_ValueError,
-                            "too many decimal digits in format string")
-            result = result * 10 + digit
+        c = ord(s[i])
+        if ord("0") <= c <= ord("9"):
+            try:
+                result = rarithmetic.ovfcheck(result * 10)
+            except OverflowError:
+                msg = "too many decimal digits in format string"
+                raise OperationError(space.w_ValueError, space.wrap(msg))
+            result += c - ord("0")
         else:
             break
         i += 1
@@ -382,8 +384,8 @@ def format_method(space, w_string, args, is_unicode):
 class NumberSpec(object):
     pass
 
-
 class BaseFormatter(object):
+
     def format_int_or_long(self, w_num, kind):
         raise NotImplementedError
 
@@ -428,7 +430,7 @@ def make_formatting_class():
 
         def _parse_spec(self, default_type, default_align):
             space = self.space
-            self._fill_char = self._lit(" ")[0]
+            self._fill_char = self._lit("\0")[0]
             self._align = default_align
             self._alternate = False
             self._sign = "\0"
@@ -441,11 +443,9 @@ def make_formatting_class():
             length = len(spec)
             i = 0
             got_align = True
-            got_fill_char = False
             if length - i >= 2 and self._is_alignment(spec[i + 1]):
                 self._align = spec[i + 1]
                 self._fill_char = spec[i]
-                got_fill_char = True
                 i += 2
             elif length - i >= 1 and self._is_alignment(spec[i]):
                 self._align = spec[i]
@@ -458,11 +458,12 @@ def make_formatting_class():
             if length - i >= 1 and spec[i] == "#":
                 self._alternate = True
                 i += 1
-            if not got_fill_char and length - i >= 1 and spec[i] == "0":
+            if self._fill_char == "\0" and length - i >= 1 and spec[i] == "0":
                 self._fill_char = self._lit("0")[0]
                 if not got_align:
                     self._align = "="
                 i += 1
+            start_i = i
             self._width, i = _parse_int(self.space, spec, i, length)
             if length != i and spec[i] == ",":
                 self._thousands_sep = True
@@ -528,7 +529,7 @@ def make_formatting_class():
 
         def _lit(self, s):
             if self.is_unicode:
-                return s.decode("latin-1")
+                return s.decode("ascii")
             else:
                 return s
 
@@ -571,23 +572,26 @@ def make_formatting_class():
                 assert precision >= 0
                 length = precision
                 string = string[:precision]
+            if self._fill_char == "\0":
+                self._fill_char = self._lit(" ")[0]
             self._calc_padding(string, length)
             return space.wrap(self._pad(string))
 
         def _get_locale(self, tp):
+            space = self.space
             if tp == "n":
                 dec, thousands, grouping = rlocale.numeric_formatting()
             elif self._thousands_sep:
                 dec = "."
                 thousands = ","
-                grouping = "\3"
+                grouping = "\3\0"
             else:
                 dec = "."
                 thousands = ""
-                grouping = "\xFF"    # special value to mean 'stop'
+                grouping = "\256"
             if self.is_unicode:
-                self._loc_dec = dec.decode("latin-1")
-                self._loc_thousands = thousands.decode("latin-1")
+                self._loc_dec = dec.decode("ascii")
+                self._loc_thousands = thousands.decode("ascii")
             else:
                 self._loc_dec = dec
                 self._loc_thousands = thousands
@@ -671,22 +675,22 @@ def make_formatting_class():
             grouping = self._loc_grouping
             min_width = spec.n_min_width
             grouping_state = 0
+            count = 0
             left = spec.n_digits
             n_ts = len(self._loc_thousands)
             need_separator = False
             done = False
+            groupings = len(grouping)
             previous = 0
             while True:
-                if grouping_state >= len(grouping):
-                    group = previous     # end of string
-                else:
-                    # else, get the next value from the string
-                    group = ord(grouping[grouping_state])
-                    if group == 0xFF:    # special value to mean 'stop'
+                group = ord(grouping[grouping_state])
+                if group > 0:
+                    if group == 256:
                         break
                     grouping_state += 1
                     previous = group
-                #
+                else:
+                    group = previous
                 final_grouping = min(group, max(left, max(min_width, 1)))
                 n_zeros = max(0, final_grouping - left)
                 n_chars = max(0, min(left, final_grouping))
@@ -725,7 +729,7 @@ def make_formatting_class():
                 out.append_multiple_char(fill_char[0], spec.n_lpadding)
             if spec.n_sign:
                 if self.is_unicode:
-                    sign = spec.sign.decode("latin-1")
+                    sign = spec.sign.decode("ascii")
                 else:
                     sign = spec.sign
                 out.append(sign)
@@ -813,7 +817,7 @@ def make_formatting_class():
             self._get_locale(tp)
             spec = self._calc_num_width(n_prefix, sign_char, to_numeric, n_digits,
                                         n_remainder, False, result)
-            fill = self._fill_char
+            fill = self._lit(" ") if self._fill_char == "\0" else self._fill_char
             upper = self._type == "X"
             return self.space.wrap(self._fill_number(spec, result, to_numeric,
                                      to_prefix, fill, to_remainder, upper))
@@ -828,14 +832,14 @@ def make_formatting_class():
                 prefix = "0x"
             as_str = value.format(LONG_DIGITS[:base], prefix)
             if self.is_unicode:
-                return as_str.decode("latin-1")
+                return as_str.decode("ascii")
             return as_str
 
         def _int_to_base(self, base, value):
             if base == 10:
                 s = str(value)
                 if self.is_unicode:
-                    return s.decode("latin-1")
+                    return s.decode("ascii")
                 return s
             # This part is slow.
             negative = value < 0
@@ -954,12 +958,12 @@ def make_formatting_class():
             have_dec_point, to_remainder = self._parse_number(result, to_number)
             n_remainder = len(result) - to_remainder
             if self.is_unicode:
-                digits = result.decode("latin-1")
+                digits = result.decode("ascii")
             else:
                 digits = result
             spec = self._calc_num_width(0, sign, to_number, n_digits,
                                         n_remainder, have_dec_point, digits)
-            fill = self._fill_char
+            fill = self._lit(" ") if self._fill_char == "\0" else self._fill_char
             return self.space.wrap(self._fill_number(spec, digits, to_number, 0,
                                       fill, to_remainder, False))
 
@@ -1059,8 +1063,8 @@ def make_formatting_class():
                                                                to_imag_number)
 
             if self.is_unicode:
-                re_num = re_num.decode("latin-1")
-                im_num = im_num.decode("latin-1")
+                re_num = re_num.decode("ascii")
+                im_num = im_num.decode("ascii")
 
             #set remainder, in CPython _parse_number sets this
             #using n_re_digits causes tests to fail
@@ -1094,6 +1098,8 @@ def make_formatting_class():
 
             out = self._builder()
             fill = self._fill_char
+            if fill == "\0":
+                fill = self._lit(" ")[0]
 
             #compose the string
             #add left padding

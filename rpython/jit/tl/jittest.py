@@ -4,34 +4,27 @@ target --jittest.  Feel free to hack it as needed; it is imported
 only after the '---> Checkpoint' fork.
 """
 
-import os
-from rpython import conftest
+from rpython.conftest import option
+from rpython.rtyper.lltypesystem import lltype
 from rpython.rtyper.llinterp import LLInterpreter
 from rpython.rtyper.annlowlevel import llstr
 from rpython.jit.metainterp import warmspot
-from rpython.tool import runsubprocess
-
-os.environ['PYPY_DONT_RUN_SUBPROCESS'] = '1'
-reload(runsubprocess)
+from rpython.rlib.jit import OPTIMIZER_FULL
 
 
-#ARGS = ["--jit", "threshold=100000,trace_eagerness=100000",
-#        "-S", "/home/arigo/pypysrc/32compiled/z.py"]
-ARGS = ["targettest_executable_name",
-        "-r", "13", "/home/arigo/git/pyrlang/test_beam/fact.beam",
-        "fact", "20000"]
+ARGS = ["jittest", "100"]
 
 
 def jittest(driver):
-    graph = driver.translator._graphof(driver.entry_point)
-    interp = LLInterpreter(driver.translator.rtyper)
+    graph = driver.translator.graphs[0]
+    interp = LLInterpreter(driver.translator.rtyper, malloc_check=False)
 
-    get_policy = driver.extra.get('jitpolicy', None)
-    if get_policy is None:
-        from rpython.jit.codewriter.policy import JitPolicy
-        jitpolicy = JitPolicy()
-    else:
-        jitpolicy = get_policy(driver)
+    def returns_null(T, *args, **kwds):
+        return lltype.nullptr(T)
+    interp.heap.malloc_nonmovable = returns_null     # XXX
+
+    get_policy = driver.extra['jitpolicy']
+    jitpolicy = get_policy(driver)
 
     from rpython.jit.backend.llgraph.runner import LLGraphCPU
     apply_jit(jitpolicy, interp, graph, LLGraphCPU)
@@ -39,16 +32,12 @@ def jittest(driver):
 
 def apply_jit(policy, interp, graph, CPUClass):
     print 'warmspot.jittify_and_run() started...'
-    if conftest.option is None:
-        class MyOpt:
-            pass
-        conftest.option = MyOpt()
-    conftest.option.view = False
-    conftest.option.viewloops = True   # XXX doesn't seem to work
+    option.view = True
     LIST = graph.getargs()[0].concretetype
     lst = LIST.TO.ll_newlist(len(ARGS))
     for i, arg in enumerate(ARGS):
         lst.ll_setitem_fast(i, llstr(arg))
     warmspot.jittify_and_run(interp, graph, [lst], policy=policy,
                              listops=True, CPUClass=CPUClass,
-                             backendopt=True, inline=True)
+                             backendopt=True, inline=True,
+                             optimizer=OPTIMIZER_FULL)

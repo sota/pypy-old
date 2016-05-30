@@ -226,10 +226,6 @@ class AppTestInterpObjectPickling:
         restore_top_frame(f1, saved) 
         f2     = pickle.loads(pckl)
 
-    def test_frame_setstate_crash(self):
-        import sys
-        raises(ValueError, sys._getframe().__setstate__, [])
-
     def test_pickle_traceback(self):
         def f():
             try:
@@ -390,20 +386,15 @@ class AppTestInterpObjectPickling:
 
     def test_pickle_enum(self):
         import pickle
-        e = enumerate(range(100, 106))
+        e      = enumerate(range(10))
         e.next()
         e.next()
         pckl   = pickle.dumps(e)
         result = pickle.loads(pckl)
-        res = e.next()
-        assert res == (2, 102)
-        res = result.next()
-        assert res == (2, 102)
+        e.next()
+        result.next()
         assert type(e) is type(result)
-        res = list(e)
-        assert res == [(3, 103), (4, 104), (5, 105)]
-        res = list(result)
-        assert res == [(3, 103), (4, 104), (5, 105)]
+        assert list(e) == list(result)
 
     def test_pickle_xrangeiter(self):
         import pickle
@@ -494,84 +485,3 @@ class AppTestInterpObjectPickling:
         pckl   = pickle.dumps(pack.mod)
         result = pickle.loads(pckl)
         assert pack.mod is result
-
-
-    def test_pickle_generator_crash(self):
-        import pickle
-
-        def f():
-            yield 0
-
-        x = f()
-        x.next()
-        try:
-            x.next()
-        except StopIteration:
-            y = pickle.loads(pickle.dumps(x))
-        assert 'finished' in y.__name__
-        assert 'finished' in repr(y)
-        assert y.gi_code is None
-
-class AppTestGeneratorCloning:
-
-    def setup_class(cls):
-        try:
-            cls.space.appexec([], """():
-                def f(): yield 42
-                f().__reduce__()
-            """)
-        except TypeError, e:
-            if 'pickle generator' not in str(e):
-                raise
-            py.test.skip("Frames can't be __reduce__()-ed")
-
-    def test_deepcopy_generator(self):
-        import copy
-
-        def f(n):
-            for i in range(n):
-                yield 42 + i
-        g = f(4)
-        g2 = copy.deepcopy(g)
-        res = g.next()
-        assert res == 42
-        res = g2.next()
-        assert res == 42
-        g3 = copy.deepcopy(g)
-        res = g.next()
-        assert res == 43
-        res = g2.next()
-        assert res == 43
-        res = g3.next()
-        assert res == 43
-
-    def test_shallowcopy_generator(self):
-        """Note: shallow copies of generators are often confusing.
-        To start with, 'for' loops have an iterator that will not
-        be copied, and so create tons of confusion.
-        """
-        import copy
-
-        def f(n):
-            while n > 0:
-                yield 42 + n
-                n -= 1
-        g = f(2)
-        g2 = copy.copy(g)
-        res = g.next()
-        assert res == 44
-        res = g2.next()
-        assert res == 44
-        g3 = copy.copy(g)
-        res = g.next()
-        assert res == 43
-        res = g2.next()
-        assert res == 43
-        res = g3.next()
-        assert res == 43
-        g4 = copy.copy(g2)
-        for i in range(2):
-            raises(StopIteration, g.next)
-            raises(StopIteration, g2.next)
-            raises(StopIteration, g3.next)
-            raises(StopIteration, g4.next)

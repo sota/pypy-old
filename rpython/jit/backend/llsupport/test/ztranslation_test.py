@@ -1,52 +1,49 @@
-import os, sys, py
+import os, sys
 from rpython.tool.udir import udir
 from rpython.rlib.jit import JitDriver, unroll_parameters, set_param
 from rpython.rlib.jit import PARAMETERS, dont_look_inside
-from rpython.rlib.jit import promote, _get_virtualizable_token
-from rpython.rlib import jit_hooks, rposix
-from rpython.rlib.objectmodel import keepalive_until_here
-from rpython.rlib.rthread import ThreadLocalReference, ThreadLocalField
+from rpython.rlib.jit import promote
+from rpython.rlib import jit_hooks
 from rpython.jit.backend.detect_cpu import getcpuclass
 from rpython.jit.backend.test.support import CCompiledMixin
 from rpython.jit.codewriter.policy import StopAtXPolicy
-from rpython.config.config import ConfigError
-from rpython.translator.tool.cbuild import ExternalCompilationInfo
-from rpython.rtyper.lltypesystem import lltype, rffi
+
+
+def fix_annotator_for_vrawbuffer(monkeypatch):
+    from rpython.rlib.nonconst import NonConstant
+    from rpython.jit.metainterp.optimizeopt.virtualize import VRawBufferValue
+    from rpython.jit.metainterp import warmspot
+
+    def my_hook_for_tests(cpu):
+        # this is needed so that the annotator can see it
+        if NonConstant(False):
+            v = VRawBufferValue(cpu, None, -1, None, None)
+    monkeypatch.setattr(warmspot, 'hook_for_tests', my_hook_for_tests)
 
 
 class TranslationTest(CCompiledMixin):
     CPUClass = getcpuclass()
 
-    def test_stuff_translates(self):
+    def test_stuff_translates(self, monkeypatch):
+        fix_annotator_for_vrawbuffer(monkeypatch)
         # this is a basic test that tries to hit a number of features and their
         # translation:
         # - jitting of loops and bridges
-        # - two virtualizable types
+        # - virtualizables
         # - set_param interface
         # - profiler
         # - full optimizer
         # - floats neg and abs
-        # - cast_int_to_float
-        # - llexternal with macro=True
 
-        class BasicFrame(object):
-            _virtualizable_ = ['i']
+        class Frame(object):
+            _virtualizable2_ = ['i']
 
             def __init__(self, i):
                 self.i = i
 
-        class Frame(BasicFrame):
-            pass
-
-        eci = ExternalCompilationInfo(post_include_bits=['''
-#define pypy_my_fabs(x)  fabs(x)
-'''])
-        myabs1 = rffi.llexternal('pypy_my_fabs', [lltype.Float],
-                                 lltype.Float, macro=True, releasegil=False,
-                                 compilation_info=eci)
-        myabs2 = rffi.llexternal('pypy_my_fabs', [lltype.Float],
-                                 lltype.Float, macro=True, releasegil=True,
-                                 compilation_info=eci)
+        @dont_look_inside
+        def myabs(x):
+            return abs(x)
 
         jitdriver = JitDriver(greens = [],
                               reds = ['total', 'frame', 'j'],
@@ -63,41 +60,34 @@ class TranslationTest(CCompiledMixin):
             while frame.i > 3:
                 jitdriver.can_enter_jit(frame=frame, total=total, j=j)
                 jitdriver.jit_merge_point(frame=frame, total=total, j=j)
-                _get_virtualizable_token(frame)
                 total += frame.i
                 if frame.i >= 20:
                     frame.i -= 2
                 frame.i -= 1
                 j *= -0.712
                 if j + (-j):    raise ValueError
-                j += frame.i
-                k = myabs1(myabs2(j))
+                k = myabs(j)
                 if k - abs(j):  raise ValueError
                 if k - abs(-j): raise ValueError
             return chr(total % 253)
         #
-        class Virt2(object):
-            _virtualizable_ = ['i']
-            def __init__(self, i):
-                self.i = i
+        from rpython.rtyper.lltypesystem import lltype, rffi
         from rpython.rlib.libffi import types, CDLL, ArgChain
         from rpython.rlib.test.test_clibffi import get_libm_name
         libm_name = get_libm_name(sys.platform)
-        jitdriver2 = JitDriver(greens=[], reds = ['v2', 'func', 'res', 'x'],
-                               virtualizables = ['v2'])
+        jitdriver2 = JitDriver(greens=[], reds = ['i', 'func', 'res', 'x'])
         def libffi_stuff(i, j):
             lib = CDLL(libm_name)
             func = lib.getpointer('fabs', [types.double], types.double)
             res = 0.0
             x = float(j)
-            v2 = Virt2(i)
-            while v2.i > 0:
-                jitdriver2.jit_merge_point(v2=v2, res=res, func=func, x=x)
+            while i > 0:
+                jitdriver2.jit_merge_point(i=i, res=res, func=func, x=x)
                 promote(func)
                 argchain = ArgChain()
                 argchain.arg(x)
                 res = func.call(argchain, rffi.DOUBLE)
-                v2.i -= 1
+                i -= 1
             return res
         #
         def main(i, j):
@@ -112,17 +102,17 @@ class TranslationTest(CCompiledMixin):
 class TranslationTestCallAssembler(CCompiledMixin):
     CPUClass = getcpuclass()
 
-    def test_direct_assembler_call_translates(self):
+    def test_direct_assembler_call_translates(self, monkeypatch):
         """Test CALL_ASSEMBLER and the recursion limit"""
-        # - also tests threadlocalref_get
         from rpython.rlib.rstackovf import StackOverflow
+        fix_annotator_for_vrawbuffer(monkeypatch)
 
         class Thing(object):
             def __init__(self, val):
                 self.val = val
 
         class Frame(object):
-            _virtualizable_ = ['thing']
+            _virtualizable2_ = ['thing']
 
         driver = JitDriver(greens = ['codeno'], reds = ['i', 'frame'],
                            virtualizables = ['frame'],
@@ -131,11 +121,6 @@ class TranslationTestCallAssembler(CCompiledMixin):
             pass
 
         somewhere_else = SomewhereElse()
-
-        class Foo(object):
-            pass
-        t = ThreadLocalReference(Foo, loop_invariant=True)
-        tf = ThreadLocalField(lltype.Char, "test_call_assembler_")
 
         def change(newthing):
             somewhere_else.frame.thing = newthing
@@ -162,8 +147,6 @@ class TranslationTestCallAssembler(CCompiledMixin):
                     nextval = 13
                 frame.thing = Thing(nextval + 1)
                 i += 1
-                if t.get().nine != 9: raise ValueError
-                if ord(tf.getraw()) != 0x92: raise ValueError
             return frame.thing.val
 
         driver2 = JitDriver(greens = [], reds = ['n'])
@@ -185,25 +168,13 @@ class TranslationTestCallAssembler(CCompiledMixin):
                 n = portal2(n)
         assert portal2(10) == -9
 
-        def setup(value):
-            foo = Foo()
-            foo.nine = value
-            t.set(foo)
-            tf.setraw("\x92")
-            return foo
-
         def mainall(codeno, bound):
-            foo = setup(bound + 8)
-            result = main(codeno) + main2(bound)
-            keepalive_until_here(foo)
-            return result
+            return main(codeno) + main2(bound)
 
-        tmp_obj = setup(9)
-        expected_1 = main(0)
         res = self.meta_interp(mainall, [0, 1], inline=True,
                                policy=StopAtXPolicy(change))
         print hex(res)
-        assert res & 255 == expected_1
+        assert res & 255 == main(0)
         bound = res & ~255
         assert 1024 <= bound <= 131072
         assert bound & (bound-1) == 0       # a power of two
@@ -212,9 +183,8 @@ class TranslationTestCallAssembler(CCompiledMixin):
 class TranslationTestJITStats(CCompiledMixin):
     CPUClass = getcpuclass()
 
-    def test_jit_get_stats(self):
-        py.test.skip("disabled feature")
-
+    def test_jit_get_stats(self, monkeypatch):
+        fix_annotator_for_vrawbuffer(monkeypatch)
         driver = JitDriver(greens = [], reds = ['i'])
 
         def f():
@@ -230,14 +200,15 @@ class TranslationTestJITStats(CCompiledMixin):
             return len(ll_times)
 
         res = self.meta_interp(main, [])
-        assert res == 2
-        # one for loop and one for the prologue, no unrolling
+        assert res == 3
+        # one for loop, one for entry point and one for the prologue
 
 
 class TranslationRemoveTypePtrTest(CCompiledMixin):
     CPUClass = getcpuclass()
 
-    def test_external_exception_handling_translates(self):
+    def test_external_exception_handling_translates(self, monkeypatch):
+        fix_annotator_for_vrawbuffer(monkeypatch)
         jitdriver = JitDriver(greens = [], reds = ['n', 'total'])
 
         class ImDone(Exception):
@@ -297,9 +268,6 @@ class TranslationRemoveTypePtrTest(CCompiledMixin):
         try:
             res = self.meta_interp(main, [400])
             assert res == main(400)
-        except ConfigError,e:
-            assert str(e).startswith('invalid value asmgcc')
-            py.test.skip('asmgcc not supported')
         finally:
             del os.environ['PYPYLOG']
 
@@ -307,7 +275,7 @@ class TranslationRemoveTypePtrTest(CCompiledMixin):
         for line in open(str(logfile)):
             if 'guard_class' in line:
                 guard_class += 1
-        # if we get many more guard_classes (~93), it means that we generate
+        # if we get many more guard_classes, it means that we generate
         # guards that always fail (the following assert's original purpose
         # is to catch the following case: each GUARD_CLASS is misgenerated
         # and always fails with "gcremovetypeptr")

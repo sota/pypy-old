@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-
 
 class AppTestExc(object):
     spaceconfig = dict(usemodules=('exceptions',))
@@ -149,10 +147,6 @@ class AppTestExc(object):
         assert SystemExit("x").code == "x"
         assert SystemExit(1, 2).code == (1, 2)
 
-    def test_str_unicode(self):
-        e = ValueError('àèì')
-        assert str(e) == 'àèì'
-
     def test_unicode_decode_error(self):
         from exceptions import UnicodeDecodeError
         ud = UnicodeDecodeError("x", "y", 1, 5, "bah")
@@ -253,7 +247,3 @@ class AppTestExc(object):
         assert fw.z == 1
         assert fw.xyz == (1, 2)
 
-    def test_unicode_error_uninitialized_str(self):
-        assert str(UnicodeEncodeError.__new__(UnicodeEncodeError)) == ""
-        assert str(UnicodeDecodeError.__new__(UnicodeDecodeError)) == ""
-        assert str(UnicodeTranslateError.__new__(UnicodeTranslateError)) == ""

@@ -3,13 +3,14 @@ import py
 import sys
 from rpython.rtyper.lltypesystem.rffi import *
 from rpython.rtyper.lltypesystem.rffi import _keeper_for_type # crap
-from rpython.rlib.rposix import get_saved_errno, set_saved_errno
+from rpython.rlib.rposix import get_errno, set_errno
 from rpython.translator.c.test.test_genc import compile as compile_c
 from rpython.rtyper.lltypesystem.lltype import Signed, Ptr, Char, malloc
+from rpython.rtyper.lltypesystem.rstr import STR
 from rpython.rtyper.lltypesystem import lltype
-from rpython.translator import cdir
 from rpython.tool.udir import udir
 from rpython.rtyper.test.test_llinterp import interpret
+from rpython.rtyper.test.tool import BaseRtypingTest, LLRtypeMixin, OORtypeMixin
 from rpython.annotator.annrpython import RPythonAnnotator
 from rpython.rtyper.rtyper import RPythonTyper
 from rpython.translator.backendopt.all import backend_optimizations
@@ -55,78 +56,69 @@ class BaseTestRffi:
 
         xf = self.compile(f, [])
         assert xf() == 8+3
-
+    
     def test_string(self):
         eci = ExternalCompilationInfo(includes=['string.h'])
         z = llexternal('strlen', [CCHARP], Signed, compilation_info=eci)
-
+    
         def f():
             s = str2charp("xxx")
             res = z(s)
             free_charp(s)
             return res
-
+    
         xf = self.compile(f, [], backendopt=False)
         assert xf() == 3
-
+    
     def test_unicode(self):
         eci = ExternalCompilationInfo(includes=['string.h'])
         z = llexternal('wcslen', [CWCHARP], Signed, compilation_info=eci)
-
+    
         def f():
             s = unicode2wcharp(u"xxx\xe9")
             res = z(s)
             free_wcharp(s)
             return res
-
+    
         xf = self.compile(f, [], backendopt=False)
         assert xf() == 4
-
-    def test_charp2str_exact_result(self):
-        from rpython.annotator.annrpython import RPythonAnnotator
-        from rpython.rtyper.llannotation import SomePtr
-        a = RPythonAnnotator()
-        s = a.build_types(charpsize2str, [SomePtr(CCHARP), int])
-        assert s.knowntype == str
-        assert s.can_be_None is False
-        assert s.no_nul is False
-        #
-        a = RPythonAnnotator()
-        s = a.build_types(charp2str, [SomePtr(CCHARP)])
-        assert s.knowntype == str
-        assert s.can_be_None is False
-        assert s.no_nul is True
-
+    
     def test_string_reverse(self):
         c_source = py.code.Source("""
         #include <string.h>
+        #include <src/allocator.h>
         #include <src/mem.h>
 
-        void f(char *target, char* arg)
+        char *f(char* arg)
         {
-            strcpy(target, arg);
+            char *ret;
+            /* lltype.free uses OP_RAW_FREE, we must allocate
+             * with the matching function
+             */
+            OP_RAW_MALLOC(strlen(arg) + 1, ret, char*)
+            strcpy(ret, arg);
+            return ret;
         }
         """)
         eci = ExternalCompilationInfo(separate_module_sources=[c_source],
-                                     post_include_bits=['void f(char*,char*);'])
-        z = llexternal('f', [CCHARP, CCHARP], lltype.Void, compilation_info=eci)
-
+                                      post_include_bits=['char *f(char*);'])
+        z = llexternal('f', [CCHARP], CCHARP, compilation_info=eci)
+    
         def f():
             s = str2charp("xxx")
-            l_res = lltype.malloc(CCHARP.TO, 10, flavor='raw')
-            z(l_res, s)
+            l_res = z(s)
             res = charp2str(l_res)
             lltype.free(l_res, flavor='raw')
             free_charp(s)
             return len(res)
-
+    
         xf = self.compile(f, [], backendopt=False)
         assert xf() == 3
-
+    
     def test_stringstar(self):
         c_source = """
         #include <string.h>
-
+        
         int f(char *args[]) {
             char **p = args;
             int l = 0;
@@ -139,17 +131,17 @@ class BaseTestRffi:
         """
         eci = ExternalCompilationInfo(separate_module_sources=[c_source])
         z = llexternal('f', [CCHARPP], Signed, compilation_info=eci)
-
+    
         def f():
             l = ["xxx", "x", "xxxx"]
             ss = liststr2charpp(l)
             result = z(ss)
             free_charpp(ss)
             return result
-
+    
         xf = self.compile(f, [], backendopt=False)
         assert xf() == 8
-
+    
     def test_struct(self):
         h_source = """
         #ifndef _MY_SOURCE_H
@@ -163,24 +155,24 @@ class BaseTestRffi:
         """
         h_file = udir.join("structxx.h")
         h_file.write(h_source)
-
+        
         c_source = """
         #include <structxx.h>
-
+        
         int f(struct xx* z)
         {
           return (z->one + z->three);
         }
         """
         TP = CStructPtr('xx', ('one', INT), ('two', Char), ('three', INT))
-
+    
         eci = ExternalCompilationInfo(
             includes=['structxx.h'],
             include_dirs=[udir],
             separate_module_sources=[c_source]
         )
         z = llexternal('f', [TP], INT, compilation_info=eci)
-
+    
         def f():
             struct = lltype.malloc(TP.TO, flavor='raw')
             struct.c_one = cast(INT, 3)
@@ -189,10 +181,10 @@ class BaseTestRffi:
             result = z(struct)
             lltype.free(struct, flavor='raw')
             return cast(SIGNED, result)
-
+    
         fn = self.compile(f, [], backendopt=False)
         assert fn() == 8
-
+    
     def test_externvar(self):
         import os
         if os.name == 'nt':
@@ -200,25 +192,25 @@ class BaseTestRffi:
             bad_fd = 0
         else:
             bad_fd = 12312312
-
+    
         def f():
-            set_saved_errno(12)
-            return get_saved_errno()
-
+            set_errno(12)
+            return get_errno()
+    
         def g():
             try:
                 os.write(bad_fd, "xxx")
             except OSError:
                 pass
-            return get_saved_errno()
-
+            return get_errno()
+    
         fn = self.compile(f, [])
         assert fn() == 12
         gn = self.compile(g, [])
         import errno
         assert gn() == errno.EBADF
-
-
+    
+    
     def test_extra_include_dirs(self):
         udir.ensure("incl", dir=True)
         udir.join("incl", "incl.h").write("#define C 3")
@@ -235,21 +227,21 @@ class BaseTestRffi:
             separate_module_sources=[c_source]
         )
         z = llexternal('fun', [], Signed, compilation_info=eci)
-
+    
         def f():
             return z()
-
+    
         res = self.compile(f, [])
         assert res() == 3
-
+    
     def test_compile_cast(self):
         def f(n):
             return cast(SIZE_T, n)
-
+    
         f1 = self.compile(f, [int])
         res = f1(-1)
         assert res == r_size_t(-1)
-
+    
     def test_opaque_type(self):
         h_source = py.code.Source("""
         #ifndef _OPAQUE_H
@@ -259,22 +251,22 @@ class BaseTestRffi:
         };
         #endif /* _OPAQUE_H */
         """)
-
+        
         c_source = py.code.Source("""
         #include "opaque.h"
-
+                                  
         char get(struct stuff* x)
         {
            x->data[13] = 'a';
            return x->data[13];
         }
         """)
-
+        
 
         # if it doesn't segfault, than we probably malloced it :-)
         h_file = udir.join("opaque.h")
         h_file.write(h_source)
-
+    
         from rpython.rtyper.tool import rffi_platform
         eci = ExternalCompilationInfo(
             includes=['opaque.h'],
@@ -282,15 +274,15 @@ class BaseTestRffi:
             separate_module_sources=[c_source]
         )
         STUFFP = COpaquePtr('struct stuff', compilation_info=eci)
-
+    
         ll_get = llexternal('get', [STUFFP], CHAR, compilation_info=eci)
-
+    
         def f():
             ll_stuff = lltype.malloc(STUFFP.TO, flavor='raw')
             result = ll_get(ll_stuff)
             lltype.free(ll_stuff, flavor='raw')
             return result
-
+    
         f1 = self.compile(f, [])
         assert f1() == 'a'
 
@@ -327,25 +319,25 @@ class BaseTestRffi:
         """ % (ctype_pref, ))
         h_file = udir.join("opaque2%s.h" % (ctype_pref, ))
         h_file.write(h_source)
-
+    
         from rpython.rtyper.tool import rffi_platform
         eci = ExternalCompilationInfo(
             includes=[h_file.basename],
             include_dirs=[str(udir)]
         )
         ll_returnchar = llexternal('returnchar', [], rffi_type, compilation_info=eci)
-
+    
         def f():
             result = ll_returnchar()
             return result
-
+    
         f1 = self.compile(f, [])
         assert f1() == chr(42)
 
     def test_generate_return_char_tests(self):
         yield self.return_char, False
         yield self.return_char, True
-
+ 
     def test_prebuilt_constant(self):
         py.test.skip("Think how to do it sane")
         h_source = py.code.Source("""
@@ -355,19 +347,19 @@ class BaseTestRffi:
         """)
         h_include = udir.join('constants.h')
         h_include.write(h_source)
-
+    
         eci = ExternalCompilationInfo(includes=['stdio.h',
                                                 str(h_include.basename)],
                                       include_dirs=[str(udir)])
-
+    
         get_x, set_x = CExternVariable(lltype.Signed, 'x', eci)
         get_z, set_z = CExternVariable(CCHARPP, 'z', eci)
-
+    
         def f():
             one = get_x()
             set_x(13)
             return one + get_x()
-
+    
         def g():
             l = liststr2charpp(["a", "b", "c"])
             try:
@@ -375,7 +367,7 @@ class BaseTestRffi:
                 return charp2str(get_z()[2])
             finally:
                 free_charpp(l)
-
+    
         fn = self.compile(f, [])
         assert fn() == 16
         gn = self.compile(g, [])
@@ -385,17 +377,15 @@ class BaseTestRffi:
         h_source = py.code.Source("""
         #ifndef _CALLBACK_H
         #define _CALLBACK_H
-        RPY_EXTERN Signed eating_callback(Signed arg, Signed(*call)(Signed));
+        extern Signed eating_callback(Signed arg, Signed(*call)(Signed));
         #endif /* _CALLBACK_H */
         """)
-
+        
         h_include = udir.join('callback.h')
         h_include.write(h_source)
 
         c_source = py.code.Source("""
-        #include "src/precommondefs.h"
-
-        RPY_EXTERN Signed eating_callback(Signed arg, Signed(*call)(Signed))
+        Signed eating_callback(Signed arg, Signed(*call)(Signed))
         {
             Signed res = call(arg);
             if (res == -1)
@@ -405,8 +395,9 @@ class BaseTestRffi:
         """)
 
         eci = ExternalCompilationInfo(includes=['callback.h'],
-                                      include_dirs=[str(udir), cdir],
-                                      separate_module_sources=[c_source])
+                                      include_dirs=[str(udir)],
+                                      separate_module_sources=[c_source],
+                                      export_symbols=['eating_callback'])
 
         args = [SIGNED, CCallback([SIGNED], SIGNED)]
         eating_callback = llexternal('eating_callback', args, SIGNED,
@@ -434,7 +425,7 @@ class BaseTestRffi:
 
         def two(i):
             return i + 2
-
+        
         def f(i):
             if i > 3:
                 return eating_callback(i, one)
@@ -480,7 +471,7 @@ class BaseTestRffi:
         TP = lltype.Ptr(lltype.GcStruct('X', ('x', lltype.Signed)))
         struct = lltype.malloc(TP.TO) # gc structure
         struct.x = 8
-
+        
         def g(i):
             return get_keepalive_object(i, TP).x
 
@@ -494,21 +485,28 @@ class BaseTestRffi:
     def test_nonmoving(self):
         d = 'non-moving data stuff'
         def f():
-            with scoped_alloc_buffer(len(d)) as s:
+            raw_buf, gc_buf = alloc_buffer(len(d))
+            try:
                 for i in range(len(d)):
-                    s.raw[i] = d[i]
-                return s.str(len(d)-1)
+                    raw_buf[i] = d[i]
+                return str_from_buffer(raw_buf, gc_buf, len(d), len(d)-1)
+            finally:
+                keep_buffer_alive_until_here(raw_buf, gc_buf)
         assert f() == d[:-1]
         fn = self.compile(f, [], gcpolicy='ref')
         assert fn() == d[:-1]
-
+    
     def test_nonmoving_unicode(self):
         d = u'non-moving data'
         def f():
-            with scoped_alloc_unicodebuffer(len(d)) as s:
+            raw_buf, gc_buf = alloc_unicodebuffer(len(d))
+            try:
                 for i in range(len(d)):
-                    s.raw[i] = d[i]
-                return s.str(len(d)-1).encode('ascii')
+                    raw_buf[i] = d[i]
+                return (unicode_from_buffer(raw_buf, gc_buf, len(d), len(d)-1)
+                        .encode('ascii'))
+            finally:
+                keep_unicodebuffer_alive_until_here(raw_buf, gc_buf)
         assert f() == d[:-1]
         fn = self.compile(f, [], gcpolicy='ref')
         assert fn() == d[:-1]
@@ -516,7 +514,7 @@ class BaseTestRffi:
     def test_nonmovingbuffer(self):
         d = 'some cool data that should not move'
         def f():
-            buf, is_pinned, is_raw = get_nonmovingbuffer(d)
+            buf = get_nonmovingbuffer(d)
             try:
                 counter = 0
                 for i in range(len(d)):
@@ -524,7 +522,7 @@ class BaseTestRffi:
                         counter += 1
                 return counter
             finally:
-                free_nonmovingbuffer(d, buf, is_pinned, is_raw)
+                free_nonmovingbuffer(d, buf)
         assert f() == len(d)
         fn = self.compile(f, [], gcpolicy='ref')
         assert fn() == len(d)
@@ -534,37 +532,16 @@ class BaseTestRffi:
         def f():
             counter = 0
             for n in range(32):
-                buf, is_pinned, is_raw = get_nonmovingbuffer(d)
+                buf = get_nonmovingbuffer(d)
                 try:
                     for i in range(len(d)):
                         if buf[i] == d[i]:
                             counter += 1
                 finally:
-                    free_nonmovingbuffer(d, buf, is_pinned, is_raw)
+                    free_nonmovingbuffer(d, buf)
             return counter
         fn = self.compile(f, [], gcpolicy='semispace')
         # The semispace gc uses raw_malloc for its internal data structs
-        # but hopefully less than 30 times.  So we should get < 30 leaks
-        # unless the get_nonmovingbuffer()/free_nonmovingbuffer() pair
-        # leaks at each iteration.  This is what the following line checks.
-        res = fn(expected_extra_mallocs=range(30))
-        assert res == 32 * len(d)
-
-    def test_nonmovingbuffer_incminimark(self):
-        d = 'cool data'
-        def f():
-            counter = 0
-            for n in range(32):
-                buf, is_pinned, is_raw = get_nonmovingbuffer(d)
-                try:
-                    for i in range(len(d)):
-                        if buf[i] == d[i]:
-                            counter += 1
-                finally:
-                    free_nonmovingbuffer(d, buf, is_pinned, is_raw)
-            return counter
-        fn = self.compile(f, [], gcpolicy='incminimark')
-        # The incminimark gc uses raw_malloc for its internal data structs
         # but hopefully less than 30 times.  So we should get < 30 leaks
         # unless the get_nonmovingbuffer()/free_nonmovingbuffer() pair
         # leaks at each iteration.  This is what the following line checks.
@@ -581,7 +558,7 @@ class TestRffiInternals:
             return cast(SIGNED, res)
         assert f() == 3
         assert interpret(f, []) == 3
-
+    
     def test_structcopy(self):
         X2 = lltype.Struct('X2', ('x', SIGNED))
         X1 = lltype.Struct('X1', ('a', SIGNED), ('x2', X2), ('p', lltype.Ptr(X2)))
@@ -605,7 +582,7 @@ class TestRffiInternals:
         assert f() == 123
         res = interpret(f, [])
         assert res == 123
-
+    
     def test_make_annotation(self):
         X = CStruct('xx', ('one', INT))
         def f():
@@ -617,14 +594,14 @@ class TestRffiInternals:
                 lltype.free(p, flavor='raw')
             return 3
         assert interpret(f, []) == 3
-
+    
     def test_implicit_cast(self):
         z = llexternal('z', [USHORT, ULONG, USHORT, DOUBLE], USHORT,
                        sandboxsafe=True)   # to allow the wrapper to be inlined
-
+    
         def f(x, y, xx, yy):
             return z(x, y, xx, yy)
-
+    
         a = RPythonAnnotator()
         r = a.build_types(f, [int, int, int, int])
         rtyper = RPythonTyper(a)
@@ -639,14 +616,14 @@ class TestRffiInternals:
         expected = {'force_cast': 3, 'cast_int_to_float': 1, 'direct_call': 1}
         for k, v in expected.items():
             assert s[k] == v
-
+    
     def test_stringpolicy1(self):
         eci = ExternalCompilationInfo(includes=['string.h'])
         strlen = llexternal('strlen', [CCHARP], SIZE_T, compilation_info=eci)
         def f():
             return cast(SIGNED, strlen("Xxx"))
         assert interpret(f, [], backendopt=True) == 3
-
+    
     def test_stringpolicy3(self):
         eci = ExternalCompilationInfo(includes=['string.h'])
         strlen = llexternal('strlen', [CCHARP], INT, compilation_info=eci)
@@ -655,9 +632,9 @@ class TestRffiInternals:
             res = strlen(ll_str)
             lltype.free(ll_str, flavor='raw')
             return res
-
+    
         assert interpret(f, [], backendopt=True) == 3
-
+    
     def test_stringpolicy_mixed(self):
         eci = ExternalCompilationInfo(includes=['string.h'])
         strlen = llexternal('strlen', [CCHARP], SIZE_T,
@@ -668,40 +645,59 @@ class TestRffiInternals:
             res2 = strlen(ll_str)
             lltype.free(ll_str, flavor='raw')
             return cast(SIGNED, res1*10 + res2)
-
-        assert interpret(f, [], backendopt=True) == 43
-
-    def test_str2chararray(self):
-        eci = ExternalCompilationInfo(includes=['string.h'])
-        strlen = llexternal('strlen', [CCHARP], SIZE_T,
-                            compilation_info=eci)
-        def f():
-            raw = str2charp("XxxZy")
-            n = str2chararray("abcdef", raw, 4)
-            assert raw[0] == 'a'
-            assert raw[1] == 'b'
-            assert raw[2] == 'c'
-            assert raw[3] == 'd'
-            assert raw[4] == 'y'
-            lltype.free(raw, flavor='raw')
-            return n
-
-        assert interpret(f, []) == 4
+    
+        assert interpret(f, [], backendopt=True) == 43    
+    
+    def test_around_extcall(self):
+        if sys.platform == "win32":
+            py.test.skip('No pipes on windows')
+        import os
+        from rpython.annotator import model as annmodel
+        from rpython.rlib.objectmodel import invoke_around_extcall
+        from rpython.rtyper.extfuncregistry import register_external
+        read_fd, write_fd = os.pipe()
+        try:
+            # we need an external function that is not going to get wrapped around
+            # before()/after() calls, in order to call it from before()/after()...
+            def mywrite(s):
+                os.write(write_fd, s)
+            def llimpl(s):
+                s = ''.join(s.chars)
+                os.write(write_fd, s)
+            register_external(mywrite, [str], annmodel.s_None, 'll_mywrite',
+                              llfakeimpl=llimpl, sandboxsafe=True)
+    
+            def before():
+                mywrite("B")
+            def after():
+                mywrite("A")
+            def f():
+                os.write(write_fd, "-")
+                invoke_around_extcall(before, after)
+                os.write(write_fd, "E")
+    
+            interpret(f, [])
+            data = os.read(read_fd, 99)
+            assert data == "-BEA"
+    
+        finally:
+            os.close(write_fd)
+            os.close(read_fd)
 
     def test_external_callable(self):
         """ Try to call some llexternal function with llinterp
         """
         z = llexternal('z', [Signed], Signed, _callable=lambda x:x+1)
-
+        
         def f():
             return z(2)
-
+    
         res = interpret(f, [])
         assert res == 3
 
     def test_size_t_sign(self):
         assert r_size_t(-1) > 0
-
+    
     def test_cast(self):
         res = cast(SIZE_T, -1)
         assert type(res) is r_size_t
@@ -709,7 +705,7 @@ class TestRffiInternals:
         #
         res = cast(lltype.Signed, 42.5)
         assert res == 42
-
+    
         res = cast(lltype.SingleFloat, 12.3)
         assert res == r_singlefloat(12.3)
         res = cast(lltype.SingleFloat, res)
@@ -742,7 +738,7 @@ class TestRffiInternals:
             ULONGLONG:  ctypes.c_ulonglong,
             SIZE_T:     ctypes.c_size_t,
             }
-
+    
         for ll, ctp in cache.items():
             assert sizeof(ll) == ctypes.sizeof(ctp)
             assert sizeof(lltype.Typedef(ll, 'test')) == sizeof(ll)
@@ -751,7 +747,7 @@ class TestRffiInternals:
         assert size_and_sign(lltype.UniChar)[1]
         assert size_and_sign(UINT)[1]
         assert not size_and_sign(INT)[1]
-
+    
     def test_rffi_offsetof(self):
         import struct
         from rpython.rtyper.tool import rffi_platform
@@ -781,7 +777,7 @@ def test_ptradd():
     for i in xrange(len(data) - 2):
         assert a2[i] == a[i + 2]
     lltype.free(a, flavor='raw')
-
+    
 def test_ptradd_interpret():
     interpret(test_ptradd, [])
 
@@ -816,12 +812,3 @@ def test_force_cast_unichar():
         assert cast(LONG, x) == 65535
     else:
         assert cast(LONG, cast(INT, x)) == -1
-
-def test_c_memcpy():
-    p1 = str2charp("hello")
-    p2 = str2charp("WORLD")
-    c_memcpy(cast(VOIDP, p2), cast(VOIDP, p1), 3)
-    assert charp2str(p1) == "hello"
-    assert charp2str(p2) == "helLD"
-    free_charp(p1)
-    free_charp(p2)

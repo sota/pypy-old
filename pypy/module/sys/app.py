@@ -16,13 +16,8 @@ def excepthook(exctype, value, traceback):
         pass
 
     try:
-        encoding = sys.stderr.encoding
-    except:
-        encoding = None
-
-    try:
         from traceback import print_exception
-        print_exception(exctype, value, traceback, _encoding=encoding)
+        print_exception(exctype, value, traceback)
     except:
         if not excepthook_failsafe(exctype, value):
             raise
@@ -34,13 +29,14 @@ def excepthook_failsafe(exctype, value):
     try:
         # first try to print the exception's class name
         stderr = sys.stderr
-        stderr.write(str(getattr(exctype, '__name__', exctype)))
+        stderr.write(getattr(exctype, '__name__', exctype))
         # then attempt to get the str() of the exception
         try:
             s = str(value)
         except:
             s = '<failure of str() on the exception instance>'
-        # then print it
+        # then print it, and don't worry too much about the extra space
+        # between the exception class and the ':'
         if s:
             stderr.write(': %s\n' % (s,))
         else:
@@ -49,7 +45,7 @@ def excepthook_failsafe(exctype, value):
     except:
         return False    # got an exception again... ignore, report the original
 
-def exit(exitcode=None):
+def exit(exitcode=0):
     """Exit the interpreter by raising SystemExit(exitcode).
 If the exitcode is omitted or None, it defaults to zero (i.e., success).
 If the exitcode is numeric, it will be used as the system exit status.
@@ -70,11 +66,11 @@ def callstats():
     return None
 
 copyright_str = """
-Copyright 2003-2016 PyPy development team.
+Copyright 2003-2013 PyPy development team.
 All Rights Reserved.
 For further information, see <http://pypy.org>
 
-Portions Copyright (c) 2001-2016 Python Software Foundation.
+Portions Copyright (c) 2001-2013 Python Software Foundation.
 All Rights Reserved.
 
 Portions Copyright (c) 2000 BeOpen.com.

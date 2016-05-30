@@ -22,7 +22,6 @@
 #endif
 /* !DO_LOG_EXC: define the function anyway, so that we can shut
    off the prints of a debug_exc by remaking only testing_1.o */
-RPY_EXTERN
 void RPyDebugReturnShowException(const char *msg, const char *filename,
                                  long lineno, const char *functionname);
 
@@ -37,7 +36,7 @@ void RPyDebugReturnShowException(const char *msg, const char *filename,
 
 /* prototypes */
 
-RPY_EXTERN
+#define RPyRaiseSimpleException(exc, msg)   _RPyRaiseSimpleException(R##exc)
 void _RPyRaiseSimpleException(RPYTHON_EXCEPTION rexc);
 
 #endif

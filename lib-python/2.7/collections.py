@@ -17,10 +17,6 @@ try:
 except ImportError:
     assert '__pypy__' not in _sys.builtin_module_names
     newdict = lambda _ : {}
-try:
-    from __pypy__ import reversed_dict as _reversed_dict
-except ImportError:
-    _reversed_dict = None     # don't have ordered dicts
 
 try:
     from thread import get_ident as _get_ident
@@ -33,97 +29,7 @@ except ImportError:
 ################################################################################
 
 class OrderedDict(dict):
-    '''Dictionary that remembers insertion order.
-
-    In PyPy all dicts are ordered anyway.  This is mostly useful as a
-    placeholder to mean "this dict must be ordered even on CPython".
-
-    Known difference: iterating over an OrderedDict which is being
-    concurrently modified raises RuntimeError in PyPy.  In CPython
-    instead we get some behavior that appears reasonable in some
-    cases but is nonsensical in other cases.  This is officially
-    forbidden by the CPython docs, so we forbid it explicitly for now.
-    '''
-
-    def __reversed__(self):
-        return _reversed_dict(self)
-
-    def popitem(self, last=True):
-        '''od.popitem() -> (k, v), return and remove a (key, value) pair.
-        Pairs are returned in LIFO order if last is true or FIFO order if false.
-
-        '''
-        if last:
-            return dict.popitem(self)
-        else:
-            it = dict.__iter__(self)
-            try:
-                k = it.next()
-            except StopIteration:
-                raise KeyError('dictionary is empty')
-            return (k, self.pop(k))
-
-    def __repr__(self, _repr_running={}):
-        'od.__repr__() <==> repr(od)'
-        call_key = id(self), _get_ident()
-        if call_key in _repr_running:
-            return '...'
-        _repr_running[call_key] = 1
-        try:
-            if not self:
-                return '%s()' % (self.__class__.__name__,)
-            return '%s(%r)' % (self.__class__.__name__, self.items())
-        finally:
-            del _repr_running[call_key]
-
-    def __reduce__(self):
-        'Return state information for pickling'
-        items = [[k, self[k]] for k in self]
-        inst_dict = vars(self).copy()
-        if inst_dict:
-            return (self.__class__, (items,), inst_dict)
-        return self.__class__, (items,)
-
-    def copy(self):
-        'od.copy() -> a shallow copy of od'
-        return self.__class__(self)
-
-    def __eq__(self, other):
-        '''od.__eq__(y) <==> od==y.  Comparison to another OD is order-sensitive
-        while comparison to a regular mapping is order-insensitive.
-
-        '''
-        if isinstance(other, OrderedDict):
-            return dict.__eq__(self, other) and all(_imap(_eq, self, other))
-        return dict.__eq__(self, other)
-
-    def __ne__(self, other):
-        'od.__ne__(y) <==> od!=y'
-        return not self == other
-
-    # -- the following methods support python 3.x style dictionary views --
-
-    def viewkeys(self):
-        "od.viewkeys() -> a set-like object providing a view on od's keys"
-        return KeysView(self)
-
-    def viewvalues(self):
-        "od.viewvalues() -> an object providing a view on od's values"
-        return ValuesView(self)
-
-    def viewitems(self):
-        "od.viewitems() -> a set-like object providing a view on od's items"
-        return ItemsView(self)
-
-
-def _compat_with_unordered_dicts():
-    # This returns the methods needed in OrderedDict in case the base
-    # 'dict' class is not actually ordered, like on top of CPython or
-    # old PyPy or PyPy-STM.
-
-    # ===== Original comments and code follows      =====
-    # ===== The unmodified methods are not repeated =====
-
+    'Dictionary that remembers insertion order'
     # An inherited dict maps keys to values.
     # The inherited dict provides __getitem__, __len__, __contains__, and get.
     # The remaining methods are order-aware.
@@ -165,7 +71,7 @@ def _compat_with_unordered_dicts():
         # Deleting an existing item uses self.__map to find the link which gets
         # removed by updating the links in the predecessor and successor nodes.
         dict_delitem(self, key)
-        link_prev, link_next, _ = self.__map.pop(key)
+        link_prev, link_next, key = self.__map.pop(key)
         link_prev[1] = link_next                        # update link_prev[NEXT]
         link_next[0] = link_prev                        # update link_next[PREV]
 
@@ -260,6 +166,19 @@ def _compat_with_unordered_dicts():
         value = self.pop(key)
         return key, value
 
+    def __repr__(self, _repr_running={}):
+        'od.__repr__() <==> repr(od)'
+        call_key = id(self), _get_ident()
+        if call_key in _repr_running:
+            return '...'
+        _repr_running[call_key] = 1
+        try:
+            if not self:
+                return '%s()' % (self.__class__.__name__,)
+            return '%s(%r)' % (self.__class__.__name__, self.items())
+        finally:
+            del _repr_running[call_key]
+
     def __reduce__(self):
         'Return state information for pickling'
         items = [[k, self[k]] for k in self]
@@ -269,6 +188,10 @@ def _compat_with_unordered_dicts():
         if inst_dict:
             return (self.__class__, (items,), inst_dict)
         return self.__class__, (items,)
+
+    def copy(self):
+        'od.copy() -> a shallow copy of od'
+        return self.__class__(self)
 
     @classmethod
     def fromkeys(cls, iterable, value=None):
@@ -281,75 +204,42 @@ def _compat_with_unordered_dicts():
             self[key] = value
         return self
 
-    return locals()
+    def __eq__(self, other):
+        '''od.__eq__(y) <==> od==y.  Comparison to another OD is order-sensitive
+        while comparison to a regular mapping is order-insensitive.
 
-if _reversed_dict is None:
-    for _key, _value in _compat_with_unordered_dicts().items():
-        setattr(OrderedDict, _key, _value)
-    del _key, _value
+        '''
+        if isinstance(other, OrderedDict):
+            return dict.__eq__(self, other) and all(_imap(_eq, self, other))
+        return dict.__eq__(self, other)
+
+    def __ne__(self, other):
+        'od.__ne__(y) <==> od!=y'
+        return not self == other
+
+    # -- the following methods support python 3.x style dictionary views --
+
+    def viewkeys(self):
+        "od.viewkeys() -> a set-like object providing a view on od's keys"
+        return KeysView(self)
+
+    def viewvalues(self):
+        "od.viewvalues() -> an object providing a view on od's values"
+        return ValuesView(self)
+
+    def viewitems(self):
+        "od.viewitems() -> a set-like object providing a view on od's items"
+        return ItemsView(self)
+
 
 ################################################################################
 ### namedtuple
 ################################################################################
 
-_class_template = '''\
-class {typename}(tuple):
-    '{typename}({arg_list})'
-
-    __slots__ = ()
-
-    _fields = {field_names!r}
-
-    def __new__(_cls, {arg_list}):
-        'Create new instance of {typename}({arg_list})'
-        return _tuple.__new__(_cls, ({arg_list}))
-
-    @classmethod
-    def _make(cls, iterable, new=tuple.__new__, len=len):
-        'Make a new {typename} object from a sequence or iterable'
-        result = new(cls, iterable)
-        if len(result) != {num_fields:d}:
-            raise TypeError('Expected {num_fields:d} arguments, got %d' % len(result))
-        return result
-
-    def __repr__(self):
-        'Return a nicely formatted representation string'
-        return '{typename}({repr_fmt})' % self
-
-    def _asdict(self):
-        'Return a new OrderedDict which maps field names to their values'
-        return OrderedDict(zip(self._fields, self))
-
-    def _replace(_self, **kwds):
-        'Return a new {typename} object replacing specified fields with new values'
-        result = _self._make(map(kwds.pop, {field_names!r}, _self))
-        if kwds:
-            raise ValueError('Got unexpected field names: %r' % kwds.keys())
-        return result
-
-    def __getnewargs__(self):
-        'Return self as a plain tuple.  Used by copy and pickle.'
-        return tuple(self)
-
-    __dict__ = _property(_asdict)
-
-    def __getstate__(self):
-        'Exclude the OrderedDict from pickling'
-        pass
-
-{field_defs}
-'''
-
-_repr_template = '{name}=%r'
-
-_field_template = '''\
-    {name} = _property(lambda self: self[{index:d}], doc='Alias for field number {index:d}')
-'''
-
 def namedtuple(typename, field_names, verbose=False, rename=False):
     """Returns a new subclass of tuple with named fields.
 
-    >>> Point = namedtuple('Point', ['x', 'y'])
+    >>> Point = namedtuple('Point', 'x y')
     >>> Point.__doc__                   # docstring for the new class
     'Point(x, y)'
     >>> p = Point(11, y=22)             # instantiate with positional args or keywords
@@ -370,73 +260,90 @@ def namedtuple(typename, field_names, verbose=False, rename=False):
 
     """
 
-    # Validate the field names.  At the user's option, either generate an error
-    # message or automatically replace the field name with a valid name.
+    # Parse and validate the field names.  Validation serves two purposes,
+    # generating informative error messages and preventing template injection attacks.
     if isinstance(field_names, basestring):
-        field_names = field_names.replace(',', ' ').split()
-    field_names = map(str, field_names)
-    typename = str(typename)
+        field_names = field_names.replace(',', ' ').split() # names separated by whitespace and/or commas
+    field_names = tuple(map(str, field_names))
     if rename:
+        names = list(field_names)
         seen = set()
-        for index, name in enumerate(field_names):
-            if (not all(c.isalnum() or c=='_' for c in name)
-                or _iskeyword(name)
-                or not name
-                or name[0].isdigit()
-                or name.startswith('_')
+        for i, name in enumerate(names):
+            if (not all(c.isalnum() or c=='_' for c in name) or _iskeyword(name)
+                or not name or name[0].isdigit() or name.startswith('_')
                 or name in seen):
-                field_names[index] = '_%d' % index
+                names[i] = '_%d' % i
             seen.add(name)
-    for name in [typename] + field_names:
-        if type(name) != str:
-            raise TypeError('Type names and field names must be strings')
+        field_names = tuple(names)
+    for name in (typename,) + field_names:
         if not all(c.isalnum() or c=='_' for c in name):
-            raise ValueError('Type names and field names can only contain '
-                             'alphanumeric characters and underscores: %r' % name)
+            raise ValueError('Type names and field names can only contain alphanumeric characters and underscores: %r' % name)
         if _iskeyword(name):
-            raise ValueError('Type names and field names cannot be a '
-                             'keyword: %r' % name)
+            raise ValueError('Type names and field names cannot be a keyword: %r' % name)
         if name[0].isdigit():
-            raise ValueError('Type names and field names cannot start with '
-                             'a number: %r' % name)
-    seen = set()
+            raise ValueError('Type names and field names cannot start with a number: %r' % name)
+    seen_names = set()
     for name in field_names:
         if name.startswith('_') and not rename:
-            raise ValueError('Field names cannot start with an underscore: '
-                             '%r' % name)
-        if name in seen:
+            raise ValueError('Field names cannot start with an underscore: %r' % name)
+        if name in seen_names:
             raise ValueError('Encountered duplicate field name: %r' % name)
-        seen.add(name)
+        seen_names.add(name)
 
-    # Fill-in the class template
-    class_definition = _class_template.format(
-        typename = typename,
-        field_names = tuple(field_names),
-        num_fields = len(field_names),
-        arg_list = repr(tuple(field_names)).replace("'", "")[1:-1],
-        repr_fmt = ', '.join(_repr_template.format(name=name)
-                             for name in field_names),
-        field_defs = '\n'.join(_field_template.format(index=index, name=name)
-                               for index, name in enumerate(field_names))
-    )
+    # Create and fill-in the class template
+    numfields = len(field_names)
+    argtxt = repr(field_names).replace("'", "")[1:-1]   # tuple repr without parens or quotes
+    reprtxt = ', '.join('%s=%%r' % name for name in field_names)
+    template = '''class %(typename)s(tuple):
+        '%(typename)s(%(argtxt)s)' \n
+        __slots__ = () \n
+        _fields = %(field_names)r \n
+        def __new__(_cls, %(argtxt)s):
+            'Create new instance of %(typename)s(%(argtxt)s)'
+            return _tuple.__new__(_cls, (%(argtxt)s)) \n
+        @classmethod
+        def _make(cls, iterable, new=tuple.__new__, len=len):
+            'Make a new %(typename)s object from a sequence or iterable'
+            result = new(cls, iterable)
+            if len(result) != %(numfields)d:
+                raise TypeError('Expected %(numfields)d arguments, got %%d' %% len(result))
+            return result \n
+        def __repr__(self):
+            'Return a nicely formatted representation string'
+            return '%(typename)s(%(reprtxt)s)' %% self \n
+        def _asdict(self):
+            'Return a new OrderedDict which maps field names to their values'
+            return OrderedDict(zip(self._fields, self)) \n
+        __dict__ = property(_asdict) \n
+        def _replace(_self, **kwds):
+            'Return a new %(typename)s object replacing specified fields with new values'
+            result = _self._make(map(kwds.pop, %(field_names)r, _self))
+            if kwds:
+                raise ValueError('Got unexpected field names: %%r' %% kwds.keys())
+            return result \n
+        def __getnewargs__(self):
+            'Return self as a plain tuple.  Used by copy and pickle.'
+            return tuple(self) \n\n''' % locals()
+    for i, name in enumerate(field_names):
+        template += "        %s = _property(lambda self: self[%d], doc='Alias for field number %d')\n" % (name, i, i)
     if verbose:
-        print class_definition
+        print template
 
-    # Execute the template string in a temporary namespace and support
-    # tracing utilities by setting a value for frame.f_globals['__name__']
+    # Execute the template string in a temporary namespace and
+    # support tracing utilities by setting a value for frame.f_globals['__name__']
     namespace = newdict('module')
-    namespace['__name__'] = 'namedtuple_%s' % typename
     namespace['OrderedDict'] = OrderedDict
     namespace['_property'] = property
     namespace['_tuple'] = tuple
+    namespace['__name__'] = 'namedtuple_%s' % typename
     try:
-        exec class_definition in namespace
-    except SyntaxError as e:
-        raise SyntaxError(e.message + ':\n' + class_definition)
+        exec template in namespace
+    except SyntaxError, e:
+        raise SyntaxError(e.message + ':\n' + template)
     result = namespace[typename]
 
     # For pickling to work, the __module__ variable needs to be set to the frame
-    # where the named tuple is created.  Bypass this step in environments where
+    # where the named tuple is created.  Bypass this step in enviroments where
     # sys._getframe is not defined (Jython for example) or sys._getframe is not
     # defined for arguments greater than 0 (IronPython).
     try:
@@ -502,7 +409,7 @@ class Counter(dict):
     #   http://code.activestate.com/recipes/259174/
     #   Knuth, TAOCP Vol. II section 4.6.3
 
-    def __init__(*args, **kwds):
+    def __init__(self, iterable=None, **kwds):
         '''Create a new, empty Counter object.  And if given, count elements
         from an input iterable.  Or, initialize the count from another mapping
         of elements to their counts.
@@ -513,15 +420,8 @@ class Counter(dict):
         >>> c = Counter(a=4, b=2)                   # a new counter from keyword args
 
         '''
-        if not args:
-            raise TypeError("descriptor '__init__' of 'Counter' object "
-                            "needs an argument")
-        self = args[0]
-        args = args[1:]
-        if len(args) > 1:
-            raise TypeError('expected at most 1 arguments, got %d' % len(args))
         super(Counter, self).__init__()
-        self.update(*args, **kwds)
+        self.update(iterable, **kwds)
 
     def __missing__(self, key):
         'The count of elements not in the Counter is zero.'
@@ -572,7 +472,7 @@ class Counter(dict):
         raise NotImplementedError(
             'Counter.fromkeys() is undefined.  Use Counter(iterable) instead.')
 
-    def update(*args, **kwds):
+    def update(self, iterable=None, **kwds):
         '''Like dict.update() but add counts instead of replacing them.
 
         Source can be an iterable, a dictionary, or another Counter instance.
@@ -592,14 +492,6 @@ class Counter(dict):
         # contexts.  Instead, we implement straight-addition.  Both the inputs
         # and outputs are allowed to contain zero and negative counts.
 
-        if not args:
-            raise TypeError("descriptor 'update' of 'Counter' object "
-                            "needs an argument")
-        self = args[0]
-        args = args[1:]
-        if len(args) > 1:
-            raise TypeError('expected at most 1 arguments, got %d' % len(args))
-        iterable = args[0] if args else None
         if iterable is not None:
             if isinstance(iterable, Mapping):
                 if self:
@@ -615,7 +507,7 @@ class Counter(dict):
         if kwds:
             self.update(kwds)
 
-    def subtract(*args, **kwds):
+    def subtract(self, iterable=None, **kwds):
         '''Like dict.update() but subtracts counts instead of replacing them.
         Counts can be reduced below zero.  Both the inputs and outputs are
         allowed to contain zero and negative counts.
@@ -631,14 +523,6 @@ class Counter(dict):
         -1
 
         '''
-        if not args:
-            raise TypeError("descriptor 'subtract' of 'Counter' object "
-                            "needs an argument")
-        self = args[0]
-        args = args[1:]
-        if len(args) > 1:
-            raise TypeError('expected at most 1 arguments, got %d' % len(args))
-        iterable = args[0] if args else None
         if iterable is not None:
             self_get = self.get
             if isinstance(iterable, Mapping):

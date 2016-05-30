@@ -2,18 +2,17 @@ from weakref import WeakValueDictionary
 
 from rpython.annotator import model as annmodel
 from rpython.rlib import jit, types
+from rpython.rlib.debug import ll_assert
 from rpython.rlib.objectmodel import (malloc_zero_filled, we_are_translated,
-    _hash_string, keepalive_until_here, specialize, enforceargs)
+    _hash_string, keepalive_until_here, specialize)
 from rpython.rlib.signature import signature
 from rpython.rlib.rarithmetic import ovfcheck
 from rpython.rtyper.error import TyperError
-from rpython.rtyper.debug import ll_assert
 from rpython.rtyper.lltypesystem import ll_str, llmemory
 from rpython.rtyper.lltypesystem.lltype import (GcStruct, Signed, Array, Char,
     UniChar, Ptr, malloc, Bool, Void, GcArray, nullptr, cast_primitive,
     typeOf, staticAdtMethod, GcForwardReference)
-from rpython.rtyper.rmodel import inputconst, Repr
-from rpython.rtyper.rint import IntegerRepr
+from rpython.rtyper.rmodel import inputconst, Repr, IntegerRepr
 from rpython.rtyper.rstr import (AbstractStringRepr, AbstractCharRepr,
     AbstractUniCharRepr, AbstractStringIteratorRepr, AbstractLLHelpers,
     AbstractUnicodeRepr)
@@ -32,13 +31,13 @@ STR = GcForwardReference()
 UNICODE = GcForwardReference()
 
 def new_malloc(TP, name):
-    @enforceargs(int)
     def mallocstr(length):
         ll_assert(length >= 0, "negative string length")
         r = malloc(TP, length)
         if not we_are_translated() or not malloc_zero_filled:
             r.hash = 0
         return r
+    mallocstr._annspecialcase_ = 'specialize:semierased'
     return func_with_new_name(mallocstr, name)
 
 mallocstr = new_malloc(STR, 'mallocstr')
@@ -51,26 +50,15 @@ def emptyunicodefun():
     return emptyunicode
 
 def _new_copy_contents_fun(SRC_TP, DST_TP, CHAR_TP, name):
-    @specialize.arg(0)
-    def _str_ofs(TP, item):
-        return (llmemory.offsetof(TP, 'chars') +
-                llmemory.itemoffsetof(TP.chars, 0) +
+    def _str_ofs_src(item):
+        return (llmemory.offsetof(SRC_TP, 'chars') +
+                llmemory.itemoffsetof(SRC_TP.chars, 0) +
                 llmemory.sizeof(CHAR_TP) * item)
 
-    @signature(types.any(), types.any(), types.int(), returns=types.any())
-    @specialize.arg(0)
-    def _get_raw_buf(TP, src, ofs):
-        """
-        WARNING: dragons ahead.
-        Return the address of the internal char* buffer of the low level
-        string. The return value is valid as long as no GC operation occur, so
-        you must ensure that it will be used inside a "GC safe" section, for
-        example by marking your function with @rgc.no_collect
-        """
-        assert typeOf(src).TO == TP
-        assert ofs >= 0
-        return llmemory.cast_ptr_to_adr(src) + _str_ofs(TP, ofs)
-    _get_raw_buf._always_inline_ = True
+    def _str_ofs_dst(item):
+        return (llmemory.offsetof(DST_TP, 'chars') +
+                llmemory.itemoffsetof(DST_TP.chars, 0) +
+                llmemory.sizeof(CHAR_TP) * item)
 
     @jit.oopspec('stroruni.copy_contents(src, dst, srcstart, dststart, length)')
     @signature(types.any(), types.any(), types.int(), types.int(), types.int(), returns=types.none())
@@ -83,68 +71,22 @@ def _new_copy_contents_fun(SRC_TP, DST_TP, CHAR_TP, name):
         # because it might move the strings.  The keepalive_until_here()
         # are obscurely essential to make sure that the strings stay alive
         # longer than the raw_memcopy().
+        assert typeOf(src).TO == SRC_TP
+        assert typeOf(dst).TO == DST_TP
+        assert srcstart >= 0
+        assert dststart >= 0
         assert length >= 0
-        ll_assert(srcstart >= 0, "copystrc: negative srcstart")
-        ll_assert(srcstart + length <= len(src.chars), "copystrc: src ovf")
-        ll_assert(dststart >= 0, "copystrc: negative dststart")
-        ll_assert(dststart + length <= len(dst.chars), "copystrc: dst ovf")
-        # from here, no GC operations can happen
-        asrc = _get_raw_buf(SRC_TP, src, srcstart)
-        adst = _get_raw_buf(DST_TP, dst, dststart)
-        llmemory.raw_memcopy(asrc, adst, llmemory.sizeof(CHAR_TP) * length)
-        # end of "no GC" section
+        src = llmemory.cast_ptr_to_adr(src) + _str_ofs_src(srcstart)
+        dst = llmemory.cast_ptr_to_adr(dst) + _str_ofs_dst(dststart)
+        llmemory.raw_memcopy(src, dst, llmemory.sizeof(CHAR_TP) * length)
         keepalive_until_here(src)
         keepalive_until_here(dst)
     copy_string_contents._always_inline_ = True
-    copy_string_contents = func_with_new_name(copy_string_contents,
-                                              'copy_%s_contents' % name)
+    return func_with_new_name(copy_string_contents, 'copy_%s_contents' % name)
 
-    @jit.oopspec('stroruni.copy_string_to_raw(src, ptrdst, srcstart, length)')
-    def copy_string_to_raw(src, ptrdst, srcstart, length):
-        """
-        Copies 'length' characters from the 'src' string to the 'ptrdst'
-        buffer, starting at position 'srcstart'.
-        'ptrdst' must be a non-gc Array of Char.
-        """
-        # xxx Warning: same note as above apply: don't do this at home
-        assert length >= 0
-        # from here, no GC operations can happen
-        asrc = _get_raw_buf(SRC_TP, src, srcstart)
-        adst = llmemory.cast_ptr_to_adr(ptrdst)
-        adst = adst + llmemory.itemoffsetof(typeOf(ptrdst).TO, 0)
-        llmemory.raw_memcopy(asrc, adst, llmemory.sizeof(CHAR_TP) * length)
-        # end of "no GC" section
-        keepalive_until_here(src)
-    copy_string_to_raw._always_inline_ = True
-    copy_string_to_raw = func_with_new_name(copy_string_to_raw, 'copy_%s_to_raw' % name)
-
-    @jit.dont_look_inside
-    @signature(types.any(), types.any(), types.int(), types.int(),
-               returns=types.none())
-    def copy_raw_to_string(ptrsrc, dst, dststart, length):
-        # xxx Warning: same note as above apply: don't do this at home
-        assert length >= 0
-        # from here, no GC operations can happen
-        adst = _get_raw_buf(SRC_TP, dst, dststart)
-        asrc = llmemory.cast_ptr_to_adr(ptrsrc)
-
-        asrc = asrc + llmemory.itemoffsetof(typeOf(ptrsrc).TO, 0)
-        llmemory.raw_memcopy(asrc, adst, llmemory.sizeof(CHAR_TP) * length)
-        # end of "no GC" section
-        keepalive_until_here(dst)
-    copy_raw_to_string._always_inline_ = True
-    copy_raw_to_string = func_with_new_name(copy_raw_to_string,
-                                              'copy_raw_to_%s' % name)
-
-    return copy_string_to_raw, copy_raw_to_string, copy_string_contents
-
-(copy_string_to_raw,
- copy_raw_to_string,
- copy_string_contents) = _new_copy_contents_fun(STR, STR, Char, 'string')
-
-(copy_unicode_to_raw,
- copy_raw_to_unicode,
- copy_unicode_contents) = _new_copy_contents_fun(UNICODE, UNICODE, UniChar, 'unicode')
+copy_string_contents = _new_copy_contents_fun(STR, STR, Char, 'string')
+copy_unicode_contents = _new_copy_contents_fun(UNICODE, UNICODE, UniChar,
+                                               'unicode')
 
 CONST_STR_CACHE = WeakValueDictionary()
 CONST_UNICODE_CACHE = WeakValueDictionary()
@@ -167,10 +109,7 @@ class BaseLLStringRepr(Repr):
             self.CACHE[value] = p
             return p
 
-    def make_iterator_repr(self, variant=None):
-        if variant is not None:
-            raise TyperError("unsupported %r iterator over a str/unicode" %
-                             (variant,))
+    def make_iterator_repr(self):
         return self.repr.iterator_repr
 
     def can_ll_be_null(self, s_value):
@@ -284,7 +223,6 @@ def bloom(mask, c):
 class LLHelpers(AbstractLLHelpers):
     from rpython.rtyper.annlowlevel import llstr, llunicode
 
-    @staticmethod
     @jit.elidable
     def ll_str_mul(s, times):
         if times < 0:
@@ -307,7 +245,6 @@ class LLHelpers(AbstractLLHelpers):
             i += j
         return newstr
 
-    @staticmethod
     @jit.elidable
     def ll_char_mul(ch, times):
         if typeOf(ch) is Char:
@@ -324,11 +261,9 @@ class LLHelpers(AbstractLLHelpers):
             j += 1
         return newstr
 
-    @staticmethod
     def ll_strlen(s):
         return len(s.chars)
 
-    @staticmethod
     @signature(types.any(), types.int(), returns=types.any())
     def ll_stritem_nonneg(s, i):
         chars = s.chars
@@ -336,7 +271,6 @@ class LLHelpers(AbstractLLHelpers):
         ll_assert(i < len(chars), "str getitem index out of bound")
         return chars[i]
 
-    @staticmethod
     def ll_chr2str(ch):
         if typeOf(ch) is Char:
             malloc = mallocstr
@@ -347,7 +281,6 @@ class LLHelpers(AbstractLLHelpers):
         return s
 
     # @jit.look_inside_iff(lambda str: jit.isconstant(len(str.chars)) and len(str.chars) == 1)
-    @staticmethod
     @jit.oopspec("str.str2unicode(str)")
     def ll_str2unicode(str):
         lgt = len(str.chars)
@@ -358,17 +291,15 @@ class LLHelpers(AbstractLLHelpers):
             s.chars[i] = cast_primitive(UniChar, str.chars[i])
         return s
 
-    @staticmethod
     def ll_str2bytearray(str):
         from rpython.rtyper.lltypesystem.rbytearray import BYTEARRAY
-
+        
         lgt = len(str.chars)
         b = malloc(BYTEARRAY, lgt)
         for i in range(lgt):
             b.chars[i] = str.chars[i]
         return b
 
-    @staticmethod
     @jit.elidable
     def ll_strhash(s):
         # unlike CPython, there is no reason to avoid to return -1
@@ -384,17 +315,13 @@ class LLHelpers(AbstractLLHelpers):
             s.hash = x
         return x
 
-    @staticmethod
     def ll_length(s):
         return len(s.chars)
 
-    @staticmethod
     def ll_strfasthash(s):
         return s.hash     # assumes that the hash is already computed
 
-    @staticmethod
     @jit.elidable
-    @jit.oopspec('stroruni.concat(s1, s2)')
     def ll_strconcat(s1, s2):
         len1 = s1.length()
         len2 = s2.length()
@@ -405,15 +332,15 @@ class LLHelpers(AbstractLLHelpers):
             newstr = s2.malloc(len1 + len2)
             newstr.copy_contents_from_str(s1, newstr, 0, 0, len1)
         else:
-            newstr = s1.malloc(len1 + len2)
+            newstr = s1.malloc(len1 + len2)            
             newstr.copy_contents(s1, newstr, 0, 0, len1)
         if typeOf(s2) == Ptr(STR):
             newstr.copy_contents_from_str(s2, newstr, 0, len1, len2)
         else:
             newstr.copy_contents(s2, newstr, 0, len1, len2)
         return newstr
+    ll_strconcat.oopspec = 'stroruni.concat(s1, s2)'
 
-    @staticmethod
     @jit.elidable
     def ll_strip(s, ch, left, right):
         s_len = len(s.chars)
@@ -434,49 +361,6 @@ class LLHelpers(AbstractLLHelpers):
         s.copy_contents(s, result, lpos, 0, r_len)
         return result
 
-    @staticmethod
-    @jit.elidable
-    def ll_strip_default(s, left, right):
-        s_len = len(s.chars)
-        if s_len == 0:
-            return s.empty()
-        lpos = 0
-        rpos = s_len - 1
-        if left:
-            while lpos < rpos and s.chars[lpos].isspace():
-                lpos += 1
-        if right:
-            while lpos < rpos + 1 and s.chars[rpos].isspace():
-                rpos -= 1
-        if rpos < lpos:
-            return s.empty()
-        r_len = rpos - lpos + 1
-        result = s.malloc(r_len)
-        s.copy_contents(s, result, lpos, 0, r_len)
-        return result
-
-    @staticmethod
-    @jit.elidable
-    def ll_strip_multiple(s, s2, left, right):
-        s_len = len(s.chars)
-        if s_len == 0:
-            return s.empty()
-        lpos = 0
-        rpos = s_len - 1
-        if left:
-            while lpos < rpos and LLHelpers.ll_contains(s2, s.chars[lpos]):
-                lpos += 1
-        if right:
-            while lpos < rpos + 1 and LLHelpers.ll_contains(s2, s.chars[rpos]):
-                rpos -= 1
-        if rpos < lpos:
-            return s.empty()
-        r_len = rpos - lpos + 1
-        result = s.malloc(r_len)
-        s.copy_contents(s, result, lpos, 0, r_len)
-        return result
-
-    @staticmethod
     @jit.elidable
     def ll_upper(s):
         s_chars = s.chars
@@ -491,7 +375,6 @@ class LLHelpers(AbstractLLHelpers):
             i += 1
         return result
 
-    @staticmethod
     @jit.elidable
     def ll_lower(s):
         s_chars = s.chars
@@ -506,7 +389,6 @@ class LLHelpers(AbstractLLHelpers):
             i += 1
         return result
 
-    @staticmethod
     def ll_join(s, length, items):
         s_chars = s.chars
         s_len = len(s_chars)
@@ -540,9 +422,7 @@ class LLHelpers(AbstractLLHelpers):
             i += 1
         return result
 
-    @staticmethod
     @jit.elidable
-    @jit.oopspec('stroruni.cmp(s1, s2)')
     def ll_strcmp(s1, s2):
         if not s1 and not s2:
             return True
@@ -565,9 +445,7 @@ class LLHelpers(AbstractLLHelpers):
             i += 1
         return len1 - len2
 
-    @staticmethod
     @jit.elidable
-    @jit.oopspec('stroruni.equal(s1, s2)')
     def ll_streq(s1, s2):
         if s1 == s2:       # also if both are NULLs
             return True
@@ -585,8 +463,8 @@ class LLHelpers(AbstractLLHelpers):
                 return False
             j += 1
         return True
+    ll_streq.oopspec = 'stroruni.equal(s1, s2)'
 
-    @staticmethod
     @jit.elidable
     def ll_startswith(s1, s2):
         len1 = len(s1.chars)
@@ -603,13 +481,11 @@ class LLHelpers(AbstractLLHelpers):
 
         return True
 
-    @staticmethod
     def ll_startswith_char(s, ch):
         if not len(s.chars):
             return False
         return s.chars[0] == ch
 
-    @staticmethod
     @jit.elidable
     def ll_endswith(s1, s2):
         len1 = len(s1.chars)
@@ -627,13 +503,11 @@ class LLHelpers(AbstractLLHelpers):
 
         return True
 
-    @staticmethod
     def ll_endswith_char(s, ch):
         if not len(s.chars):
             return False
         return s.chars[len(s.chars) - 1] == ch
 
-    @staticmethod
     @jit.elidable
     @signature(types.any(), types.any(), types.int(), types.int(), returns=types.int())
     def ll_find_char(s, ch, start, end):
@@ -646,7 +520,6 @@ class LLHelpers(AbstractLLHelpers):
             i += 1
         return -1
 
-    @staticmethod
     @jit.elidable
     def ll_rfind_char(s, ch, start, end):
         if end > len(s.chars):
@@ -658,7 +531,6 @@ class LLHelpers(AbstractLLHelpers):
                 return i
         return -1
 
-    @staticmethod
     @jit.elidable
     def ll_count_char(s, ch, start, end):
         count = 0
@@ -671,9 +543,8 @@ class LLHelpers(AbstractLLHelpers):
             i += 1
         return count
 
-    @staticmethod
-    @signature(types.any(), types.any(), types.int(), types.int(), returns=types.int())
-    def ll_find(s1, s2, start, end):
+    @classmethod
+    def ll_find(cls, s1, s2, start, end):
         if start < 0:
             start = 0
         if end > len(s1.chars):
@@ -682,14 +553,15 @@ class LLHelpers(AbstractLLHelpers):
             return -1
 
         m = len(s2.chars)
-        if m == 1:
-            return LLHelpers.ll_find_char(s1, s2.chars[0], start, end)
+        if m == 0:
+            return start
+        elif m == 1:
+            return cls.ll_find_char(s1, s2.chars[0], start, end)
 
-        return LLHelpers.ll_search(s1, s2, start, end, FAST_FIND)
+        return cls.ll_search(s1, s2, start, end, FAST_FIND)
 
-    @staticmethod
-    @signature(types.any(), types.any(), types.int(), types.int(), returns=types.int())
-    def ll_rfind(s1, s2, start, end):
+    @classmethod
+    def ll_rfind(cls, s1, s2, start, end):
         if start < 0:
             start = 0
         if end > len(s1.chars):
@@ -698,10 +570,12 @@ class LLHelpers(AbstractLLHelpers):
             return -1
 
         m = len(s2.chars)
-        if m == 1:
-            return LLHelpers.ll_rfind_char(s1, s2.chars[0], start, end)
+        if m == 0:
+            return end
+        elif m == 1:
+            return cls.ll_rfind_char(s1, s2.chars[0], start, end)
 
-        return LLHelpers.ll_search(s1, s2, start, end, FAST_RFIND)
+        return cls.ll_search(s1, s2, start, end, FAST_RFIND)
 
     @classmethod
     def ll_count(cls, s1, s2, start, end):
@@ -713,33 +587,27 @@ class LLHelpers(AbstractLLHelpers):
             return 0
 
         m = len(s2.chars)
-        if m == 1:
+        if m == 0:
+            return end - start + 1
+        elif m == 1:
             return cls.ll_count_char(s1, s2.chars[0], start, end)
 
         res = cls.ll_search(s1, s2, start, end, FAST_COUNT)
-        assert res >= 0
+        # For a few cases ll_search can return -1 to indicate an "impossible"
+        # condition for a string match, count just returns 0 in these cases.
+        if res < 0:
+            res = 0
         return res
 
-    @staticmethod
     @jit.elidable
     def ll_search(s1, s2, start, end, mode):
         count = 0
         n = end - start
         m = len(s2.chars)
 
-        if m == 0:
-            if mode == FAST_COUNT:
-                return end - start + 1
-            elif mode == FAST_RFIND:
-                return end
-            else:
-                return start
-
         w = n - m
 
         if w < 0:
-            if mode == FAST_COUNT:
-                return 0
             return -1
 
         mlast = m - 1
@@ -810,7 +678,6 @@ class LLHelpers(AbstractLLHelpers):
             return -1
         return count
 
-    @staticmethod
     @signature(types.int(), types.any(), returns=types.any())
     @jit.look_inside_iff(lambda length, items: jit.loop_unrolling_heuristic(
         items, length))
@@ -845,7 +712,6 @@ class LLHelpers(AbstractLLHelpers):
             i += 1
         return result
 
-    @staticmethod
     @jit.look_inside_iff(lambda length, chars, RES: jit.isconstant(length) and jit.isvirtual(chars))
     def ll_join_chars(length, chars, RES):
         # no need to optimize this, will be replaced by string builder
@@ -865,7 +731,6 @@ class LLHelpers(AbstractLLHelpers):
             i += 1
         return result
 
-    @staticmethod
     @jit.oopspec('stroruni.slice(s1, start, stop)')
     @signature(types.any(), types.int(), types.int(), returns=types.any())
     @jit.elidable
@@ -881,12 +746,9 @@ class LLHelpers(AbstractLLHelpers):
         s1.copy_contents(s1, newstr, start, 0, lgt)
         return newstr
 
-    @staticmethod
     def ll_stringslice_startonly(s1, start):
         return LLHelpers._ll_stringslice(s1, start, len(s1.chars))
 
-    @staticmethod
-    @signature(types.any(), types.int(), types.int(), returns=types.any())
     def ll_stringslice_startstop(s1, start, stop):
         if jit.we_are_jitted():
             if stop > len(s1.chars):
@@ -898,12 +760,10 @@ class LLHelpers(AbstractLLHelpers):
                 stop = len(s1.chars)
         return LLHelpers._ll_stringslice(s1, start, stop)
 
-    @staticmethod
     def ll_stringslice_minusone(s1):
         newlen = len(s1.chars) - 1
         return LLHelpers._ll_stringslice(s1, 0, newlen)
 
-    @staticmethod
     def ll_split_chr(LIST, s, c, max):
         chars = s.chars
         strlen = len(chars)
@@ -938,39 +798,6 @@ class LLHelpers(AbstractLLHelpers):
         item.copy_contents(s, item, i, 0, j - i)
         return res
 
-    @staticmethod
-    def ll_split(LIST, s, c, max):
-        count = 1
-        if max == -1:
-            max = len(s.chars)
-        pos = 0
-        last = len(s.chars)
-        markerlen = len(c.chars)
-        pos = s.find(c, 0, last)
-        while pos >= 0 and count <= max:
-            pos = s.find(c, pos + markerlen, last)
-            count += 1
-        res = LIST.ll_newlist(count)
-        items = res.ll_items()
-        pos = 0
-        count = 0
-        pos = s.find(c, 0, last)
-        prev_pos = 0
-        if pos < 0:
-            items[0] = s
-            return res
-        while pos >= 0 and count < max:
-            item = items[count] = s.malloc(pos - prev_pos)
-            item.copy_contents(s, item, prev_pos, 0, pos -
-                               prev_pos)
-            count += 1
-            prev_pos = pos + markerlen
-            pos = s.find(c, pos + markerlen, last)
-        item = items[count] = s.malloc(last - prev_pos)
-        item.copy_contents(s, item, prev_pos, 0, last - prev_pos)
-        return res
-
-    @staticmethod
     def ll_rsplit_chr(LIST, s, c, max):
         chars = s.chars
         strlen = len(chars)
@@ -1006,39 +833,6 @@ class LLHelpers(AbstractLLHelpers):
         item.copy_contents(s, item, j, 0, i - j)
         return res
 
-    @staticmethod
-    def ll_rsplit(LIST, s, c, max):
-        count = 1
-        if max == -1:
-            max = len(s.chars)
-        pos = len(s.chars)
-        markerlen = len(c.chars)
-        pos = s.rfind(c, 0, pos)
-        while pos >= 0 and count <= max:
-            pos = s.rfind(c, 0, pos - markerlen)
-            count += 1
-        res = LIST.ll_newlist(count)
-        items = res.ll_items()
-        pos = 0
-        pos = len(s.chars)
-        prev_pos = pos
-        pos = s.rfind(c, 0, pos)
-        if pos < 0:
-            items[0] = s
-            return res
-        count -= 1
-        while pos >= 0 and count > 0:
-            item = items[count] = s.malloc(prev_pos - pos - markerlen)
-            item.copy_contents(s, item, pos + markerlen, 0,
-                               prev_pos - pos - markerlen)
-            count -= 1
-            prev_pos = pos
-            pos = s.rfind(c, 0, pos)
-        item = items[count] = s.malloc(prev_pos)
-        item.copy_contents(s, item, 0, 0, prev_pos)
-        return res
-
-    @staticmethod
     @jit.elidable
     def ll_replace_chr_chr(s, c1, c2):
         length = len(s.chars)
@@ -1054,7 +848,6 @@ class LLHelpers(AbstractLLHelpers):
             j += 1
         return newstr
 
-    @staticmethod
     @jit.elidable
     def ll_contains(s, c):
         chars = s.chars
@@ -1066,7 +859,6 @@ class LLHelpers(AbstractLLHelpers):
             i += 1
         return False
 
-    @staticmethod
     @jit.elidable
     def ll_int(s, base):
         if not 2 <= base <= 36:
@@ -1123,29 +915,23 @@ class LLHelpers(AbstractLLHelpers):
     #   ll_build_push(x, next_string, n-1)
     #   s = ll_build_finish(x)
 
-    @staticmethod
     def ll_build_start(parts_count):
         return malloc(TEMP, parts_count)
 
-    @staticmethod
     def ll_build_push(builder, next_string, index):
         builder[index] = next_string
 
-    @staticmethod
     def ll_build_finish(builder):
         return LLHelpers.ll_join_strs(len(builder), builder)
 
-    @staticmethod
     @specialize.memo()
     def ll_constant(s):
         return string_repr.convert_const(s)
 
-    @staticmethod
     @specialize.memo()
     def ll_constant_unicode(s):
         return unicode_repr.convert_const(s)
 
-    @classmethod
     def do_stringformat(cls, hop, sourcevarsrepr):
         s_str = hop.args_s[0]
         assert s_str.is_constant()
@@ -1164,7 +950,7 @@ class LLHelpers(AbstractLLHelpers):
 
         argsiter = iter(sourcevarsrepr)
 
-        from rpython.rtyper.rclass import InstanceRepr
+        InstanceRepr = hop.rtyper.type_system.rclass.InstanceRepr
         for i, thing in enumerate(things):
             if isinstance(thing, tuple):
                 code = thing[0]
@@ -1197,6 +983,7 @@ class LLHelpers(AbstractLLHelpers):
                 else:
                     raise TyperError("%%%s is not RPython" % (code,))
             else:
+                from rpython.rtyper.lltypesystem.rstr import string_repr, unicode_repr
                 if is_unicode:
                     vchunk = inputconst(unicode_repr, thing)
                 else:
@@ -1211,26 +998,7 @@ class LLHelpers(AbstractLLHelpers):
 
         hop.exception_cannot_occur()   # to ignore the ZeroDivisionError of '%'
         return hop.gendirectcall(cls.ll_join_strs, size, vtemp)
-
-    @staticmethod
-    @jit.dont_look_inside
-    def ll_string2list(RESLIST, src):
-        length = len(src.chars)
-        lst = RESLIST.ll_newlist(length)
-        dst = lst.ll_items()
-        SRC = typeOf(src).TO     # STR or UNICODE
-        DST = typeOf(dst).TO     # GcArray
-        assert DST.OF is SRC.chars.OF
-        # from here, no GC operations can happen
-        asrc = llmemory.cast_ptr_to_adr(src) + (
-            llmemory.offsetof(SRC, 'chars') +
-            llmemory.itemoffsetof(SRC.chars, 0))
-        adst = llmemory.cast_ptr_to_adr(dst) + llmemory.itemoffsetof(DST, 0)
-        llmemory.raw_memcopy(asrc, adst, llmemory.sizeof(DST.OF) * length)
-        # end of "no GC" section
-        keepalive_until_here(src)
-        keepalive_until_here(dst)
-        return lst
+    do_stringformat = classmethod(do_stringformat)
 
 TEMP = GcArray(Ptr(STR))
 TEMP_UNICODE = GcArray(Ptr(UNICODE))
@@ -1244,9 +1012,7 @@ STR.become(GcStruct('rpy_string', ('hash',  Signed),
                               'copy_contents' : staticAdtMethod(copy_string_contents),
                               'copy_contents_from_str' : staticAdtMethod(copy_string_contents),
                               'gethash': LLHelpers.ll_strhash,
-                              'length': LLHelpers.ll_length,
-                              'find': LLHelpers.ll_find,
-                              'rfind': LLHelpers.ll_rfind}))
+                              'length': LLHelpers.ll_length}))
 UNICODE.become(GcStruct('rpy_unicode', ('hash', Signed),
                         ('chars', Array(UniChar, hints={'immutable': True})),
                         adtmeths={'malloc' : staticAdtMethod(mallocunicode),
@@ -1293,7 +1059,6 @@ class StringIteratorRepr(BaseStringIteratorRepr):
     external_item_repr = char_repr
     lowleveltype = Ptr(GcStruct('stringiter',
                                 ('string', string_repr.lowleveltype),
-                                ('length', Signed),
                                 ('index', Signed)))
 
 class UnicodeIteratorRepr(BaseStringIteratorRepr):
@@ -1301,7 +1066,6 @@ class UnicodeIteratorRepr(BaseStringIteratorRepr):
     external_item_repr = unichar_repr
     lowleveltype = Ptr(GcStruct('unicodeiter',
                                 ('string', unicode_repr.lowleveltype),
-                                ('length', Signed),
                                 ('index', Signed)))
 
 def ll_striter(string):
@@ -1313,16 +1077,16 @@ def ll_striter(string):
         raise TypeError("Unknown string type %s" % (typeOf(string),))
     iter = malloc(TP)
     iter.string = string
-    iter.length = len(string.chars)    # load this value only once
     iter.index = 0
     return iter
 
 def ll_strnext(iter):
+    chars = iter.string.chars
     index = iter.index
-    if index >= iter.length:
+    if index >= len(chars):
         raise StopIteration
     iter.index = index + 1
-    return iter.string.chars[index]
+    return chars[index]
 
 def ll_getnextindex(iter):
     return iter.index

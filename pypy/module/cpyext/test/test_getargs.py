@@ -3,11 +3,9 @@ from pypy.module.cpyext.test.test_api import BaseApiTest
 from pypy.module.cpyext.test.test_cpyext import AppTestCpythonExtensionBase
 
 class AppTestGetargs(AppTestCpythonExtensionBase):
-    def w_import_parser(self, implementation, argstyle='METH_VARARGS',
-                        PY_SSIZE_T_CLEAN=False):
+    def w_import_parser(self, implementation, argstyle='METH_VARARGS'):
         mod = self.import_extension(
-            'modname', [('funcname', argstyle, implementation)],
-            PY_SSIZE_T_CLEAN=PY_SSIZE_T_CLEAN)
+            'modname', [('funcname', argstyle, implementation)])
         return mod.funcname
 
     def test_pyarg_parse_int(self):
@@ -161,9 +159,7 @@ class AppTestGetargs(AppTestCpythonExtensionBase):
                 freed.append('x')
         raises(TypeError, pybuffer,
                freestring("string"), freestring("other string"), 42)
-        self.debug_collect()    # gc.collect() is not enough in this test:
-                                # we need to check and free the PyObject
-                                # linked to the freestring object as well
+        import gc; gc.collect()
         assert freed == ['x', 'x']
 
 
@@ -183,34 +179,3 @@ class AppTestGetargs(AppTestCpythonExtensionBase):
             ''')
         raises(TypeError, "charbuf(10)")
         assert 'foo\0bar\0baz' == charbuf('foo\0bar\0baz')
-
-    def test_pyarg_parse_without_py_ssize_t(self):
-        import sys
-        charbuf = self.import_parser(
-            '''
-            char *buf;
-            Py_ssize_t y = -1;
-            if (!PyArg_ParseTuple(args, "s#", &buf, &y)) {
-                return NULL;
-            }
-            return PyInt_FromSsize_t(y);
-            ''')
-        if sys.maxsize < 2**32:
-            expected = 5
-        elif sys.byteorder == 'little':
-            expected = -0xfffffffb
-        else:
-            expected = 0x5ffffffff
-        assert charbuf('12345') == expected
-
-    def test_pyarg_parse_with_py_ssize_t(self):
-        charbuf = self.import_parser(
-            '''
-            char *buf;
-            Py_ssize_t y = -1;
-            if (!PyArg_ParseTuple(args, "s#", &buf, &y)) {
-                return NULL;
-            }
-            return PyInt_FromSsize_t(y);
-            ''', PY_SSIZE_T_CLEAN=True)
-        assert charbuf('12345') == 5

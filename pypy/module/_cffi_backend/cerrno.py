@@ -2,6 +2,7 @@ import sys
 
 from rpython.rlib import rposix
 
+from pypy.interpreter.executioncontext import ExecutionContext
 from pypy.interpreter.gateway import unwrap_spec
 
 WIN32 = sys.platform == 'win32'
@@ -9,22 +10,32 @@ if WIN32:
     from rpython.rlib import rwin32
 
 
-_errno_before = rposix._errno_before
-_errno_after  = rposix._errno_after
+ExecutionContext._cffi_saved_errno = 0
+ExecutionContext._cffi_saved_LastError = 0
+
+
+def get_errno_container(space):
+    return space.getexecutioncontext()
+
+get_real_errno = rposix.get_errno
+
+
+def restore_errno_from(ec):
+    if WIN32:
+        rwin32.SetLastError(ec._cffi_saved_LastError)
+    rposix.set_errno(ec._cffi_saved_errno)
+
+def save_errno_into(ec, errno):
+    ec._cffi_saved_errno = errno
+    if WIN32:
+        ec._cffi_saved_LastError = rwin32.GetLastError()
+
 
 def get_errno(space):
-    return space.wrap(rposix.get_saved_alterrno())
+    ec = get_errno_container(space)
+    return space.wrap(ec._cffi_saved_errno)
 
 @unwrap_spec(errno=int)
 def set_errno(space, errno):
-    rposix.set_saved_alterrno(errno)
-
-# ____________________________________________________________
-
-@unwrap_spec(code=int)
-def getwinerror(space, code=-1):
-    from rpython.rlib.rwin32 import GetLastError_alt_saved, FormatError
-    if code == -1:
-        code = GetLastError_alt_saved()
-    message = FormatError(code)
-    return space.newtuple([space.wrap(code), space.wrap(message)])
+    ec = get_errno_container(space)
+    ec._cffi_saved_errno = errno

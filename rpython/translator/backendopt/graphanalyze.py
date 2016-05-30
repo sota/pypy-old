@@ -1,4 +1,4 @@
-from rpython.rtyper.lltypesystem.lltype import DelayedPointer
+from rpython.translator.simplify import get_graph, get_funcobj
 from rpython.tool.algo.unionfind import UnionFind
 
 
@@ -48,13 +48,11 @@ class GraphAnalyzer(object):
     def analyze_exceptblock(self, block, seen=None):
         return self.bottom_result()
 
-    def analyze_exceptblock_in_graph(self, graph, block, seen=None):
-        return self.analyze_exceptblock(block, seen)
-
     def analyze_startblock(self, block, seen=None):
         return self.bottom_result()
 
-    def analyze_external_call(self, funcobj, seen=None):
+    def analyze_external_call(self, op, seen=None):
+        funcobj = get_funcobj(op.args[0].value)
         result = self.bottom_result()
         if hasattr(funcobj, '_callbacks'):
             bk = self.translator.annotator.bookkeeper
@@ -64,6 +62,9 @@ class GraphAnalyzer(object):
                     result = self.join_two_results(
                         result, self.analyze_direct_call(graph, seen))
         return result
+
+    def analyze_external_method(self, op, TYPE, meth):
+        return self.top_result()
 
     def analyze_link(self, graph, link):
         return self.bottom_result()
@@ -75,24 +76,12 @@ class GraphAnalyzer(object):
 
     def analyze(self, op, seen=None, graphinfo=None):
         if op.opname == "direct_call":
-            try:
-                funcobj = op.args[0].value._obj
-            except DelayedPointer:
-                return self.top_result()
-            if funcobj is None:
-                # We encountered a null pointer.  Calling it will crash.
-                # However, the call could be on a dead path, so we return the
-                # bottom result here.
-                return self.bottom_result()
-            if getattr(funcobj, 'external', None) is not None:
-                x = self.analyze_external_call(funcobj, seen)
+            graph = get_graph(op.args[0], self.translator)
+            if graph is None:
+                x = self.analyze_external_call(op, seen)
                 if self.verbose and x:
                     self.dump_info('analyze_external_call %s: %r' % (op, x))
                 return x
-            try:
-                graph = funcobj.graph
-            except AttributeError:
-                return self.top_result()
             x = self.analyze_direct_call(graph, seen)
             if self.verbose and x:
                 self.dump_info('analyze_direct_call(%s): %r' % (graph, x))
@@ -107,6 +96,14 @@ class GraphAnalyzer(object):
             if self.verbose and x:
                 self.dump_info('analyze_indirect_call(%s): %r' % (graphs, x))
             return x
+        elif op.opname == "oosend":
+            name = op.args[0].value
+            TYPE = op.args[1].concretetype
+            _, meth = TYPE._lookup(name)
+            graph = getattr(meth, 'graph', None)
+            if graph is None:
+                return self.analyze_external_method(op, TYPE, meth)
+            return self.analyze_oosend(TYPE, name, seen)
         x = self.analyze_simple_operation(op, graphinfo)
         if self.verbose and x:
             self.dump_info('%s: %r' % (op, x))
@@ -131,7 +128,7 @@ class GraphAnalyzer(object):
             elif block is graph.exceptblock:
                 result = self.add_to_result(
                     result,
-                    self.analyze_exceptblock_in_graph(graph, block, seen)
+                    self.analyze_exceptblock(block, seen)
                 )
             if not self.is_top_result(result):
                 for op in block.operations:
@@ -165,6 +162,10 @@ class GraphAnalyzer(object):
             if self.is_top_result(result):
                 break
         return self.finalize_builder(result)
+
+    def analyze_oosend(self, TYPE, name, seen=None):
+        graphs = TYPE._lookup_graphs(name)
+        return self.analyze_indirect_call(graphs, seen)
 
     def analyze_all(self, graphs=None):
         if graphs is None:

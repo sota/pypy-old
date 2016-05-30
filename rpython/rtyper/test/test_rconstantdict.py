@@ -1,12 +1,12 @@
 import py
 from rpython.rlib.objectmodel import r_dict
-from rpython.rtyper.test.tool import BaseRtypingTest
+from rpython.rtyper.test.tool import BaseRtypingTest, LLRtypeMixin, OORtypeMixin
 
-class TestRconstantdict(BaseRtypingTest):
+class BaseTestRconstantdict(BaseRtypingTest):
 
-    def test_constant_int_dict(self):
-        d = {1: 2, 2: 3, 3: 4}
-        def func(i):
+    def test_constant_int_dict(self): 
+        d = {1: 2, 2: 3, 3: 4} 
+        def func(i): 
             return d[i]
         res = self.interpret(func, [3])
         assert res == 4
@@ -60,3 +60,10 @@ class TestRconstantdict(BaseRtypingTest):
         for x in range(65, 91):
             res = self.interpret(func, [x])
             assert res == x*x
+
+
+class TestLLtype(BaseTestRconstantdict, LLRtypeMixin):
+    pass
+
+class TestOOtype(BaseTestRconstantdict, OORtypeMixin):
+    pass

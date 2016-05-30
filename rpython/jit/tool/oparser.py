@@ -3,21 +3,18 @@
 in a nicer fashion
 """
 
-import re
-
 from rpython.jit.tool.oparser_model import get_model
 
 from rpython.jit.metainterp.resoperation import rop, ResOperation, \
-     InputArgInt, InputArgRef, InputArgFloat, InputArgVector, \
-     ResOpWithDescr, N_aryOp, UnaryOp, PlainResOp, optypes, OpHelpers, \
-     VectorizationInfo
+                                            ResOpWithDescr, N_aryOp, \
+                                            UnaryOp, PlainResOp
 
 class ParseError(Exception):
     pass
 
 class ESCAPE_OP(N_aryOp, ResOpWithDescr):
 
-    is_source_op = True
+    OPNUM = -123
 
     def getopnum(self):
         return self.OPNUM
@@ -25,44 +22,14 @@ class ESCAPE_OP(N_aryOp, ResOpWithDescr):
     def getopname(self):
         return 'escape'
 
-    def copy_and_change(self, opnum, args=None, descr=None):
-        assert opnum == self.OPNUM
-        op = self.__class__()
-        if args is not None:
-            op.initarglist(args)
-        else:
-            op.initarglist(self._args[:])
-        assert descr is None
+    def clone(self):
+        op = ESCAPE_OP(self.result)
+        op.initarglist(self.getarglist()[:])
         return op
-
-
-class ESCAPE_OP_I(ESCAPE_OP):
-    type = 'i'
-    OPNUM = -123
-
-class ESCAPE_OP_F(ESCAPE_OP):
-    type = 'f'
-    OPNUM = -124
-
-class ESCAPE_OP_N(ESCAPE_OP):
-    type = 'v'
-    OPNUM = -125
-
-class ESCAPE_OP_R(ESCAPE_OP):
-    type = 'r'
-    OPNUM = -126
-
-ALL_ESCAPE_OPS = {
-    ESCAPE_OP_I.OPNUM: ESCAPE_OP_I,
-    ESCAPE_OP_F.OPNUM: ESCAPE_OP_F,
-    ESCAPE_OP_N.OPNUM: ESCAPE_OP_N,
-    ESCAPE_OP_R.OPNUM: ESCAPE_OP_R
-}
 
 class FORCE_SPILL(UnaryOp, PlainResOp):
 
-    OPNUM = -127
-    is_source_op = True
+    OPNUM = -124
 
     def getopnum(self):
         return self.OPNUM
@@ -70,9 +37,14 @@ class FORCE_SPILL(UnaryOp, PlainResOp):
     def getopname(self):
         return 'force_spill'
 
-    def copy_and_change(self, opnum, args=None, descr=None):
+    def clone(self):
+        op = FORCE_SPILL(self.result)
+        op.initarglist(self.getarglist()[:])
+        return op
+
+    def copy_and_change(self, opnum, args=None, result=None, descr=None):
         assert opnum == self.OPNUM
-        newop = FORCE_SPILL()
+        newop = FORCE_SPILL(result or self.result)
         newop.initarglist(args or self.getarglist())
         return newop
 
@@ -87,14 +59,14 @@ class OpParser(object):
 
     use_mock_model = False
 
-    def __init__(self, input, cpu, namespace, boxkinds,
+    def __init__(self, input, cpu, namespace, type_system, boxkinds,
                  invent_fail_descr=default_fail_descr,
-                 nonstrict=False, postproces=None):
+                 nonstrict=False):
         self.input = input
         self.vars = {}
-        self._postproces = postproces
         self.cpu = cpu
         self._consts = namespace
+        self.type_system = type_system
         self.boxkinds = boxkinds or {}
         if namespace is not None:
             self._cache = namespace.setdefault('_CACHE_', {})
@@ -109,13 +81,18 @@ class OpParser(object):
         if self._consts is None:
             return name
         obj = self._consts[name]
-        if typ == 'ptr':
-            return self.model.ConstPtr(obj)
-        elif typ == 'int':
-            return self.model.ConstInt(obj)
+        if self.type_system == 'lltype':
+            if typ == 'ptr':
+                return self.model.ConstPtr(obj)
+            else:
+                assert typ == 'class'
+                return self.model.ConstInt(self.model.ptr_to_int(obj))
         else:
-            assert typ == 'class'
-            return self.model.ConstInt(self.model.ptr_to_int(obj))
+            if typ == 'ptr':
+                return self.model.ConstObj(obj)
+            else:
+                assert typ == 'class'
+                return self.model.ConstObj(ootype.cast_to_object(obj))
 
     def get_descr(self, poss_descr, allow_invent):
         if poss_descr.startswith('<'):
@@ -132,32 +109,31 @@ class OpParser(object):
             else:
                 raise
 
-    def inputarg_for_var(self, elem):
+    def box_for_var(self, elem):
         try:
-            return self._cache[elem]
+            return self._cache[self.type_system, elem]
         except KeyError:
             pass
-        if elem[0] in 'ifrpv':
-            box = OpHelpers.inputarg_from_tp(elem[0])
-            number = elem[1:]
-            if elem.startswith('v'):
-                pattern = re.compile('.*\[(\d+)x(i|f)(\d+)\]')
-                match = pattern.match(elem)
-                if match:
-                    box.datatype = match.group(2)[0]
-                    box.bytesize = int(match.group(3)) // 8
-                    box.count = int(match.group(1))
-                    box.signed == item_type == 'i'
-                    number = elem[1:elem.find('[')]
+        if elem.startswith('i'):
+            # integer
+            box = self.model.BoxInt()
+            _box_counter_more_than(self.model, elem[1:])
+        elif elem.startswith('f'):
+            box = self.model.BoxFloat()
+            _box_counter_more_than(self.model, elem[1:])
+        elif elem.startswith('p'):
+            # pointer
+            ts = getattr(self.cpu, 'ts', self.model.llhelper)
+            box = ts.BoxRef()
+            _box_counter_more_than(self.model, elem[1:])
         else:
-            number = elem[1:]
             for prefix, boxclass in self.boxkinds.iteritems():
                 if elem.startswith(prefix):
                     box = boxclass()
                     break
             else:
                 raise ParseError("Unknown variable type: %s" % elem)
-        self._cache[elem] = box
+        self._cache[self.type_system, elem] = box
         box._str = elem
         return box
 
@@ -166,28 +142,11 @@ class OpParser(object):
         vars = []
         for elem in elements:
             elem = elem.strip()
-            vars.append(self.newinputarg(elem))
+            vars.append(self.newvar(elem))
         return vars
 
-    def newinputarg(self, elem):
-        if elem.startswith('i'):
-            v = InputArgInt(0)
-        elif elem.startswith('f'):
-            v = InputArgFloat.fromfloat(0.0)
-        elif elem.startswith('v'):
-            v = InputArgVector()
-            elem = self.update_vector(v, elem)
-        else:
-            from rpython.rtyper.lltypesystem import lltype, llmemory
-            assert elem.startswith('p')
-            v = InputArgRef(lltype.nullptr(llmemory.GCREF.TO))
-        # ensure that the variable gets the proper naming
-        self.update_memo(v, elem)
-        self.vars[elem] = v
-        return v
-
     def newvar(self, elem):
-        box = self.inputarg_for_var(elem)
+        box = self.box_for_var(elem)
         self.vars[elem] = box
         return box
 
@@ -208,26 +167,23 @@ class OpParser(object):
                 return self.model.ConstFloat(self.model.convert_to_floatstorage(arg))
             if (arg.startswith('"') or arg.startswith("'") or
                 arg.startswith('s"')):
+                # XXX ootype
                 info = arg[1:].strip("'\"")
                 return self.model.get_const_ptr_for_string(info)
             if arg.startswith('u"'):
+                # XXX ootype
                 info = arg[1:].strip("'\"")
                 return self.model.get_const_ptr_for_unicode(info)
             if arg.startswith('ConstClass('):
                 name = arg[len('ConstClass('):-1]
                 return self.get_const(name, 'class')
-            elif arg.startswith('ConstInt('):
-                name = arg[len('ConstInt('):-1]
-                return self.get_const(name, 'int')
-            elif arg.startswith('v') and '[' in arg:
-                i = 1
-                while i < len(arg) and arg[i] != '[':
-                    i += 1
-                return self.getvar(arg[:i])
             elif arg == 'None':
                 return None
             elif arg == 'NULL':
-                return self.model.ConstPtr(self.model.ConstPtr.value)
+                if self.type_system == 'lltype':
+                    return self.model.ConstPtr(self.model.ConstPtr.value)
+                else:
+                    return self.model.ConstObj(self.model.ConstObj.value)
             elif arg.startswith('ConstPtr('):
                 name = arg[len('ConstPtr('):-1]
                 return self.get_const(name, 'ptr')
@@ -263,14 +219,8 @@ class OpParser(object):
         try:
             opnum = getattr(rop, opname.upper())
         except AttributeError:
-            if opname == 'escape_i':
-                opnum = ESCAPE_OP_I.OPNUM
-            elif opname == 'escape_f':
-                opnum = ESCAPE_OP_F.OPNUM
-            elif opname == 'escape_n':
-                opnum = ESCAPE_OP_N.OPNUM
-            elif opname == 'escape_r':
-                opnum = ESCAPE_OP_R.OPNUM
+            if opname == 'escape':
+                opnum = ESCAPE_OP.OPNUM
             elif opname == 'force_spill':
                 opnum = FORCE_SPILL.OPNUM
             else:
@@ -281,7 +231,7 @@ class OpParser(object):
         args, descr = self.parse_args(opname, line[num + 1:endnum])
         if rop._GUARD_FIRST <= opnum <= rop._GUARD_LAST:
             i = line.find('[', endnum) + 1
-            j = line.rfind(']', i)
+            j = line.find(']', i)
             if (i <= 0 or j <= 0) and not self.nonstrict:
                 raise ParseError("missing fail_args for guard operation")
             fail_args = []
@@ -291,8 +241,6 @@ class OpParser(object):
                     if arg == 'None':
                         fail_arg = None
                     else:
-                        if arg.startswith('v') and '[' in arg:
-                            arg = arg[:arg.find('[')]
                         try:
                             fail_arg = self.vars[arg]
                         except KeyError:
@@ -301,6 +249,8 @@ class OpParser(object):
                     fail_args.append(fail_arg)
             if descr is None and self.invent_fail_descr:
                 descr = self.invent_fail_descr(self.model, opnum, fail_args)
+            if hasattr(descr, '_oparser_uses_descr_of_guard'):
+                descr._oparser_uses_descr_of_guard(self, fail_args)
         else:
             fail_args = None
             if opnum == rop.FINISH:
@@ -312,24 +262,19 @@ class OpParser(object):
 
         return opnum, args, descr, fail_args
 
-    def create_op(self, opnum, args, res, descr, fail_args):
-        if opnum in ALL_ESCAPE_OPS:
-            op = ALL_ESCAPE_OPS[opnum]()
+    def create_op(self, opnum, args, result, descr):
+        if opnum == ESCAPE_OP.OPNUM:
+            op = ESCAPE_OP(result)
             op.initarglist(args)
             assert descr is None
             return op
         if opnum == FORCE_SPILL.OPNUM:
-            op = FORCE_SPILL()
+            op = FORCE_SPILL(result)
             op.initarglist(args)
             assert descr is None
             return op
         else:
-            res = ResOperation(opnum, args, descr)
-            if fail_args is not None:
-                res.setfailargs(fail_args)
-            if self._postproces:
-                self._postproces(res)
-            return res
+            return ResOperation(opnum, args, result, descr)
 
     def parse_result_op(self, line):
         res, op = line.split("=", 1)
@@ -338,49 +283,18 @@ class OpParser(object):
         opnum, args, descr, fail_args = self.parse_op(op)
         if res in self.vars:
             raise ParseError("Double assign to var %s in line: %s" % (res, line))
-        resop = self.create_op(opnum, args, res, descr, fail_args)
-        if not self.use_mock_model:
-            res = self.update_vector(resop, res)
-        self.update_memo(resop, res)
-        self.vars[res] = resop
-        return resop
-
-    def update_memo(self, val, name):
-        """ This updates the id of the operation or inputarg.
-            Internally you will see the same variable names as
-            in the trace as string.
-        """
-        pass
-        #regex = re.compile("[prifv](\d+)")
-        #match = regex.match(name)
-        #if match:
-        #    counter = int(match.group(1))
-        #    countdict = val._repr_memo
-        #    assert val not in countdict._d
-        #    countdict._d[val] = counter
-        #    if countdict.counter < counter:
-        #        countdict.counter = counter
-
-    def update_vector(self, resop, var):
-        pattern = re.compile('.*\[(\d+)x(u?)(i|f)(\d+)\]')
-        match = pattern.match(var)
-        if match:
-            vecinfo = VectorizationInfo(None)
-            vecinfo.count = int(match.group(1))
-            vecinfo.signed = not (match.group(2) == 'u')
-            vecinfo.datatype = match.group(3)
-            vecinfo.bytesize = int(match.group(4)) // 8
-            resop._vec_debug_info = vecinfo
-            return var[:var.find('[')]
-
-        vecinfo = VectorizationInfo(resop)
-        vecinfo.count = -1
-        resop._vec_debug_info = vecinfo
-        return var
+        rvar = self.box_for_var(res)
+        self.vars[res] = rvar
+        res = self.create_op(opnum, args, rvar, descr)
+        if fail_args is not None:
+            res.setfailargs(fail_args)
+        return res
 
     def parse_op_no_result(self, line):
         opnum, args, descr, fail_args = self.parse_op(line)
-        res = self.create_op(opnum, args, None, descr, fail_args)
+        res = self.create_op(opnum, args, None, descr)
+        if fail_args is not None:
+            res.setfailargs(fail_args)
         return res
 
     def parse_next_op(self, line):
@@ -396,9 +310,8 @@ class OpParser(object):
         first_comment = None
         for line in lines:
             # for simplicity comments are not allowed on
-            # debug_merge_point or jit_debug lines
-            if '#' in line and ('debug_merge_point(' not in line and
-                                'jit_debug(' not in line):
+            # debug_merge_point lines
+            if '#' in line and 'debug_merge_point(' not in line:
                 if line.lstrip()[0] == '#': # comment only
                     if first_comment is None:
                         first_comment = line
@@ -433,9 +346,6 @@ class OpParser(object):
                 return num, ops
             elif line.startswith(" "*(indent + 1)):
                 raise ParseError("indentation not valid any more")
-            elif line.startswith(" " * indent + "#"):
-                num += 1
-                continue
             else:
                 line = line.strip()
                 offset, line = self.parse_offset(line)
@@ -476,14 +386,13 @@ class OpParser(object):
         inpargs = self.parse_header_line(line[1:-1])
         return base_indent, inpargs, lines
 
-def parse(input, cpu=None, namespace=None,
+def parse(input, cpu=None, namespace=None, type_system='lltype',
           boxkinds=None, invent_fail_descr=default_fail_descr,
-          no_namespace=False, nonstrict=False, OpParser=OpParser,
-          postprocess=None):
+          no_namespace=False, nonstrict=False, OpParser=OpParser):
     if namespace is None and not no_namespace:
         namespace = {}
-    return OpParser(input, cpu, namespace, boxkinds,
-                    invent_fail_descr, nonstrict, postprocess).parse()
+    return OpParser(input, cpu, namespace, type_system, boxkinds,
+                    invent_fail_descr, nonstrict).parse()
 
 def pure_parse(*args, **kwds):
     kwds['invent_fail_descr'] = None
@@ -492,4 +401,4 @@ def pure_parse(*args, **kwds):
 
 def _box_counter_more_than(model, s):
     if s.isdigit():
-        model._counter = max(model._counter, int(s)+1)
+        model.Box._counter = max(model.Box._counter, int(s)+1)

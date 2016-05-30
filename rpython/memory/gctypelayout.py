@@ -1,5 +1,5 @@
 from rpython.rtyper.lltypesystem import lltype, llmemory, llarena, llgroup
-from rpython.rtyper import rclass
+from rpython.rtyper.lltypesystem import rclass
 from rpython.rtyper.lltypesystem.lloperation import llop
 from rpython.rlib.debug import ll_assert
 from rpython.rlib.rarithmetic import intmask
@@ -21,12 +21,18 @@ class GCData(object):
     # It is called with the object as first argument, and the previous
     # returned address (or NULL the first time) as the second argument.
     FINALIZER_FUNC = lltype.FuncType([llmemory.Address], lltype.Void)
+    CUSTOMTRACER_FUNC = lltype.FuncType([llmemory.Address, llmemory.Address],
+                                        llmemory.Address)
     FINALIZER = lltype.Ptr(FINALIZER_FUNC)
+    CUSTOMTRACER = lltype.Ptr(CUSTOMTRACER_FUNC)
+    EXTRA = lltype.Struct("type_info_extra",
+                          ('finalizer', FINALIZER),
+                          ('customtracer', CUSTOMTRACER))
 
     # structure describing the layout of a typeid
     TYPE_INFO = lltype.Struct("type_info",
         ("infobits",       lltype.Signed),    # combination of the T_xxx consts
-        ("finalizer",      FINALIZER),
+        ("extra",          lltype.Ptr(EXTRA)),
         ("fixedsize",      lltype.Signed),
         ("ofstoptrs",      lltype.Ptr(OFFSETS_TO_GC_PTR)),
         hints={'immutable': True},
@@ -69,27 +75,23 @@ class GCData(object):
         infobits = self.get(typeid).infobits
         return (infobits & T_HAS_GCPTR_IN_VARSIZE) != 0
 
-    def q_has_gcptr(self, typeid):
-        infobits = self.get(typeid).infobits
-        return (infobits & T_HAS_GCPTR) != 0
-
     def q_is_gcarrayofgcptr(self, typeid):
         infobits = self.get(typeid).infobits
         return (infobits & T_IS_GCARRAY_OF_GCPTR) != 0
 
-    def q_cannot_pin(self, typeid):
-        typeinfo = self.get(typeid)
-        ANY = (T_HAS_GCPTR | T_IS_WEAKREF)
-        return (typeinfo.infobits & ANY) != 0 or bool(typeinfo.finalizer)
-
     def q_finalizer(self, typeid):
-        return self.get(typeid).finalizer
+        typeinfo = self.get(typeid)
+        if typeinfo.infobits & T_HAS_FINALIZER:
+            return typeinfo.extra.finalizer
+        else:
+            return lltype.nullptr(GCData.FINALIZER_FUNC)
 
     def q_light_finalizer(self, typeid):
         typeinfo = self.get(typeid)
         if typeinfo.infobits & T_HAS_LIGHTWEIGHT_FINALIZER:
-            return typeinfo.finalizer
-        return lltype.nullptr(GCData.FINALIZER_FUNC)
+            return typeinfo.extra.finalizer
+        else:
+            return lltype.nullptr(GCData.FINALIZER_FUNC)
 
     def q_offsets_to_gc_pointers(self, typeid):
         return self.get(typeid).ofstoptrs
@@ -127,6 +129,12 @@ class GCData(object):
         infobits = self.get(typeid).infobits
         return infobits & T_HAS_CUSTOM_TRACE != 0
 
+    def q_get_custom_trace(self, typeid):
+        ll_assert(self.q_has_custom_trace(typeid),
+                  "T_HAS_CUSTOM_TRACE missing")
+        typeinfo = self.get(typeid)
+        return typeinfo.extra.customtracer
+
     def q_fast_path_tracing(self, typeid):
         # return True if none of the flags T_HAS_GCPTR_IN_VARSIZE,
         # T_IS_GCARRAY_OF_GCPTR or T_HAS_CUSTOM_TRACE is set
@@ -153,13 +161,8 @@ class GCData(object):
             self.q_member_index,
             self.q_is_rpython_class,
             self.q_has_custom_trace,
-            self.q_fast_path_tracing,
-            self.q_has_gcptr,
-            self.q_cannot_pin)
-
-    def _has_got_custom_trace(self, typeid):
-        type_info = self.get(typeid)
-        type_info.infobits |= (T_HAS_CUSTOM_TRACE | T_HAS_GCPTR)
+            self.q_get_custom_trace,
+            self.q_fast_path_tracing)
 
 
 # the lowest 16bits are used to store group member index
@@ -169,10 +172,10 @@ T_HAS_GCPTR_IN_VARSIZE      = 0x020000
 T_IS_GCARRAY_OF_GCPTR       = 0x040000
 T_IS_WEAKREF                = 0x080000
 T_IS_RPYTHON_INSTANCE       = 0x100000 # the type is a subclass of OBJECT
-T_HAS_CUSTOM_TRACE          = 0x200000
-T_HAS_LIGHTWEIGHT_FINALIZER = 0x400000
-T_HAS_GCPTR                 = 0x1000000
-T_KEY_MASK                  = intmask(0xFE000000) # bug detection only
+T_HAS_FINALIZER             = 0x200000
+T_HAS_CUSTOM_TRACE          = 0x400000
+T_HAS_LIGHTWEIGHT_FINALIZER = 0x800000
+T_KEY_MASK                  = intmask(0xFF000000)
 T_KEY_VALUE                 = intmask(0x5A000000) # bug detection only
 
 def _check_valid_type_info(p):
@@ -194,16 +197,21 @@ def encode_type_shape(builder, info, TYPE, index):
     offsets = offsets_to_gc_pointers(TYPE)
     infobits = index
     info.ofstoptrs = builder.offsets2table(offsets, TYPE)
-    if len(offsets) > 0:
-        infobits |= T_HAS_GCPTR
     #
     fptrs = builder.special_funcptr_for_type(TYPE)
     if fptrs:
+        extra = lltype.malloc(GCData.EXTRA, zero=True, immortal=True,
+                              flavor='raw')
         if "finalizer" in fptrs:
-            info.finalizer = fptrs["finalizer"]
+            extra.finalizer = fptrs["finalizer"]
+            infobits |= T_HAS_FINALIZER
         if "light_finalizer" in fptrs:
-            info.finalizer = fptrs["light_finalizer"]
-            infobits |= T_HAS_LIGHTWEIGHT_FINALIZER
+            extra.finalizer = fptrs["light_finalizer"]
+            infobits |= T_HAS_FINALIZER | T_HAS_LIGHTWEIGHT_FINALIZER
+        if "custom_trace" in fptrs:
+            extra.customtracer = fptrs["custom_trace"]
+            infobits |= T_HAS_CUSTOM_TRACE
+        info.extra = extra
     #
     if not TYPE._is_varsize():
         info.fixedsize = llarena.round_up_for_allocation(
@@ -235,7 +243,7 @@ def encode_type_shape(builder, info, TYPE, index):
         else:
             offsets = ()
         if len(offsets) > 0:
-            infobits |= T_HAS_GCPTR_IN_VARSIZE | T_HAS_GCPTR
+            infobits |= T_HAS_GCPTR_IN_VARSIZE
         varinfo.varofstoptrs = builder.offsets2table(offsets, ARRAY.OF)
         varinfo.varitemsize = llmemory.sizeof(ARRAY.OF)
     if builder.is_weakref_type(TYPE):
@@ -395,9 +403,7 @@ class TypeLayoutBuilder(object):
         return None
 
     def initialize_gc_query_function(self, gc):
-        gcdata = GCData(self.type_info_group)
-        gcdata.set_query_functions(gc)
-        return gcdata
+        return GCData(self.type_info_group).set_query_functions(gc)
 
     def consider_constant(self, TYPE, value, gc):
         if value is not lltype.top_container(value):
@@ -405,11 +411,6 @@ class TypeLayoutBuilder(object):
         if value in self.iseen_roots:
             return
         self.iseen_roots[value] = True
-
-        if isinstance(TYPE, lltype.GcOpaqueType):
-            self.consider_constant(lltype.typeOf(value.container),
-                                   value.container, gc)
-            return
 
         if isinstance(TYPE, (lltype.GcStruct, lltype.GcArray)):
             typeid = self.get_type_id(TYPE)

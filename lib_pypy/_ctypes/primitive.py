@@ -1,4 +1,4 @@
-from _rawffi import alt as _ffi
+import _ffi
 import _rawffi
 import weakref
 import sys
@@ -117,9 +117,9 @@ class SimpleType(_CDataMeta):
         default = TP_TO_DEFAULT[tp]
         ffiarray = _rawffi.Array(tp)
         result = type.__new__(self, name, bases, dct)
-        result._ffiargshape_ = tp
-        result._ffishape_ = tp
-        result._fficompositesize_ = None
+        result._ffiargshape = tp
+        result._ffishape = tp
+        result._fficompositesize = None
         result._ffiarray = ffiarray
         if tp == 'z':
             # c_char_p

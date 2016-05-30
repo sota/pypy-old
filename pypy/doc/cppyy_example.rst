@@ -1,7 +1,4 @@
-File example.h
-==============
-
-::
+// File: example.h::
 
     #include <iostream>
     #include <vector>

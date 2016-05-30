@@ -2,13 +2,12 @@
 Interp-level definition of frequently used functionals.
 
 """
-import sys
 
 from pypy.interpreter.baseobjspace import W_Root
 from pypy.interpreter.error import OperationError
 from pypy.interpreter.gateway import interp2app, unwrap_spec, WrappedDefault
 from pypy.interpreter.typedef import TypeDef
-from rpython.rlib import jit, rarithmetic
+from rpython.rlib import jit
 from rpython.rlib.objectmodel import specialize
 from rpython.rlib.rarithmetic import r_uint, intmask
 from rpython.rlib.rbigint import rbigint
@@ -229,70 +228,27 @@ def min(space, __args__):
     return min_max(space, __args__, "min")
 
 
-
 class W_Enumerate(W_Root):
-    def __init__(self, w_iter_or_list, start, w_start):
-        # 'w_index' should never be a wrapped int here; if it would be,
-        # then it is actually None and the unwrapped int is in 'index'.
-        self.w_iter_or_list = w_iter_or_list
-        self.index = start
+    def __init__(self, w_iter, w_start):
+        self.w_iter = w_iter
         self.w_index = w_start
 
     def descr___new__(space, w_subtype, w_iterable, w_start=None):
-        from pypy.objspace.std.listobject import W_ListObject
-
+        self = space.allocate_instance(W_Enumerate, w_subtype)
         if w_start is None:
-            start = 0
+            w_start = space.wrap(0)
         else:
             w_start = space.index(w_start)
-            if space.is_w(space.type(w_start), space.w_int):
-                start = space.int_w(w_start)
-                w_start = None
-            else:
-                start = -1
-
-        if start == 0 and type(w_iterable) is W_ListObject:
-            w_iter = w_iterable
-        else:
-            w_iter = space.iter(w_iterable)
-
-        self = space.allocate_instance(W_Enumerate, w_subtype)
-        self.__init__(w_iter, start, w_start)
+        self.__init__(space.iter(w_iterable), w_start)
         return space.wrap(self)
 
     def descr___iter__(self, space):
         return space.wrap(self)
 
     def descr_next(self, space):
-        from pypy.objspace.std.listobject import W_ListObject
+        w_item = space.next(self.w_iter)
         w_index = self.w_index
-        w_iter_or_list = self.w_iter_or_list
-        w_item = None
-        if w_index is None:
-            index = self.index
-            if type(w_iter_or_list) is W_ListObject:
-                try:
-                    w_item = w_iter_or_list.getitem(index)
-                except IndexError:
-                    self.w_iter_or_list = None
-                    raise OperationError(space.w_StopIteration, space.w_None)
-                self.index = index + 1
-            elif w_iter_or_list is None:
-                raise OperationError(space.w_StopIteration, space.w_None)
-            else:
-                try:
-                    newval = rarithmetic.ovfcheck(index + 1)
-                except OverflowError:
-                    w_index = space.wrap(index)
-                    self.w_index = space.add(w_index, space.wrap(1))
-                    self.index = -1
-                else:
-                    self.index = newval
-            w_index = space.wrap(index)
-        else:
-            self.w_index = space.add(w_index, space.wrap(1))
-        if w_item is None:
-            w_item = space.next(self.w_iter_or_list)
+        self.w_index = space.add(w_index, space.wrap(1))
         return space.newtuple([w_index, w_item])
 
     def descr___reduce__(self, space):
@@ -300,20 +256,12 @@ class W_Enumerate(W_Root):
         w_mod    = space.getbuiltinmodule('_pickle_support')
         mod      = space.interp_w(MixedModule, w_mod)
         w_new_inst = mod.get('enumerate_new')
-        w_index = self.w_index
-        if w_index is None:
-            w_index = space.wrap(self.index)
-        w_info = space.newtuple([self.w_iter_or_list, w_index])
+        w_info = space.newtuple([self.w_iter, self.w_index])
         return space.newtuple([w_new_inst, w_info])
 
 # exported through _pickle_support
-def _make_enumerate(space, w_iter_or_list, w_index):
-    if space.is_w(space.type(w_index), space.w_int):
-        index = space.int_w(w_index)
-        w_index = None
-    else:
-        index = -1
-    return space.wrap(W_Enumerate(w_iter_or_list, index, w_index))
+def _make_enumerate(space, w_iter, w_index):
+    return space.wrap(W_Enumerate(w_iter, w_index))
 
 W_Enumerate.typedef = TypeDef("enumerate",
     __new__=interp2app(W_Enumerate.descr___new__.im_func),
@@ -402,29 +350,30 @@ class W_XRange(W_Root):
         self.promote_step = promote_step
 
     def descr_new(space, w_subtype, w_start, w_stop=None, w_step=None):
-        start = space.int_w(w_start)
+        start = _toint(space, w_start)
         if space.is_none(w_step):  # no step argument provided
             step = 1
             promote_step = True
         else:
-            step  = space.int_w(w_step)
+            step  = _toint(space, w_step)
             promote_step = False
         if space.is_none(w_stop):  # only 1 argument provided
             start, stop = 0, start
         else:
-            stop = space.int_w(w_stop)
+            stop = _toint(space, w_stop)
         howmany = get_len_of_range(space, start, stop, step)
         obj = space.allocate_instance(W_XRange, w_subtype)
         W_XRange.__init__(obj, space, start, howmany, step, promote_step)
         return space.wrap(obj)
 
     def descr_repr(self):
+        stop = self.start + self.len * self.step
         if self.start == 0 and self.step == 1:
-            s = "xrange(%d)" % (self._get_stop(),)
+            s = "xrange(%d)" % (stop,)
         elif self.step == 1:
-            s = "xrange(%d, %d)" % (self.start, self._get_stop())
+            s = "xrange(%d, %d)" % (self.start, stop)
         else:
-            s = "xrange(%d, %d, %d)" %(self.start, self._get_stop(), self.step)
+            s = "xrange(%d, %d, %d)" %(self.start, stop, self.step)
         return self.space.wrap(s)
 
     def descr_len(self):
@@ -453,28 +402,23 @@ class W_XRange(W_Root):
                                                     self.len, self.step))
 
     def descr_reversed(self):
-        last = self.start + (self.len - 1) * self.step
-        return self.space.wrap(W_XRangeIterator(self.space, last, self.len,
-                                                -self.step))
+        lastitem = self.start + (self.len-1) * self.step
+        return self.space.wrap(W_XRangeIterator(self.space, lastitem,
+                                                self.len, -self.step))
 
     def descr_reduce(self):
         space = self.space
         return space.newtuple(
             [space.type(self),
              space.newtuple([space.wrap(self.start),
-                             space.wrap(self._get_stop()),
+                             space.wrap(self.start + self.len * self.step),
                              space.wrap(self.step)])
              ])
 
-    def _get_stop(self):
-        if not self.len:
-            return self.start
-        step = self.step
-        last = self.start + (self.len - 1) * step
-        if step > 0:
-            return sys.maxint if last > sys.maxint - step else last + step
-        minint = -sys.maxint - 1
-        return minint if last < minint - step else last + step
+def _toint(space, w_obj):
+    # this also supports float arguments.  CPython still does, too.
+    # needs a bit more thinking in general...
+    return space.int_w(space.int(w_obj))
 
 W_XRange.typedef = TypeDef("xrange",
     __new__          = interp2app(W_XRange.descr_new.im_func),
@@ -486,7 +430,6 @@ W_XRange.typedef = TypeDef("xrange",
     __reduce__       = interp2app(W_XRange.descr_reduce),
 )
 W_XRange.typedef.acceptable_as_base_class = False
-
 
 class W_XRangeIterator(W_Root):
     def __init__(self, space, current, remaining, step):
@@ -535,10 +478,7 @@ W_XRangeIterator.typedef = TypeDef("rangeiterator",
 )
 W_XRangeIterator.typedef.acceptable_as_base_class = False
 
-
 class W_XRangeStepOneIterator(W_XRangeIterator):
-    _immutable_fields_ = ['stop']
-
     def __init__(self, space, start, stop):
         self.space = space
         self.current = start

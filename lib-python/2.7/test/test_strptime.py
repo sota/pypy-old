@@ -38,9 +38,9 @@ class LocaleTime_Tests(unittest.TestCase):
         comparison = testing[self.time_tuple[tuple_position]]
         self.assertIn(strftime_output, testing,
                       "%s: not found in tuple" % error_msg)
-        self.assertEqual(comparison, strftime_output,
-                         "%s: position within tuple incorrect; %s != %s" %
-                         (error_msg, comparison, strftime_output))
+        self.assertTrue(comparison == strftime_output,
+                        "%s: position within tuple incorrect; %s != %s" %
+                        (error_msg, comparison, strftime_output))
 
     def test_weekday(self):
         # Make sure that full and abbreviated weekday names are correct in
@@ -65,8 +65,8 @@ class LocaleTime_Tests(unittest.TestCase):
                       "AM/PM representation not in tuple")
         if self.time_tuple[3] < 12: position = 0
         else: position = 1
-        self.assertEqual(self.LT_ins.am_pm[position], strftime_output,
-                         "AM/PM representation in the wrong position within the tuple")
+        self.assertTrue(strftime_output == self.LT_ins.am_pm[position],
+                        "AM/PM representation in the wrong position within the tuple")
 
     def test_timezone(self):
         # Make sure timezone is correct
@@ -86,14 +86,17 @@ class LocaleTime_Tests(unittest.TestCase):
         #  output.
         magic_date = (1999, 3, 17, 22, 44, 55, 2, 76, 0)
         strftime_output = time.strftime("%c", magic_date)
-        self.assertEqual(time.strftime(self.LT_ins.LC_date_time, magic_date),
-                         strftime_output, "LC_date_time incorrect")
+        self.assertTrue(strftime_output == time.strftime(self.LT_ins.LC_date_time,
+                                                         magic_date),
+                        "LC_date_time incorrect")
         strftime_output = time.strftime("%x", magic_date)
-        self.assertEqual(time.strftime(self.LT_ins.LC_date, magic_date),
-                         strftime_output, "LC_date incorrect")
+        self.assertTrue(strftime_output == time.strftime(self.LT_ins.LC_date,
+                                                         magic_date),
+                        "LC_date incorrect")
         strftime_output = time.strftime("%X", magic_date)
-        self.assertEqual(time.strftime(self.LT_ins.LC_time, magic_date),
-                         strftime_output, "LC_time incorrect")
+        self.assertTrue(strftime_output == time.strftime(self.LT_ins.LC_time,
+                                                         magic_date),
+                        "LC_time incorrect")
         LT = _strptime.LocaleTime()
         LT.am_pm = ('', '')
         self.assertTrue(LT.LC_time, "LocaleTime's LC directives cannot handle "
@@ -165,8 +168,8 @@ class TimeRETests(unittest.TestCase):
         # Fixes bug #661354
         test_locale = _strptime.LocaleTime()
         test_locale.timezone = (frozenset(), frozenset())
-        self.assertEqual(_strptime.TimeRE(test_locale).pattern("%Z"), '',
-                         "with timezone == ('',''), TimeRE().pattern('%Z') != ''")
+        self.assertTrue(_strptime.TimeRE(test_locale).pattern("%Z") == '',
+                        "with timezone == ('',''), TimeRE().pattern('%Z') != ''")
 
     def test_matching_with_escapes(self):
         # Make sure a format that requires escaping of characters works
@@ -192,7 +195,7 @@ class TimeRETests(unittest.TestCase):
         # so as to not allow to subpatterns to end up next to each other and
         # "steal" characters from each other.
         pattern = self.time_re.pattern('%j %H')
-        self.assertFalse(re.match(pattern, "180"))
+        self.assertTrue(not re.match(pattern, "180"))
         self.assertTrue(re.match(pattern, "18 0"))
 
 
@@ -313,7 +316,7 @@ class StrptimeTests(unittest.TestCase):
         # when time.tzname[0] == time.tzname[1] and time.daylight
         tz_name = time.tzname[0]
         if tz_name.upper() in ("UTC", "GMT"):
-            self.skipTest('need non-UTC/GMT timezone')
+            return
         try:
             original_tzname = time.tzname
             original_daylight = time.daylight
@@ -377,14 +380,6 @@ class StrptimeTests(unittest.TestCase):
         # Test instigated by bug #796149 .
         need_escaping = ".^$*+?{}\[]|)("
         self.assertTrue(_strptime._strptime_time(need_escaping, need_escaping))
-
-    def test_feb29_on_leap_year_without_year(self):
-        time.strptime("Feb 29", "%b %d")
-
-    def test_mar1_comes_after_feb29_even_when_omitting_the_year(self):
-        self.assertLess(
-                time.strptime("Feb 29", "%b %d"),
-                time.strptime("Mar 1", "%b %d"))
 
 class Strptime12AMPMTests(unittest.TestCase):
     """Test a _strptime regression in '%I %p' at 12 noon (12 PM)"""
@@ -484,24 +479,6 @@ class CalculationTests(unittest.TestCase):
         test_helper((2006, 12, 31), "Last Sunday of 2006")
         test_helper((2006, 12, 24), "Second to last Sunday of 2006")
 
-    def test_week_0(self):
-        def check(value, format, *expected):
-            self.assertEqual(_strptime._strptime_time(value, format)[:-1], expected)
-        check('2015 0 0', '%Y %U %w', 2014, 12, 28, 0, 0, 0, 6, -3)
-        check('2015 0 0', '%Y %W %w', 2015, 1, 4, 0, 0, 0, 6, 4)
-        check('2015 0 1', '%Y %U %w', 2014, 12, 29, 0, 0, 0, 0, -2)
-        check('2015 0 1', '%Y %W %w', 2014, 12, 29, 0, 0, 0, 0, -2)
-        check('2015 0 2', '%Y %U %w', 2014, 12, 30, 0, 0, 0, 1, -1)
-        check('2015 0 2', '%Y %W %w', 2014, 12, 30, 0, 0, 0, 1, -1)
-        check('2015 0 3', '%Y %U %w', 2014, 12, 31, 0, 0, 0, 2, 0)
-        check('2015 0 3', '%Y %W %w', 2014, 12, 31, 0, 0, 0, 2, 0)
-        check('2015 0 4', '%Y %U %w', 2015, 1, 1, 0, 0, 0, 3, 1)
-        check('2015 0 4', '%Y %W %w', 2015, 1, 1, 0, 0, 0, 3, 1)
-        check('2015 0 5', '%Y %U %w', 2015, 1, 2, 0, 0, 0, 4, 2)
-        check('2015 0 5', '%Y %W %w', 2015, 1, 2, 0, 0, 0, 4, 2)
-        check('2015 0 6', '%Y %U %w', 2015, 1, 3, 0, 0, 0, 5, 3)
-        check('2015 0 6', '%Y %W %w', 2015, 1, 3, 0, 0, 0, 5, 3)
-
 
 class CacheTests(unittest.TestCase):
     """Test that caching works properly."""
@@ -544,7 +521,7 @@ class CacheTests(unittest.TestCase):
         try:
             locale.setlocale(locale.LC_TIME, ('en_US', 'UTF8'))
         except locale.Error:
-            self.skipTest('test needs en_US.UTF8 locale')
+            return
         try:
             _strptime._strptime_time('10', '%d')
             # Get id of current cache object.
@@ -561,7 +538,7 @@ class CacheTests(unittest.TestCase):
             # If this is the case just suppress the exception and fall-through
             # to the resetting to the original locale.
             except locale.Error:
-                self.skipTest('test needs de_DE.UTF8 locale')
+                pass
         # Make sure we don't trample on the locale setting once we leave the
         # test.
         finally:

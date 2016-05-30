@@ -1,6 +1,6 @@
 """Support for Windows."""
 
-import py, os, sys, re, shutil
+import py, os, sys, re
 
 from rpython.translator.platform import CompilationError
 from rpython.translator.platform import log, _run_subprocess
@@ -14,26 +14,22 @@ def _get_compiler_type(cc, x64_flag):
     if not cc:
         cc = os.environ.get('CC','')
     if not cc:
-        return MsvcPlatform(x64=x64_flag)
+        return MsvcPlatform(cc=cc, x64=x64_flag)
     elif cc.startswith('mingw') or cc == 'gcc':
         return MingwPlatform(cc)
-    else:
-        return MsvcPlatform(cc=cc, x64=x64_flag)
     try:
         subprocess.check_output([cc, '--version'])
     except:
-        raise ValueError("Could not find compiler specified by cc option '%s',"
-                         " it must be a valid exe file on your path" % cc)
+        raise ValueError,"Could not find compiler specified by cc option" + \
+                " '%s', it must be a valid exe file on your path"%cc
     return MingwPlatform(cc)
 
 def Windows(cc=None):
     return _get_compiler_type(cc, False)
 
 def Windows_x64(cc=None):
-    raise Exception("Win64 is not supported.  You must either build for Win32"
-                    " or contribute the missing support in PyPy.")
     return _get_compiler_type(cc, True)
-
+    
 def _get_msvc_env(vsver, x64flag):
     try:
         toolsdir = os.environ['VS%sCOMNTOOLS' % vsver]
@@ -96,33 +92,32 @@ class MsvcPlatform(Platform):
     name = "msvc"
     so_ext = 'dll'
     exe_ext = 'exe'
-
+    
     relevant_environ = ('PATH', 'INCLUDE', 'LIB')
 
     cc = 'cl.exe'
     link = 'link.exe'
 
-    cflags = ('/MD', '/O2', '/Zi')
-    link_flags = ('/debug',)
+    cflags = ('/MD', '/O2')
+    link_flags = ()
     standalone_only = ()
     shared_only = ()
     environ = None
-
+    
     def __init__(self, cc=None, x64=False):
         self.x64 = x64
-        if cc is None:
-            msvc_compiler_environ = find_msvc_env(x64)
-            Platform.__init__(self, 'cl.exe')
-            if msvc_compiler_environ:
-                self.c_environ = os.environ.copy()
-                self.c_environ.update(msvc_compiler_environ)
-        else:
-            self.cc = cc
+        msvc_compiler_environ = find_msvc_env(x64)
+        Platform.__init__(self, 'cl.exe')
+        if msvc_compiler_environ:
+            self.c_environ = os.environ.copy()
+            self.c_environ.update(msvc_compiler_environ)
+            # XXX passing an environment to subprocess is not enough. Why?
+            os.environ.update(msvc_compiler_environ)
 
         # detect version of current compiler
         returncode, stdout, stderr = _run_subprocess(self.cc, '',
                                                      env=self.c_environ)
-        r = re.search(r'Microsoft.+C/C\+\+.+\s([0-9]+)\.([0-9]+).*', stderr)
+        r = re.match(r'Microsoft.+C/C\+\+.+\s([0-9]+)\.([0-9]+).*', stderr)
         if r is not None:
             self.version = int(''.join(r.groups())) / 10 - 60
         else:
@@ -139,7 +134,7 @@ class MsvcPlatform(Platform):
         else:
             masm32 = 'ml.exe'
             masm64 = 'ml64.exe'
-
+        
         if x64:
             self.masm = masm64
         else:
@@ -148,10 +143,11 @@ class MsvcPlatform(Platform):
         # Install debug options only when interpreter is in debug mode
         if sys.executable.lower().endswith('_d.exe'):
             self.cflags = ['/MDd', '/Z7', '/Od']
+            self.link_flags = ['/debug']
 
             # Increase stack size, for the linker and the stack check code.
             stack_size = 8 << 20  # 8 Mb
-            self.link_flags = self.link_flags + ('/STACK:%d' % stack_size,)
+            self.link_flags.append('/STACK:%d' % stack_size)
             # The following symbol is used in c/src/stack.h
             self.cflags.append('/DMAX_STACK_SIZE=%d' % (stack_size - 1024))
 
@@ -186,6 +182,20 @@ class MsvcPlatform(Platform):
         # Windows needs to resolve all symbols even for DLLs
         return super(MsvcPlatform, self)._link_args_from_eci(eci, standalone=True)
 
+    def _exportsymbols_link_flags(self, eci, relto=None):
+        if not eci.export_symbols:
+            return []
+
+        response_file = self._make_response_file("exported_symbols_")
+        f = response_file.open("w")
+        for sym in eci.export_symbols:
+            f.write("/EXPORT:%s\n" % (sym,))
+        f.close()
+
+        if relto:
+            response_file = relto.bestrelpath(response_file)
+        return ["@%s" % (response_file,)]
+
     def _compile_c_file(self, cc, cfile, compile_args):
         oname = self._make_o_file(cfile, ext='obj')
         # notabene: (tismer)
@@ -194,9 +204,6 @@ class MsvcPlatform(Platform):
         # the assembler still has the old behavior that all options
         # must come first, and after the file name all options are ignored.
         # So please be careful with the order of parameters! ;-)
-        pdb_dir = oname.dirname
-        if pdb_dir:
-                compile_args = compile_args + ['/Fd%s\\' % (pdb_dir,)]
         args = ['/nologo', '/c'] + compile_args + ['/Fo%s' % (oname,), str(cfile)]
         self._execute_c_compiler(cc, args, oname)
         return oname
@@ -233,18 +240,14 @@ class MsvcPlatform(Platform):
             stderr = stdout + stderr
             errorfile = outname.new(ext='errors')
             errorfile.write(stderr, mode='wb')
-            if self.log_errors:
-                stderrlines = stderr.splitlines()
-                for line in stderrlines:
-                    log.Error(line)
-                # ^^^ don't use ERROR, because it might actually be fine.
-                # Also, ERROR confuses lib-python/conftest.py.
+            stderrlines = stderr.splitlines()
+            for line in stderrlines:
+                log.ERROR(line)
             raise CompilationError(stdout, stderr)
 
 
     def gen_makefile(self, cfiles, eci, exe_name=None, path=None,
-                     shared=False, headers_to_precompile=[],
-                     no_precompile_cfiles = [], icon=None):
+                     shared=False):
         cfiles = self._all_cfiles(cfiles, eci)
 
         if path is None:
@@ -260,8 +263,6 @@ class MsvcPlatform(Platform):
         if shared:
             so_name = exe_name.new(purebasename='lib' + exe_name.purebasename,
                                    ext=self.so_ext)
-            wtarget_name = exe_name.new(purebasename=exe_name.purebasename + 'w',
-                                   ext=self.exe_ext)
             target_name = so_name.basename
         else:
             target_name = exe_name.basename
@@ -272,8 +273,9 @@ class MsvcPlatform(Platform):
 
         linkflags = list(self.link_flags)
         if shared:
-            linkflags = self._args_for_shared(linkflags)
-        linkflags += self._exportsymbols_link_flags()
+            linkflags = self._args_for_shared(linkflags) + [
+                '/EXPORT:$(PYPY_MAIN_FUNCTION)']
+        linkflags += self._exportsymbols_link_flags(eci, relto=path)
         # Make sure different functions end up at different addresses!
         # This is required for the JIT.
         linkflags.append('/opt:noicf')
@@ -289,20 +291,17 @@ class MsvcPlatform(Platform):
         rel_ofiles = [rel_cfile[:rel_cfile.rfind('.')]+'.obj' for rel_cfile in rel_cfiles]
         m.cfiles = rel_cfiles
 
-        rel_includedirs = [rpyrel(incldir) for incldir in
-                           self.preprocess_include_dirs(eci.include_dirs)]
-        rel_libdirs = [rpyrel(libdir) for libdir in
-                       self.preprocess_library_dirs(eci.library_dirs)]
+        rel_includedirs = [rpyrel(incldir) for incldir in eci.include_dirs]
 
         m.comment('automatically generated makefile')
         definitions = [
-            ('RPYDIR', '"%s"' % rpydir),
+            ('RPYDIR', rpydir),
             ('TARGET', target_name),
             ('DEFAULT_TARGET', exe_name.basename),
             ('SOURCES', rel_cfiles),
             ('OBJECTS', rel_ofiles),
             ('LIBS', self._libs(eci.libraries)),
-            ('LIBDIRS', self._libdirs(rel_libdirs)),
+            ('LIBDIRS', self._libdirs(eci.library_dirs)),
             ('INCLUDEDIRS', self._includedirs(rel_includedirs)),
             ('CFLAGS', self.cflags),
             ('CFLAGSEXTRA', list(eci.compile_extra)),
@@ -312,98 +311,49 @@ class MsvcPlatform(Platform):
             ('CC_LINK', self.link),
             ('LINKFILES', eci.link_files),
             ('MASM', self.masm),
-            ('MAKE', 'nmake.exe'),
             ('_WIN32', '1'),
             ]
-        if shared:
-            definitions.insert(0, ('WTARGET', wtarget_name.basename))
         if self.x64:
             definitions.append(('_WIN64', '1'))
-
-        rules = [
-            ('all', '$(DEFAULT_TARGET) $(WTARGET)', []),
-            ('.asm.obj', '', '$(MASM) /nologo /Fo$@ /c $< $(INCLUDEDIRS)'),
-            ]
-
-        if len(headers_to_precompile)>0:
-            stdafx_h = path.join('stdafx.h')
-            txt  = '#ifndef PYPY_STDAFX_H\n'
-            txt += '#define PYPY_STDAFX_H\n'
-            txt += '\n'.join(['#include "' + m.pathrel(c) + '"' for c in headers_to_precompile])
-            txt += '\n#endif\n'
-            stdafx_h.write(txt)
-            stdafx_c = path.join('stdafx.c')
-            stdafx_c.write('#include "stdafx.h"\n')
-            definitions.append(('CREATE_PCH', '/Ycstdafx.h /Fpstdafx.pch /FIstdafx.h'))
-            definitions.append(('USE_PCH', '/Yustdafx.h /Fpstdafx.pch /FIstdafx.h'))
-            rules.append(('$(OBJECTS)', 'stdafx.pch', []))
-            rules.append(('stdafx.pch', 'stdafx.h',
-               '$(CC) stdafx.c /c /nologo $(CFLAGS) $(CFLAGSEXTRA) '
-               '$(CREATE_PCH) $(INCLUDEDIRS)'))
-            rules.append(('.c.obj', '',
-                    '$(CC) /nologo $(CFLAGS) $(CFLAGSEXTRA) $(USE_PCH) '
-                    '/Fo$@ /c $< $(INCLUDEDIRS)'))
-            #Do not use precompiled headers for some files
-            #rules.append((r'{..\module_cache}.c{..\module_cache}.obj', '',
-            #        '$(CC) /nologo $(CFLAGS) $(CFLAGSEXTRA) /Fo$@ /c $< $(INCLUDEDIRS)'))
-            # nmake cannot handle wildcard target specifications, so we must
-            # create a rule for compiling each file from eci since they cannot use
-            # precompiled headers :(
-            no_precompile = []
-            for f in list(no_precompile_cfiles):
-                f = m.pathrel(py.path.local(f))
-                if f not in no_precompile and f.endswith('.c'):
-                    no_precompile.append(f)
-                    target = f[:-1] + 'obj'
-                    rules.append((target, f,
-                        '$(CC) /nologo $(CFLAGS) $(CFLAGSEXTRA) '
-                        '/Fo%s /c %s $(INCLUDEDIRS)' %(target, f)))
-
-        else:
-            rules.append(('.c.obj', '',
-                          '$(CC) /nologo $(CFLAGS) $(CFLAGSEXTRA) '
-                          '/Fo$@ /c $< $(INCLUDEDIRS)'))
-
-
-        if icon:
-            shutil.copyfile(icon, str(path.join('icon.ico')))
-            rc_file = path.join('icon.rc')
-            rc_file.write('IDI_ICON1 ICON DISCARDABLE "icon.ico"')
-            rules.append(('icon.res', 'icon.rc', 'rc icon.rc'))
-
 
         for args in definitions:
             m.definition(*args)
 
+        rules = [
+            ('all', '$(DEFAULT_TARGET)', []),
+            ('.c.obj', '', '$(CC) /nologo $(CFLAGS) $(CFLAGSEXTRA) /Fo$@ /c $< $(INCLUDEDIRS)'),
+            ('.asm.obj', '', '$(MASM) /nologo /Fo$@ /c $< $(INCLUDEDIRS)'),
+            ]
+
         for rule in rules:
             m.rule(*rule)
-
-        if len(headers_to_precompile)>0 and self.version >= 80:
-            # at least from VS2013 onwards we need to include PCH
-            # objects in the final link command
-            linkobjs = 'stdafx.obj @<<\n$(OBJECTS)\n<<'
-        else:
-            linkobjs = '@<<\n$(OBJECTS)\n<<'
-
-        extra_deps = []
-        if icon and not shared:
-            extra_deps.append('icon.res')
-            linkobjs = 'icon.res ' + linkobjs
+        
+        objects = ' $(OBJECTS)'
+        create_obj_response_file = []
+        if len(' '.join(rel_ofiles)) > 4000:
+            # cmd.exe has a limit of ~4000 characters before a command line is too long.
+            # Use a response file instead, at the cost of making the Makefile very ugly.
+            for i in range(len(rel_ofiles) - 1):
+                create_obj_response_file.append('echo %s >> obj_names.rsp' % \
+                                                rel_ofiles[i])
+            # use cmd /c for the last one so that the file is flushed 
+            create_obj_response_file.append('cmd /c echo %s >> obj_names.rsp' % \
+                                            rel_ofiles[-1])
+            objects = ' @obj_names.rsp'
         if self.version < 80:
-            m.rule('$(TARGET)', ['$(OBJECTS)'] + extra_deps,
-                    [ '$(CC_LINK) /nologo $(LDFLAGS) $(LDFLAGSEXTRA) /out:$@' +\
-                      ' $(LIBDIRS) $(LIBS) ' + linkobjs,
+            m.rule('$(TARGET)', '$(OBJECTS)',
+                    create_obj_response_file + [\
+                   '$(CC_LINK) /nologo $(LDFLAGS) $(LDFLAGSEXTRA)' + objects + ' /out:$@ $(LIBDIRS) $(LIBS)',
                    ])
         else:
-            m.rule('$(TARGET)', ['$(OBJECTS)'] + extra_deps,
-                    [ '$(CC_LINK) /nologo $(LDFLAGS) $(LDFLAGSEXTRA)' + \
-                      ' $(LINKFILES) /out:$@ $(LIBDIRS) $(LIBS) /MANIFEST' + \
-                      ' /MANIFESTFILE:$*.manifest ' + linkobjs,
+            m.rule('$(TARGET)', '$(OBJECTS)',
+                    create_obj_response_file + [\
+                    '$(CC_LINK) /nologo $(LDFLAGS) $(LDFLAGSEXTRA)' + objects + ' $(LINKFILES) /out:$@ $(LIBDIRS) $(LIBS) /MANIFEST /MANIFESTFILE:$*.manifest',
                     'mt.exe -nologo -manifest $*.manifest -outputresource:$@;1',
                     ])
-        m.rule('debugmode_$(TARGET)', ['$(OBJECTS)'] + extra_deps,
-                [ '$(CC_LINK) /nologo /DEBUG $(LDFLAGS) $(LDFLAGSEXTRA)' + \
-                  ' $(LINKFILES) /out:$@ $(LIBDIRS) $(LIBS) ' + linkobjs,
+        m.rule('debugmode_$(TARGET)', '$(OBJECTS)',
+                create_obj_response_file + [\
+               '$(CC_LINK) /nologo /DEBUG $(LDFLAGS) $(LDFLAGSEXTRA)' + objects + ' $(LINKFILES) /out:$@ $(LIBDIRS) $(LIBS)',
                 ])
 
         if shared:
@@ -414,38 +364,12 @@ class MsvcPlatform(Platform):
                    'int $(PYPY_MAIN_FUNCTION)(int, char*[]); '
                    'int main(int argc, char* argv[]) '
                    '{ return $(PYPY_MAIN_FUNCTION)(argc, argv); } > $@')
-            deps = ['main.obj']
-            m.rule('wmain.c', '',
-                   ['echo #define WIN32_LEAN_AND_MEAN > $@',
-                   'echo #include "stdlib.h" >> $@',
-                   'echo #include "windows.h" >> $@',
-                   'echo int $(PYPY_MAIN_FUNCTION)(int, char*[]); >> $@',
-                   'echo int WINAPI WinMain( >> $@',
-                   'echo     HINSTANCE hInstance,      /* handle to current instance */ >> $@',
-                   'echo     HINSTANCE hPrevInstance,  /* handle to previous instance */ >> $@',
-                   'echo     LPSTR lpCmdLine,          /* pointer to command line */ >> $@',
-                   'echo     int nCmdShow              /* show state of window */ >> $@',
-                   'echo ) >> $@',
-                   'echo    { return $(PYPY_MAIN_FUNCTION)(__argc, __argv); } >> $@'])
-            wdeps = ['wmain.obj']
-            if icon:
-                deps.append('icon.res')
-                wdeps.append('icon.res')
-            m.rule('$(DEFAULT_TARGET)', ['$(TARGET)'] + deps,
-                   ['$(CC_LINK) /nologo /debug %s ' % (' '.join(deps),) + \
-                    '$(SHARED_IMPORT_LIB) /out:$@ ' + \
-                    '/MANIFEST /MANIFESTFILE:$*.manifest',
+            m.rule('$(DEFAULT_TARGET)', ['$(TARGET)', 'main.obj'],
+                   ['$(CC_LINK) /nologo main.obj $(SHARED_IMPORT_LIB) /out:$@ /MANIFEST /MANIFESTFILE:$*.manifest',
                     'mt.exe -nologo -manifest $*.manifest -outputresource:$@;1',
                     ])
-            m.rule('$(WTARGET)', ['$(TARGET)'] + wdeps,
-                   ['$(CC_LINK) /nologo /debug /SUBSYSTEM:WINDOWS %s ' % (' '.join(wdeps),) + \
-                    '$(SHARED_IMPORT_LIB) /out:$@ ' + \
-                    '/MANIFEST /MANIFESTFILE:$*.manifest',
-                    'mt.exe -nologo -manifest $*.manifest -outputresource:$@;1',
-                    ])
-            m.rule('debugmode_$(DEFAULT_TARGET)', ['debugmode_$(TARGET)']+deps,
-                   ['$(CC_LINK) /nologo /DEBUG %s ' % (' '.join(deps),) + \
-                    'debugmode_$(SHARED_IMPORT_LIB) /out:$@',
+            m.rule('debugmode_$(DEFAULT_TARGET)', ['debugmode_$(TARGET)', 'main.obj'],
+                   ['$(CC_LINK) /nologo /DEBUG main.obj $(SHARED_IMPORT_LIB) /out:$@'
                     ])
 
         return m
@@ -460,31 +384,11 @@ class MsvcPlatform(Platform):
         try:
             returncode, stdout, stderr = _run_subprocess(
                 'nmake',
-                ['/nologo', '/f', str(path.join('Makefile'))] + extra_opts,
-                env = self.c_environ)
+                ['/nologo', '/f', str(path.join('Makefile'))] + extra_opts)
         finally:
             oldcwd.chdir()
 
         self._handle_error(returncode, stdout, stderr, path.join('make'))
-
-class WinDefinition(posix.Definition):
-    def write(self, f):
-        def write_list(prefix, lst):
-            lst = lst or ['']
-            for i, fn in enumerate(lst):
-                print >> f, prefix, fn,
-                if i < len(lst)-1:
-                    print >> f, '\\'
-                else:
-                    print >> f
-                prefix = ' ' * len(prefix)
-        name, value = self.name, self.value
-        if isinstance(value, str):
-            f.write('%s = %s\n' % (name, value))
-        else:
-            write_list('%s =' % (name,), value)
-        f.write('\n')
-
 
 class NMakefile(posix.GnuMakefile):
     def write(self, out=None):
@@ -504,14 +408,6 @@ class NMakefile(posix.GnuMakefile):
         if out is None:
             f.close()
 
-    def definition(self, name, value):
-        defs = self.defs
-        defn = WinDefinition(name, value)
-        if name in defs:
-            self.lines[defs[name]] = defn
-        else:
-            defs[name] = len(self.lines)
-            self.lines.append(defn)
 
 class MingwPlatform(posix.BasePosix):
     name = 'mingw32'

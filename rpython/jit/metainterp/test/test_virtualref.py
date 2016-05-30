@@ -27,14 +27,14 @@ class VRefTests(object):
             x1 = vref()                  # jit_force_virtual
             virtual_ref_finish(vref, x)
         #
-        _get_jitcodes(self, self.CPUClass, fn, [])
+        _get_jitcodes(self, self.CPUClass, fn, [], self.type_system)
         graph = self.all_graphs[0]
         assert graph.name == 'fn'
         self.vrefinfo.replace_force_virtual_with_call([graph])
         #
         def check_call(op, fname):
             assert op.opname == 'direct_call'
-            assert op.args[0].value._obj._name.startswith(fname)
+            assert op.args[0].value._obj._name == fname
         #
         ops = [op for block, op in graph.iterblockops()]
         check_call(ops[-3], 'virtual_ref')
@@ -103,22 +103,20 @@ class VRefTests(object):
         [guard_op] = [op for op in ops
                          if op.getopnum() == rop.GUARD_NOT_FORCED]
         bxs1 = [box for box in guard_op.getfailargs()
-                  if '.X' in str(box)]
+                  if str(box._getrepr_()).endswith('.X')]
         assert len(bxs1) == 1
-        bxs2 = [(i, box) for i, box in
-                            enumerate(guard_op.getfailargs())
-                            if 'JitVirtualRef' in str(box)]
+        bxs2 = [box for box in guard_op.getfailargs()
+                  if str(box._getrepr_()).endswith('JitVirtualRef')]
         assert len(bxs2) == 1
         JIT_VIRTUAL_REF = self.vrefinfo.JIT_VIRTUAL_REF
         FOO = lltype.GcStruct('FOO')
         foo = lltype.malloc(FOO)
         tok = lltype.cast_opaque_ptr(llmemory.GCREF, foo)
-        cpu = self.metainterp.cpu
-        py.test.skip("rewrite this test")
         bxs2[0].getref(lltype.Ptr(JIT_VIRTUAL_REF)).virtual_token = tok
         #
         # try reloading from blackhole.py's point of view
         from rpython.jit.metainterp.resume import ResumeDataDirectReader
+        cpu = self.metainterp.cpu
         cpu.get_int_value = lambda df,i:guard_op.getfailargs()[i].getint()
         cpu.get_ref_value = lambda df,i:guard_op.getfailargs()[i].getref_base()
         class FakeMetaInterpSd:

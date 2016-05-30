@@ -1,6 +1,5 @@
 import py
 from rpython.rtyper.lltypesystem.lltype import *
-from rpython.rtyper.lltypesystem import rffi
 from rpython.translator.c.test.test_genc import compile
 from rpython.tool.sourcetools import func_with_new_name
 
@@ -315,14 +314,14 @@ class TestLowLevelType(object):
         from rpython.rtyper.lltypesystem.rstr import STR
         from rpython.rtyper.lltypesystem import rffi, llmemory, lltype
         P = lltype.Ptr(lltype.FixedSizeArray(lltype.Char, 1))
-
+        
         def f():
             a = llstr("xyz")
             b = (llmemory.cast_ptr_to_adr(a) + llmemory.offsetof(STR, 'chars')
                  + llmemory.itemoffsetof(STR.chars, 0))
             buf = rffi.cast(rffi.VOIDP, b)
             return buf[2]
-
+        
         fn = self.getcompiled(f, [])
         res = fn()
         assert res == 'z'
@@ -646,7 +645,10 @@ class TestLowLevelType(object):
             def llf():
                 s = ''
                 for i in range(5):
+                    print i
+                    print s
                     s += a[i]
+                print s
                 assert s == "85?!" + lastchar
             fn = self.getcompiled(llf, [])
             fn()
@@ -728,6 +730,7 @@ class TestLowLevelType(object):
             s = ''
             for i in range(4):
                 s += a[i]
+            print s
             return s == 'abcd'
         fn = self.getcompiled(llf, [])
         assert fn()
@@ -938,86 +941,3 @@ class TestLowLevelType(object):
         assert fn(0) == 10
         assert fn(1) == 10 + 521
         assert fn(2) == 10 + 34
-
-    def test_const_char_star(self):
-        from rpython.translator.tool.cbuild import ExternalCompilationInfo
-
-        eci = ExternalCompilationInfo(includes=["stdlib.h"])
-        atoi = rffi.llexternal('atoi', [rffi.CONST_CCHARP], rffi.INT,
-                               compilation_info=eci)
-
-        def f(n):
-            s = malloc(rffi.CCHARP.TO, 2, flavor='raw')
-            s[0] = '9'
-            s[1] = '\0'
-            res = atoi(rffi.cast(rffi.CONST_CCHARP, s))
-            free(s, flavor='raw')
-            return res
-
-        fn = self.getcompiled(f, [int])
-        assert fn(0) == 9
-
-    def test_call_null_funcptr(self):
-        fnptr = nullptr(FuncType([], Void))
-        def f(n):
-            if n > 10:
-                fnptr()    # never reached, or so we hope
-            return n
-
-        fn = self.getcompiled(f, [int])
-        assert fn(6) == 6
-
-    def test_likely_unlikely(self):
-        from rpython.rlib.objectmodel import likely, unlikely
-
-        def f(n):
-            if unlikely(n > 50):
-                return -10
-            if likely(n > 5):
-                return 42
-            return 3
-
-        fn = self.getcompiled(f, [int])
-        assert fn(0) == 3
-        assert fn(10) == 42
-        assert fn(100) == -10
-
-    def test_cast_to_bool_1(self):
-        def f(n):
-            return cast_primitive(Bool, n)
-
-        fn = self.getcompiled(f, [int])
-        assert fn(0) == False
-        assert fn(1) == True
-        assert fn(256) == True
-        assert fn(-2**24) == True
-
-    def test_cast_to_bool_1_longlong(self):
-        def f(n):
-            return cast_primitive(Bool, n)
-
-        fn = self.getcompiled(f, [r_longlong])
-        assert fn(r_longlong(0)) == False
-        assert fn(r_longlong(1)) == True
-        assert fn(r_longlong(256)) == True
-        assert fn(r_longlong(2**32)) == True
-
-    def test_cast_to_bool_2(self):
-        def f(n):
-            return rffi.cast(Bool, n)
-
-        fn = self.getcompiled(f, [int])
-        assert fn(0) == False
-        assert fn(1) == True
-        assert fn(256) == True
-        assert fn(-2**24) == True
-
-    def test_cast_to_bool_2_longlong(self):
-        def f(n):
-            return rffi.cast(Bool, n)
-
-        fn = self.getcompiled(f, [r_longlong])
-        assert fn(r_longlong(0)) == False
-        assert fn(r_longlong(1)) == True
-        assert fn(r_longlong(256)) == True
-        assert fn(r_longlong(2**32)) == True

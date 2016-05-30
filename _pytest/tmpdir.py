@@ -40,7 +40,7 @@ class TempdirHandler:
                 basetemp.mkdir()
             else:
                 basetemp = py.path.local.make_numbered_dir(prefix='pytest-')
-            self._basetemp = t = basetemp.realpath()
+            self._basetemp = t = basetemp
             self.trace("new basetemp", t)
             return t
 
@@ -54,18 +54,15 @@ def pytest_configure(config):
     mp.setattr(config, '_tmpdirhandler', t, raising=False)
     mp.setattr(pytest, 'ensuretemp', t.ensuretemp, raising=False)
 
-@pytest.fixture
-def tmpdir(request):
+def pytest_funcarg__tmpdir(request):
     """return a temporary directory path object
     which is unique to each test function invocation,
     created as a sub directory of the base temporary
     directory.  The returned object is a `py.path.local`_
     path object.
     """
-    name = request.node.name
+    name = request._pyfuncitem.name
     name = py.std.re.sub("[\W]", "_", name)
-    MAXVAL = 30
-    if len(name) > MAXVAL:
-        name = name[:MAXVAL]
     x = request.config._tmpdirhandler.mktemp(name, numbered=True)
     return x
+

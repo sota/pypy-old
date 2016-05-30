@@ -101,9 +101,7 @@ def dry_run(args, cwd, out, timeout=None):
     return 0
 
 def getsignalname(n):
-    # "sorted()" to pick a deterministic answer in case of synonyms.
-    # Also, getting SIGABRT is more understandable than SIGIOT...
-    for name, value in sorted(signal.__dict__.items()):
+    for name, value in signal.__dict__.items():
         if value == n and name.startswith('SIG'):
             return name
     return 'signal %d' % (n,)
@@ -161,8 +159,6 @@ def interpret_exitcode(exitcode, test, logdata=""):
             else:
                 msg = "Killed by %s." % getsignalname(-exitcode)
             extralog = "! %s\n %s\n" % (test, msg)
-        else:
-            extralog = "  (somefailed=True in %s)\n" % (test,)
     else:
         failure = False
     return failure, extralog
@@ -235,8 +231,6 @@ def execute_tests(run_param, testdirs, logfile, out):
     run_param.startup()
 
     N = run_param.parallel_runs
-    if N > 1:
-        out.write("running %d parallel test workers\n" % N)
     failure = False
 
     for testname in testdirs:
@@ -267,8 +261,7 @@ def execute_tests(run_param, testdirs, logfile, out):
         done += 1
         failure = failure or somefailed
 
-        heading = "__ %s [%d done in total, somefailed=%s] " % (
-            testname, done, somefailed)
+        heading = "__ %s [%d done in total] " % (testname, done)
         
         out.write(heading + (79-len(heading))*'_'+'\n')
 
@@ -393,8 +386,6 @@ def main(args):
         if py.path.local(config_py_file).check(file=1):
             print >>out, "using config", config_py_file
             execfile(config_py_file, run_param.__dict__)
-        else:
-            print >>out, "ignoring non-existant config", config_py_file
 
     if run_param.cherrypick:
         for p in run_param.cherrypick:
@@ -409,8 +400,7 @@ def main(args):
     run_param.dry_run = opts.dry_run
 
     if run_param.dry_run:
-        print >>out, '\n'.join([str((k, getattr(run_param, k))) \
-                        for k in dir(run_param) if k[:2] != '__'])
+        print >>out, run_param.__dict__
     
     res = execute_tests(run_param, testdirs, logfile, out)
 

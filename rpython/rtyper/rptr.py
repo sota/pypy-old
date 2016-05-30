@@ -1,23 +1,25 @@
-from rpython.rtyper.llannotation import (
-    SomePtr, SomeInteriorPtr, SomeLLADTMeth, lltype_to_annotation)
+from rpython.annotator import model as annmodel
 from rpython.flowspace import model as flowmodel
 from rpython.rlib.rarithmetic import r_uint
 from rpython.rtyper.error import TyperError
 from rpython.rtyper.lltypesystem import lltype
-from rpython.rtyper.rmodel import Repr
-from rpython.rtyper.rint import IntegerRepr
+from rpython.rtyper.rmodel import Repr, IntegerRepr
 from rpython.tool.pairtype import pairtype
 
 
-class __extend__(SomePtr):
+class __extend__(annmodel.SomePtr):
     def rtyper_makerepr(self, rtyper):
-        return PtrRepr(self.ll_ptrtype, rtyper)
-
+##        if self.is_constant() and not self.const:   # constant NULL
+##            return nullptr_repr
+##        else:
+        return PtrRepr(self.ll_ptrtype)
     def rtyper_makekey(self):
+##        if self.is_constant() and not self.const:
+##            return None
+##        else:
         return self.__class__, self.ll_ptrtype
 
-
-class __extend__(SomeInteriorPtr):
+class __extend__(annmodel.SomeInteriorPtr):
     def rtyper_makerepr(self, rtyper):
         return InteriorPtrRepr(self.ll_ptrtype)
 
@@ -26,11 +28,9 @@ class __extend__(SomeInteriorPtr):
 
 class PtrRepr(Repr):
 
-    def __init__(self, ptrtype, rtyper=None):
+    def __init__(self, ptrtype):
         assert isinstance(ptrtype, lltype.Ptr)
         self.lowleveltype = ptrtype
-        if rtyper is not None:
-            self.rtyper = rtyper    # only for _convert_const_ptr()
 
     def ll_str(self, p):
         from rpython.rtyper.lltypesystem.rstr import ll_str
@@ -42,7 +42,7 @@ class PtrRepr(Repr):
 
     def rtype_getattr(self, hop):
         attr = hop.args_s[1].const
-        if isinstance(hop.s_result, SomeLLADTMeth):
+        if isinstance(hop.s_result, annmodel.SomeLLADTMeth):
             return hop.inputarg(hop.r_result, arg=0)
         try:
             self.lowleveltype._example()._lookup_adtmeth(attr)
@@ -83,7 +83,7 @@ class PtrRepr(Repr):
             return hop.genop('getarraysize', vlist,
                              resulttype = hop.r_result.lowleveltype)
 
-    def rtype_bool(self, hop):
+    def rtype_is_true(self, hop):
         vlist = hop.inputargs(self)
         return hop.genop('ptr_nonzero', vlist, resulttype=lltype.Bool)
 
@@ -108,20 +108,17 @@ class PtrRepr(Repr):
                          resulttype = self.lowleveltype.TO.RESULT)
 
     def rtype_call_args(self, hop):
-        raise TyperError("kwds args not supported")
-
-    def convert_const(self, value):
-        if hasattr(value, '_convert_const_ptr'):
-            assert hasattr(self, 'rtyper')
-            return value._convert_const_ptr(self)
-        return Repr.convert_const(self, value)
-
+        from rpython.rtyper.rbuiltin import call_args_expand
+        hop, _ = call_args_expand(hop, takes_kwds=False)
+        hop.swap_fst_snd_args()
+        hop.r_s_popfirstarg()
+        return self.rtype_simple_call(hop)
 
 class __extend__(pairtype(PtrRepr, PtrRepr)):
     def convert_from_to((r_ptr1, r_ptr2), v, llop):
-        if r_ptr1.lowleveltype == r_ptr2.lowleveltype:
-            return v
-        return NotImplemented
+        assert r_ptr1.lowleveltype == r_ptr2.lowleveltype
+        return v
+
 
 class __extend__(pairtype(PtrRepr, IntegerRepr)):
 
@@ -157,6 +154,22 @@ class __extend__(pairtype(PtrRepr, IntegerRepr)):
         vlist = hop.inputargs(r_ptr, lltype.Signed, hop.args_r[2])
         hop.genop('setarrayitem', vlist)
 
+# ____________________________________________________________
+#
+#  Null Pointers
+
+##class NullPtrRepr(Repr):
+##    lowleveltype = lltype.Void
+
+##    def rtype_is_true(self, hop):
+##        return hop.inputconst(lltype.Bool, False)
+
+##nullptr_repr = NullPtrRepr()
+
+##class __extend__(pairtype(NullPtrRepr, PtrRepr)):
+##    def convert_from_to((r_null, r_ptr), v, llops):
+##        # nullptr to general pointer
+##        return inputconst(r_ptr, _ptr(r_ptr.lowleveltype, None))
 
 # ____________________________________________________________
 #
@@ -186,7 +199,7 @@ class __extend__(pairtype(Repr, PtrRepr)):
 # ________________________________________________________________
 # ADT  methods
 
-class __extend__(SomeLLADTMeth):
+class __extend__(annmodel.SomeLLADTMeth):
     def rtyper_makerepr(self, rtyper):
         return LLADTMethRepr(self, rtyper)
     def rtyper_makekey(self):
@@ -198,7 +211,7 @@ class LLADTMethRepr(Repr):
         self.func = adtmeth.func
         self.lowleveltype = adtmeth.ll_ptrtype
         self.ll_ptrtype = adtmeth.ll_ptrtype
-        self.lowleveltype = rtyper.getrepr(lltype_to_annotation(adtmeth.ll_ptrtype)).lowleveltype
+        self.lowleveltype = rtyper.getrepr(annmodel.lltype_to_annotation(adtmeth.ll_ptrtype)).lowleveltype
 
     def rtype_simple_call(self, hop):
         hop2 = hop.copy()
@@ -206,7 +219,8 @@ class LLADTMethRepr(Repr):
         s_func = hop.rtyper.annotator.bookkeeper.immutablevalue(func)
         v_ptr = hop2.args_v[0]
         hop2.r_s_popfirstarg()
-        hop2.v_s_insertfirstarg(v_ptr, lltype_to_annotation(self.ll_ptrtype))
+        hop2.v_s_insertfirstarg(
+            v_ptr, annmodel.lltype_to_annotation(self.ll_ptrtype))
         hop2.v_s_insertfirstarg(flowmodel.Constant(func), s_func)
         return hop2.dispatch()
 
@@ -276,7 +290,7 @@ class InteriorPtrRepr(Repr):
 
     def rtype_getattr(self, hop):
         attr = hop.args_s[1].const
-        if isinstance(hop.s_result, SomeLLADTMeth):
+        if isinstance(hop.s_result, annmodel.SomeLLADTMeth):
             return hop.inputarg(hop.r_result, arg=0)
         FIELD_TYPE = getattr(self.resulttype.TO, attr)
         if isinstance(FIELD_TYPE, lltype.ContainerType):

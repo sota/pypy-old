@@ -106,6 +106,8 @@ class LLRefTrackerPage(BaseRefTrackerPage):
                     yield name + ' @hdr', self.normalize(addrof._obj)
                 else:
                     yield name + ' @', self.normalize(o.ptr._obj)
+##                     if o.offset:
+##                         yield '... offset', str(o.offset)
         else:
             yield name, str(o)
 

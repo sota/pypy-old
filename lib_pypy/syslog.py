@@ -1,4 +1,3 @@
-# this cffi version was rewritten based on the
 # ctypes implementation: Victor Stinner, 2008-05-08
 """
 This module provides an interface to the Unix syslog library routines.
@@ -10,10 +9,34 @@ import sys
 if sys.platform == 'win32':
     raise ImportError("No syslog on Windows")
 
+# load the platform-specific cache made by running syslog.ctc.py
+from ctypes_config_cache._syslog_cache import *
+
+from ctypes_support import standard_c_lib as libc
+from ctypes import c_int, c_char_p
+
 try: from __pypy__ import builtinify
 except ImportError: builtinify = lambda f: f
 
-from _syslog_cffi import ffi, lib
+
+# Real prototype is:
+# void syslog(int priority, const char *format, ...);
+# But we also need format ("%s") and one format argument (message)
+_syslog = libc.syslog
+_syslog.argtypes = (c_int, c_char_p, c_char_p)
+_syslog.restype = None
+
+_openlog = libc.openlog
+_openlog.argtypes = (c_char_p, c_int, c_int)
+_openlog.restype = None
+
+_closelog = libc.closelog
+_closelog.argtypes = None
+_closelog.restype = None
+
+_setlogmask = libc.setlogmask
+_setlogmask.argtypes = (c_int,)
+_setlogmask.restype = c_int
 
 _S_log_open = False
 _S_ident_o = None
@@ -29,17 +52,12 @@ def _get_argv():
     return None
 
 @builtinify
-def openlog(ident=None, logoption=0, facility=lib.LOG_USER):
+def openlog(ident=None, logoption=0, facility=LOG_USER):
     global _S_ident_o, _S_log_open
     if ident is None:
         ident = _get_argv()
-    if ident is None:
-        _S_ident_o = ffi.NULL
-    elif isinstance(ident, str):
-        _S_ident_o = ffi.new("char[]", ident)    # keepalive
-    else:
-        raise TypeError("'ident' must be a string or None")
-    lib.openlog(_S_ident_o, logoption, facility)
+    _S_ident_o = c_char_p(ident)    # keepalive
+    _openlog(_S_ident_o, logoption, facility)
     _S_log_open = True
 
 @builtinify
@@ -51,19 +69,19 @@ def syslog(arg1, arg2=None):
     # if log is not opened, open it now
     if not _S_log_open:
         openlog()
-    lib.syslog(priority, "%s", message)
+    _syslog(priority, "%s", message)
 
 @builtinify
 def closelog():
     global _S_log_open, S_ident_o
     if _S_log_open:
-        lib.closelog()
+        _closelog()
         _S_log_open = False
         _S_ident_o = None
 
 @builtinify
 def setlogmask(mask):
-    return lib.setlogmask(mask)
+    return _setlogmask(mask)
 
 @builtinify
 def LOG_MASK(pri):
@@ -73,15 +91,8 @@ def LOG_MASK(pri):
 def LOG_UPTO(pri):
     return (1 << (pri + 1)) - 1
 
-__all__ = []
-
-for name in dir(lib):
-    if name.startswith('LOG_'):
-        value = getattr(lib, name)
-        if value != -919919:
-            globals()[name] = value
-            __all__.append(name)
-
-__all__ = tuple(__all__) + (
+__all__ = ALL_CONSTANTS + (
     'openlog', 'syslog', 'closelog', 'setlogmask',
     'LOG_MASK', 'LOG_UPTO')
+
+del ALL_CONSTANTS

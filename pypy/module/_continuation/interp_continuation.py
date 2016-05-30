@@ -1,6 +1,6 @@
 from rpython.rlib.rstacklet import StackletThread
 from rpython.rlib import jit
-from pypy.interpreter.error import OperationError, get_cleared_operation_error
+from pypy.interpreter.error import OperationError
 from pypy.interpreter.executioncontext import ExecutionContext
 from pypy.interpreter.baseobjspace import W_Root
 from pypy.interpreter.typedef import TypeDef
@@ -35,11 +35,10 @@ class W_Continulet(W_Root):
         w_args, w_kwds = __args__.topacked()
         bottomframe = space.createframe(get_entrypoint_pycode(space),
                                         get_w_module_dict(space), None)
-        bottomframe.locals_cells_stack_w[0] = space.wrap(self)
-        bottomframe.locals_cells_stack_w[1] = w_callable
-        bottomframe.locals_cells_stack_w[2] = w_args
-        bottomframe.locals_cells_stack_w[3] = w_kwds
-        bottomframe.last_exception = get_cleared_operation_error(space)
+        bottomframe.locals_stack_w[0] = space.wrap(self)
+        bottomframe.locals_stack_w[1] = w_callable
+        bottomframe.locals_stack_w[2] = w_args
+        bottomframe.locals_stack_w[3] = w_kwds
         self.bottomframe = bottomframe
         #
         global_state.origin = self
@@ -49,6 +48,9 @@ class W_Continulet(W_Root):
 
     def switch(self, w_to):
         sthread = self.sthread
+        if sthread is not None and sthread.is_empty_handle(self.h):
+            global_state.clear()
+            raise geterror(self.space, "continulet already finished")
         to = self.space.interp_w(W_Continulet, w_to, can_be_None=True)
         if to is not None and to.sthread is None:
             to = None
@@ -59,9 +61,6 @@ class W_Continulet(W_Root):
                 to = None
             else:
                 return get_result()  # else: no-op
-        if sthread is not None and sthread.is_empty_handle(self.h):
-            global_state.clear()
-            raise geterror(self.space, "continulet already finished")
         if to is not None:
             if to.sthread is not sthread:
                 global_state.clear()
@@ -136,7 +135,8 @@ def unpickle(space, w_subtype):
 
 
 W_Continulet.typedef = TypeDef(
-    '_continuation.continulet',
+    'continulet',
+    __module__ = '_continuation',
     __new__     = interp2app(W_Continulet___new__),
     __init__    = interp2app(W_Continulet.descr_init),
     switch      = interp2app(W_Continulet.descr_switch),
@@ -195,7 +195,7 @@ def get_w_module_dict(space):
 class SThread(StackletThread):
 
     def __init__(self, space, ec):
-        StackletThread.__init__(self)
+        StackletThread.__init__(self, space.config)
         self.space = space
         self.ec = ec
         # for unpickling

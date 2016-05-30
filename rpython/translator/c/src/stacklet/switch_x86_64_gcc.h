@@ -10,10 +10,7 @@ static void *slp_switch(void *(*save_state)(void*, void*),
      "pushq %%r12\n"
      "pushq %%r13\n"
      "pushq %%r14\n"
-     "movq %%rsp, %%rbp\n"
-     "andq $-16, %%rsp\n"   /* <= align the stack here... */
      "pushq %%r15\n"
-     "pushq %%rbp\n"       /* ...so that rsp is now a multiple of 16 */
 
      "movq %%rax, %%r12\n" /* save 'restore_state' for later */
      "movq %%rsi, %%r13\n" /* save 'extra' for later         */
@@ -37,9 +34,7 @@ static void *slp_switch(void *(*save_state)(void*, void*),
      /* The stack's content is now restored. */
 
      "0:\n"
-     "popq %%rbp\n"
      "popq %%r15\n"
-     "movq %%rbp, %%rsp\n"
      "popq %%r14\n"
      "popq %%r13\n"
      "popq %%r12\n"

@@ -7,7 +7,6 @@ import sys
 import stat
 import os
 import os.path
-import errno
 from os.path import splitdrive
 from distutils.spawn import find_executable, spawn
 from shutil import (_make_tarball, _make_zipfile, make_archive,
@@ -78,34 +77,33 @@ class TestShutil(unittest.TestCase):
         filename = tempfile.mktemp()
         self.assertRaises(OSError, shutil.rmtree, filename)
 
-    @unittest.skipUnless(hasattr(os, 'chmod'), 'requires os.chmod()')
-    @unittest.skipIf(sys.platform[:6] == 'cygwin',
-                     "This test can't be run on Cygwin (issue #1071513).")
-    @unittest.skipIf(hasattr(os, 'geteuid') and os.geteuid() == 0,
-                     "This test can't be run reliably as root (issue #1076467).")
-    def test_on_error(self):
-        self.errorState = 0
-        os.mkdir(TESTFN)
-        self.childpath = os.path.join(TESTFN, 'a')
-        f = open(self.childpath, 'w')
-        f.close()
-        old_dir_mode = os.stat(TESTFN).st_mode
-        old_child_mode = os.stat(self.childpath).st_mode
-        # Make unwritable.
-        os.chmod(self.childpath, stat.S_IREAD)
-        os.chmod(TESTFN, stat.S_IREAD)
+    # See bug #1071513 for why we don't run this on cygwin
+    # and bug #1076467 for why we don't run this as root.
+    if (hasattr(os, 'chmod') and sys.platform[:6] != 'cygwin'
+        and not (hasattr(os, 'geteuid') and os.geteuid() == 0)):
+        def test_on_error(self):
+            self.errorState = 0
+            os.mkdir(TESTFN)
+            self.childpath = os.path.join(TESTFN, 'a')
+            f = open(self.childpath, 'w')
+            f.close()
+            old_dir_mode = os.stat(TESTFN).st_mode
+            old_child_mode = os.stat(self.childpath).st_mode
+            # Make unwritable.
+            os.chmod(self.childpath, stat.S_IREAD)
+            os.chmod(TESTFN, stat.S_IREAD)
 
-        shutil.rmtree(TESTFN, onerror=self.check_args_to_onerror)
-        # Test whether onerror has actually been called.
-        self.assertEqual(self.errorState, 2,
-                            "Expected call to onerror function did not happen.")
+            shutil.rmtree(TESTFN, onerror=self.check_args_to_onerror)
+            # Test whether onerror has actually been called.
+            self.assertEqual(self.errorState, 2,
+                             "Expected call to onerror function did not happen.")
 
-        # Make writable again.
-        os.chmod(TESTFN, old_dir_mode)
-        os.chmod(self.childpath, old_child_mode)
+            # Make writable again.
+            os.chmod(TESTFN, old_dir_mode)
+            os.chmod(self.childpath, old_child_mode)
 
-        # Clean up.
-        shutil.rmtree(TESTFN)
+            # Clean up.
+            shutil.rmtree(TESTFN)
 
     def check_args_to_onerror(self, func, arg, exc):
         # test_rmtree_errors deliberately runs rmtree
@@ -309,67 +307,37 @@ class TestShutil(unittest.TestCase):
             finally:
                 shutil.rmtree(TESTFN, ignore_errors=True)
 
-    # Issue #3002: copyfile and copytree block indefinitely on named pipes
-    @unittest.skipUnless(hasattr(os, "mkfifo"), 'requires os.mkfifo()')
-    def test_copyfile_named_pipe(self):
-        os.mkfifo(TESTFN)
-        try:
-            self.assertRaises(shutil.SpecialFileError,
-                              shutil.copyfile, TESTFN, TESTFN2)
-            self.assertRaises(shutil.SpecialFileError,
-                              shutil.copyfile, __file__, TESTFN)
-        finally:
-            os.remove(TESTFN)
-
-    @unittest.skipUnless(hasattr(os, "mkfifo"), 'requires os.mkfifo()')
-    def test_copytree_named_pipe(self):
-        os.mkdir(TESTFN)
-        try:
-            subdir = os.path.join(TESTFN, "subdir")
-            os.mkdir(subdir)
-            pipe = os.path.join(subdir, "mypipe")
-            os.mkfifo(pipe)
+    if hasattr(os, "mkfifo"):
+        # Issue #3002: copyfile and copytree block indefinitely on named pipes
+        def test_copyfile_named_pipe(self):
+            os.mkfifo(TESTFN)
             try:
-                shutil.copytree(TESTFN, TESTFN2)
-            except shutil.Error as e:
-                errors = e.args[0]
-                self.assertEqual(len(errors), 1)
-                src, dst, error_msg = errors[0]
-                self.assertEqual("`%s` is a named pipe" % pipe, error_msg)
-            else:
-                self.fail("shutil.Error should have been raised")
-        finally:
-            shutil.rmtree(TESTFN, ignore_errors=True)
-            shutil.rmtree(TESTFN2, ignore_errors=True)
+                self.assertRaises(shutil.SpecialFileError,
+                                  shutil.copyfile, TESTFN, TESTFN2)
+                self.assertRaises(shutil.SpecialFileError,
+                                  shutil.copyfile, __file__, TESTFN)
+            finally:
+                os.remove(TESTFN)
 
-    @unittest.skipUnless(hasattr(os, 'chflags') and
-                         hasattr(errno, 'EOPNOTSUPP') and
-                         hasattr(errno, 'ENOTSUP'),
-                         "requires os.chflags, EOPNOTSUPP & ENOTSUP")
-    def test_copystat_handles_harmless_chflags_errors(self):
-        tmpdir = self.mkdtemp()
-        file1 = os.path.join(tmpdir, 'file1')
-        file2 = os.path.join(tmpdir, 'file2')
-        self.write_file(file1, 'xxx')
-        self.write_file(file2, 'xxx')
-
-        def make_chflags_raiser(err):
-            ex = OSError()
-
-            def _chflags_raiser(path, flags):
-                ex.errno = err
-                raise ex
-            return _chflags_raiser
-        old_chflags = os.chflags
-        try:
-            for err in errno.EOPNOTSUPP, errno.ENOTSUP:
-                os.chflags = make_chflags_raiser(err)
-                shutil.copystat(file1, file2)
-            # assert others errors break it
-            os.chflags = make_chflags_raiser(errno.EOPNOTSUPP + errno.ENOTSUP)
-            self.assertRaises(OSError, shutil.copystat, file1, file2)
-        finally:
-            os.chflags = old_chflags
+        def test_copytree_named_pipe(self):
+            os.mkdir(TESTFN)
+            try:
+                subdir = os.path.join(TESTFN, "subdir")
+                os.mkdir(subdir)
+                pipe = os.path.join(subdir, "mypipe")
+                os.mkfifo(pipe)
+                try:
+                    shutil.copytree(TESTFN, TESTFN2)
+                except shutil.Error as e:
+                    errors = e.args[0]
+                    self.assertEqual(len(errors), 1)
+                    src, dst, error_msg = errors[0]
+                    self.assertEqual("`%s` is a named pipe" % pipe, error_msg)
+                else:
+                    self.fail("shutil.Error should have been raised")
+            finally:
+                shutil.rmtree(TESTFN, ignore_errors=True)
+                shutil.rmtree(TESTFN2, ignore_errors=True)
 
     @unittest.skipUnless(zlib, "requires zlib")
     def test_make_tarball(self):
@@ -581,29 +549,6 @@ class TestShutil(unittest.TestCase):
         finally:
             unregister_archive_format('xxx')
 
-    def test_make_tarfile_in_curdir(self):
-        # Issue #21280
-        root_dir = self.mkdtemp()
-        saved_dir = os.getcwd()
-        try:
-            os.chdir(root_dir)
-            self.assertEqual(make_archive('test', 'tar'), 'test.tar')
-            self.assertTrue(os.path.isfile('test.tar'))
-        finally:
-            os.chdir(saved_dir)
-
-    @unittest.skipUnless(zlib, "Requires zlib")
-    def test_make_zipfile_in_curdir(self):
-        # Issue #21280
-        root_dir = self.mkdtemp()
-        saved_dir = os.getcwd()
-        try:
-            os.chdir(root_dir)
-            self.assertEqual(make_archive('test', 'zip'), 'test.zip')
-            self.assertTrue(os.path.isfile('test.zip'))
-        finally:
-            os.chdir(saved_dir)
-
     def test_register_archive_format(self):
 
         self.assertRaises(TypeError, register_archive_format, 'xxx', 1)
@@ -674,14 +619,16 @@ class TestMove(unittest.TestCase):
     def test_move_file_other_fs(self):
         # Move a file to an existing dir on another filesystem.
         if not self.dir_other_fs:
-            self.skipTest('dir on other filesystem not available')
+            # skip
+            return
         self._check_move_file(self.src_file, self.file_other_fs,
             self.file_other_fs)
 
     def test_move_file_to_dir_other_fs(self):
         # Move a file to another location on another filesystem.
         if not self.dir_other_fs:
-            self.skipTest('dir on other filesystem not available')
+            # skip
+            return
         self._check_move_file(self.src_file, self.dir_other_fs,
             self.file_other_fs)
 
@@ -699,7 +646,8 @@ class TestMove(unittest.TestCase):
     def test_move_dir_other_fs(self):
         # Move a dir to another location on another filesystem.
         if not self.dir_other_fs:
-            self.skipTest('dir on other filesystem not available')
+            # skip
+            return
         dst_dir = tempfile.mktemp(dir=self.dir_other_fs)
         try:
             self._check_move_dir(self.src_dir, dst_dir, dst_dir)
@@ -717,18 +665,10 @@ class TestMove(unittest.TestCase):
     def test_move_dir_to_dir_other_fs(self):
         # Move a dir inside an existing dir on another filesystem.
         if not self.dir_other_fs:
-            self.skipTest('dir on other filesystem not available')
+            # skip
+            return
         self._check_move_dir(self.src_dir, self.dir_other_fs,
             os.path.join(self.dir_other_fs, os.path.basename(self.src_dir)))
-
-    def test_move_dir_sep_to_dir(self):
-        self._check_move_dir(self.src_dir + os.path.sep, self.dst_dir,
-            os.path.join(self.dst_dir, os.path.basename(self.src_dir)))
-
-    @unittest.skipUnless(os.path.altsep, 'requires os.path.altsep')
-    def test_move_dir_altsep_to_dir(self):
-        self._check_move_dir(self.src_dir + os.path.altsep, self.dst_dir,
-            os.path.join(self.dst_dir, os.path.basename(self.src_dir)))
 
     def test_existing_file_inside_dest_dir(self):
         # A file with the same name inside the destination dir already exists.

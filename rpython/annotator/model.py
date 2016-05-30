@@ -32,11 +32,10 @@ from __future__ import absolute_import
 import inspect
 import weakref
 from types import BuiltinFunctionType, MethodType
-from collections import OrderedDict, defaultdict
 
 import rpython
 from rpython.tool import descriptor
-from rpython.tool.pairtype import pair, extendabletype, doubledispatch
+from rpython.tool.pairtype import pair, extendabletype
 from rpython.rlib.rarithmetic import r_uint, base_int, r_singlefloat, r_longfloat
 
 
@@ -123,21 +122,8 @@ class SomeObject(object):
     def can_be_none(self):
         return True
 
-    def noneify(self):
-        raise UnionError(self, s_None)
-
     def nonnoneify(self):
         return self
-
-@doubledispatch
-def intersection(s_obj1, s_obj2):
-    """Return the intersection of two annotations, or an over-approximation thereof"""
-    raise NotImplementedError
-
-@doubledispatch
-def difference(s_obj1, s_obj2):
-    """Return the set difference of two annotations, or an over-approximation thereof"""
-    raise NotImplementedError
 
 
 class SomeType(SomeObject):
@@ -147,23 +133,6 @@ class SomeType(SomeObject):
 
     def can_be_none(self):
         return False
-
-class SomeTypeOf(SomeType):
-    """The type of a variable"""
-    def __init__(self, args_v):
-        self.is_type_of = args_v
-
-def typeof(args_v):
-    if args_v:
-        result = SomeTypeOf(args_v)
-        if len(args_v) == 1:
-            s_arg = args_v[0].annotation
-            if isinstance(s_arg, SomeException) and len(s_arg.classdefs) == 1:
-                cdef, = s_arg.classdefs
-                result.const = cdef.classdesc.pyobj
-        return result
-    else:
-        return SomeType()
 
 
 class SomeFloat(SomeObject):
@@ -241,16 +210,12 @@ class SomeBool(SomeInteger):
 
     def set_knowntypedata(self, knowntypedata):
         assert not hasattr(self, 'knowntypedata')
-        for key, value in knowntypedata.items():
-            if not value:
-                del knowntypedata[key]
         if knowntypedata:
             self.knowntypedata = knowntypedata
 
 
 class SomeStringOrUnicode(SomeObject):
-    """Base class for shared implementation of SomeString,
-    SomeUnicodeString and SomeByteArray.
+    """Base class for shared implementation of SomeString and SomeUnicodeString.
 
     Cannot be an annotation."""
 
@@ -263,7 +228,6 @@ class SomeStringOrUnicode(SomeObject):
         if can_be_None:
             self.can_be_None = True
         if no_nul:
-            assert self.immutable   #'no_nul' cannot be used with SomeByteArray
             self.no_nul = True
 
     def can_be_none(self):
@@ -285,30 +249,20 @@ class SomeStringOrUnicode(SomeObject):
         return self.__class__(can_be_None=False, no_nul=self.no_nul)
 
     def nonnulify(self):
-        if self.can_be_None:
-            return self.__class__(can_be_None=True, no_nul=True)
-        else:
-            return self.__class__(no_nul=True)
+        return self.__class__(can_be_None=self.can_be_None, no_nul=True)
 
 
 class SomeString(SomeStringOrUnicode):
     "Stands for an object which is known to be a string."
     knowntype = str
 
-    def noneify(self):
-        return SomeString(can_be_None=True, no_nul=self.no_nul)
-
 
 class SomeUnicodeString(SomeStringOrUnicode):
     "Stands for an object which is known to be an unicode string"
     knowntype = unicode
 
-    def noneify(self):
-        return SomeUnicodeString(can_be_None=True, no_nul=self.no_nul)
-
 
 class SomeByteArray(SomeStringOrUnicode):
-    immutable = False
     knowntype = bytearray
 
 
@@ -356,9 +310,6 @@ class SomeList(SomeObject):
     def can_be_none(self):
         return True
 
-    def noneify(self):
-        return SomeList(self.listdef)
-
 
 class SomeTuple(SomeObject):
     "Stands for a tuple of known length."
@@ -404,23 +355,6 @@ class SomeDict(SomeObject):
         else:
             return '{...%s...}' % (len(const),)
 
-    def noneify(self):
-        return type(self)(self.dictdef)
-
-class SomeOrderedDict(SomeDict):
-    knowntype = OrderedDict
-
-    def method_copy(dct):
-        return SomeOrderedDict(dct.dictdef)
-
-    def method_update(dct1, dct2):
-        if s_None.contains(dct2):
-            return SomeImpossibleValue()
-        assert isinstance(dct2, SomeOrderedDict), "OrderedDict.update(dict) not allowed"
-        dct1.dictdef.union(dct2.dictdef)
-
-SomeDict = SomeOrderedDict      # all dicts are ordered!
-
 
 class SomeIterator(SomeObject):
     "Stands for an iterator returning objects from a given container."
@@ -439,7 +373,7 @@ class SomeInstance(SomeObject):
 
     def __init__(self, classdef, can_be_None=False, flags={}):
         self.classdef = classdef
-        self.knowntype = classdef.classdesc if classdef else None
+        self.knowntype = classdef or object
         self.can_be_None = can_be_None
         self.flags = flags
 
@@ -464,55 +398,6 @@ class SomeInstance(SomeObject):
     def nonnoneify(self):
         return SomeInstance(self.classdef, can_be_None=False)
 
-    def noneify(self):
-        return SomeInstance(self.classdef, can_be_None=True)
-
-@intersection.register(SomeInstance, SomeInstance)
-def intersection_Instance(s_inst1, s_inst2):
-    can_be_None = s_inst1.can_be_None and s_inst2.can_be_None
-    if s_inst1.classdef.issubclass(s_inst2.classdef):
-        return SomeInstance(s_inst1.classdef, can_be_None=can_be_None)
-    elif s_inst2.classdef.issubclass(s_inst1.classdef):
-        return SomeInstance(s_inst2.classdef, can_be_None=can_be_None)
-    else:
-        return s_ImpossibleValue
-
-@difference.register(SomeInstance, SomeInstance)
-def difference_Instance_Instance(s_inst1, s_inst2):
-    if s_inst1.classdef.issubclass(s_inst2.classdef):
-        return s_ImpossibleValue
-    else:
-        return s_inst1
-
-
-class SomeException(SomeObject):
-    """The set of exceptions obeying type(exc) in self.classes"""
-    def __init__(self, classdefs):
-        self.classdefs = classdefs
-
-    def as_SomeInstance(self):
-        return unionof(*[SomeInstance(cdef) for cdef in self.classdefs])
-
-@intersection.register(SomeException, SomeInstance)
-def intersection_Exception_Instance(s_exc, s_inst):
-    classdefs = {c for c in s_exc.classdefs if c.issubclass(s_inst.classdef)}
-    if classdefs:
-        return SomeException(classdefs)
-    else:
-        return s_ImpossibleValue
-
-@intersection.register(SomeInstance, SomeException)
-def intersection_Exception_Instance(s_inst, s_exc):
-    return intersection(s_exc, s_inst)
-
-@difference.register(SomeException, SomeInstance)
-def difference_Exception_Instance(s_exc, s_inst):
-    classdefs = {c for c in s_exc.classdefs
-        if not c.issubclass(s_inst.classdef)}
-    if classdefs:
-        return SomeException(classdefs)
-    else:
-        return s_ImpossibleValue
 
 class SomePBC(SomeObject):
     """Stands for a global user instance, built prior to the analysis,
@@ -520,68 +405,74 @@ class SomePBC(SomeObject):
     immutable = True
 
     def __init__(self, descriptions, can_be_None=False, subset_of=None):
-        assert descriptions
         # descriptions is a set of Desc instances
         descriptions = set(descriptions)
         self.descriptions = descriptions
         self.can_be_None = can_be_None
         self.subset_of = subset_of
         self.simplify()
-        knowntype = reduce(commonbase, [x.knowntype for x in descriptions])
-        if knowntype == type(Exception):
-            knowntype = type
-        if knowntype != object:
-            self.knowntype = knowntype
-        if len(descriptions) == 1 and not can_be_None:
-            # hack for the convenience of direct callers to SomePBC():
-            # only if there is a single object in descriptions
-            desc, = descriptions
-            if desc.pyobj is not None:
-                self.const = desc.pyobj
-        elif len(descriptions) > 1:
-            from rpython.annotator.classdesc import ClassDesc
-            if self.getKind() is ClassDesc:
-                # a PBC of several classes: enforce them all to be
-                # built, without support for specialization.  See
-                # rpython/test/test_rpbc.test_pbc_of_classes_not_all_used
-                for desc in descriptions:
-                    desc.getuniqueclassdef()
+        if self.isNone():
+            self.knowntype = type(None)
+            self.const = None
+        else:
+            knowntype = reduce(commonbase,
+                               [x.knowntype for x in descriptions])
+            if knowntype == type(Exception):
+                knowntype = type
+            if knowntype != object:
+                self.knowntype = knowntype
+            if len(descriptions) == 1 and not can_be_None:
+                # hack for the convenience of direct callers to SomePBC():
+                # only if there is a single object in descriptions
+                desc, = descriptions
+                if desc.pyobj is not None:
+                    self.const = desc.pyobj
+            elif len(descriptions) > 1:
+                from rpython.annotator.description import ClassDesc
+                if self.getKind() is ClassDesc:
+                    # a PBC of several classes: enforce them all to be
+                    # built, without support for specialization.  See
+                    # rpython/test/test_rpbc.test_pbc_of_classes_not_all_used
+                    for desc in descriptions:
+                        desc.getuniqueclassdef()
 
     def any_description(self):
         return iter(self.descriptions).next()
 
     def getKind(self):
         "Return the common Desc class of all descriptions in this PBC."
-        kinds = set()
+        kinds = {}
         for x in self.descriptions:
             assert type(x).__name__.endswith('Desc')  # avoid import nightmares
-            kinds.add(x.__class__)
-        if len(kinds) > 1:
-            raise AnnotatorError("mixing several kinds of PBCs: %r" % kinds)
-        return kinds.pop()
+            kinds[x.__class__] = True
+        assert len(kinds) <= 1, (
+            "mixing several kinds of PBCs: %r" % (kinds.keys(),))
+        if not kinds:
+            raise ValueError("no 'kind' on the 'None' PBC")
+        return kinds.keys()[0]
 
     def simplify(self):
-        # We check that the set only contains a single kind of Desc instance
-        kind = self.getKind()
-        # then we remove unnecessary entries in self.descriptions:
-        # some MethodDescs can be 'shadowed' by others
-        if len(self.descriptions) > 1:
-            kind.simplify_desc_set(self.descriptions)
+        if self.descriptions:
+            # We check that the set only contains a single kind of Desc instance
+            kind = self.getKind()
+            # then we remove unnecessary entries in self.descriptions:
+            # some MethodDescs can be 'shadowed' by others
+            if len(self.descriptions) > 1:
+                kind.simplify_desc_set(self.descriptions)
+        else:
+            assert self.can_be_None, "use s_ImpossibleValue"
 
-    def consider_call_site(self, args, s_result, call_op):
-        descs = list(self.descriptions)
-        self.getKind().consider_call_site(descs, args, s_result, call_op)
+    def isNone(self):
+        return len(self.descriptions) == 0
 
     def can_be_none(self):
         return self.can_be_None
 
     def nonnoneify(self):
-        return SomePBC(self.descriptions, can_be_None=False,
-                subset_of=self.subset_of)
-
-    def noneify(self):
-        return SomePBC(self.descriptions, can_be_None=True,
-                subset_of=self.subset_of)
+        if self.isNone():
+            return s_ImpossibleValue
+        else:
+            return SomePBC(self.descriptions, can_be_None=False)
 
     def fmt_descriptions(self, pbis):
         if hasattr(self, 'const'):
@@ -594,31 +485,6 @@ class SomePBC(SomeObject):
             return None
         else:
             return kt.__name__
-
-class SomeNone(SomeObject):
-    knowntype = type(None)
-    const = None
-
-    def __init__(self):
-        pass
-
-    def is_constant(self):
-        return True
-
-    def is_immutable_constant(self):
-        return True
-
-    def nonnoneify(self):
-        return s_ImpossibleValue
-
-
-class SomeConstantType(SomePBC):
-    can_be_None = False
-    subset_of = None
-    def __init__(self, x, bk):
-        self.descriptions = set([bk.getdesc(x)])
-        self.knowntype = type(x)
-        self.const = x
 
 
 class SomeBuiltin(SomeObject):
@@ -643,15 +509,7 @@ class SomeBuiltin(SomeObject):
 class SomeBuiltinMethod(SomeBuiltin):
     """ Stands for a built-in method which has got special meaning
     """
-    def __init__(self, analyser, s_self, methodname):
-        if isinstance(analyser, MethodType):
-            analyser = descriptor.InstanceMethod(
-                analyser.im_func,
-                analyser.im_self,
-                analyser.im_class)
-        self.analyser = analyser
-        self.s_self = s_self
-        self.methodname = methodname
+    knowntype = MethodType
 
 
 class SomeImpossibleValue(SomeObject):
@@ -664,20 +522,7 @@ class SomeImpossibleValue(SomeObject):
         return False
 
 
-class SomeProperty(SomeObject):
-    # used for union error only
-    immutable = True
-    knowntype = type(property)
-
-    def __init__(self, prop):
-        self.fget = prop.fget
-        self.fset = prop.fset
-
-    def can_be_none(self):
-        return False
-
-
-s_None = SomeNone()
+s_None = SomePBC([], can_be_None=True)
 s_Bool = SomeBool()
 s_Int = SomeInteger()
 s_ImpossibleValue = SomeImpossibleValue()
@@ -696,47 +541,195 @@ class SomeWeakRef(SomeObject):
         # 'classdef' is None for known-to-be-dead weakrefs.
         self.classdef = classdef
 
-    def noneify(self):
-        return SomeWeakRef(self.classdef)
+# ____________________________________________________________
+# memory addresses
+
+from rpython.rtyper.lltypesystem import llmemory
+
+
+class SomeAddress(SomeObject):
+    immutable = True
+
+    def can_be_none(self):
+        return False
+
+    def is_null_address(self):
+        return self.is_immutable_constant() and not self.const
+
+
+# The following class is used to annotate the intermediate value that
+# appears in expressions of the form:
+# addr.signed[offset] and addr.signed[offset] = value
+
+class SomeTypedAddressAccess(SomeObject):
+    def __init__(self, type):
+        self.type = type
+
+    def can_be_none(self):
+        return False
+
+#____________________________________________________________
+# annotation of low-level types
+
+from rpython.rtyper.lltypesystem import lltype
+
+
+class SomePtr(SomeObject):
+    knowntype = lltype._ptr
+    immutable = True
+
+    def __init__(self, ll_ptrtype):
+        assert isinstance(ll_ptrtype, lltype.Ptr)
+        self.ll_ptrtype = ll_ptrtype
+
+    def can_be_none(self):
+        return False
+
+
+class SomeInteriorPtr(SomePtr):
+    def __init__(self, ll_ptrtype):
+        assert isinstance(ll_ptrtype, lltype.InteriorPtr)
+        self.ll_ptrtype = ll_ptrtype
+
+
+class SomeLLADTMeth(SomeObject):
+    immutable = True
+
+    def __init__(self, ll_ptrtype, func):
+        self.ll_ptrtype = ll_ptrtype
+        self.func = func
+
+    def can_be_none(self):
+        return False
+
+
+class SomeOOObject(SomeObject):
+    def __init__(self):
+        from rpython.rtyper.ootypesystem import ootype
+        self.ootype = ootype.Object
+
+
+class SomeOOClass(SomeObject):
+    def __init__(self, ootype):
+        self.ootype = ootype
+
+
+class SomeOOInstance(SomeObject):
+    def __init__(self, ootype, can_be_None=False):
+        self.ootype = ootype
+        self.can_be_None = can_be_None
+
+
+class SomeOOBoundMeth(SomeObject):
+    immutable = True
+
+    def __init__(self, ootype, name):
+        self.ootype = ootype
+        self.name = name
+
+
+class SomeOOStaticMeth(SomeObject):
+    immutable = True
+
+    def __init__(self, method):
+        self.method = method
+
+annotation_to_ll_map = [
+    (SomeSingleFloat(), lltype.SingleFloat),
+    (s_None, lltype.Void),   # also matches SomeImpossibleValue()
+    (s_Bool, lltype.Bool),
+    (SomeFloat(), lltype.Float),
+    (SomeLongFloat(), lltype.LongFloat),
+    (SomeChar(), lltype.Char),
+    (SomeUnicodeCodePoint(), lltype.UniChar),
+    (SomeAddress(), llmemory.Address),
+]
+
+
+def annotation_to_lltype(s_val, info=None):
+    from rpython.rtyper.ootypesystem import ootype
+
+    if isinstance(s_val, SomeOOInstance):
+        return s_val.ootype
+    if isinstance(s_val, SomeOOStaticMeth):
+        return s_val.method
+    if isinstance(s_val, SomeOOClass):
+        return ootype.Class
+    if isinstance(s_val, SomeOOObject):
+        return s_val.ootype
+    if isinstance(s_val, SomeInteriorPtr):
+        p = s_val.ll_ptrtype
+        if 0 in p.offsets:
+            assert list(p.offsets).count(0) == 1
+            return lltype.Ptr(lltype.Ptr(p.PARENTTYPE)._interior_ptr_type_with_index(p.TO))
+        else:
+            return lltype.Ptr(p.PARENTTYPE)
+    if isinstance(s_val, SomePtr):
+        return s_val.ll_ptrtype
+    if type(s_val) is SomeInteger:
+        return lltype.build_number(None, s_val.knowntype)
+
+    for witness, T in annotation_to_ll_map:
+        if witness.contains(s_val):
+            return T
+    if info is None:
+        info = ''
+    else:
+        info = '%s: ' % info
+    raise ValueError("%sshould return a low-level type,\ngot instead %r" % (
+        info, s_val))
+
+ll_to_annotation_map = dict([(ll, ann) for ann, ll in annotation_to_ll_map])
+
+
+def lltype_to_annotation(T):
+    from rpython.rtyper.ootypesystem import ootype
+
+    try:
+        s = ll_to_annotation_map.get(T)
+    except TypeError:
+        s = None    # unhashable T, e.g. a Ptr(GcForwardReference())
+    if s is None:
+        if isinstance(T, lltype.Typedef):
+            return lltype_to_annotation(T.OF)
+        if isinstance(T, lltype.Number):
+            return SomeInteger(knowntype=T._type)
+        if isinstance(T, (ootype.Instance, ootype.BuiltinType)):
+            return SomeOOInstance(T)
+        elif isinstance(T, ootype.StaticMethod):
+            return SomeOOStaticMeth(T)
+        elif T == ootype.Class:
+            return SomeOOClass(ootype.ROOT)
+        elif T == ootype.Object:
+            return SomeOOObject()
+        elif isinstance(T, lltype.InteriorPtr):
+            return SomeInteriorPtr(T)
+        else:
+            return SomePtr(T)
+    else:
+        return s
+
+
+def ll_to_annotation(v):
+    if v is None:
+        # i think we can only get here in the case of void-returning
+        # functions
+        return s_None
+    if isinstance(v, lltype._interior_ptr):
+        ob = v._parent
+        if ob is None:
+            raise RuntimeError
+        T = lltype.InteriorPtr(lltype.typeOf(ob), v._T, v._offsets)
+        return SomeInteriorPtr(T)
+    return lltype_to_annotation(lltype.typeOf(v))
+
 
 # ____________________________________________________________
 
-
-class AnnotatorError(Exception):
-    def __init__(self, msg=None):
-        self.msg = msg
-        self.source = None
-
-    def __str__(self):
-        s = "\n\n%s" % self.msg
-        if self.source is not None:
-            s += "\n\n"
-            s += self.source
-
-        return s
-
-class UnionError(AnnotatorError):
+class UnionError(Exception):
     """Signals an suspicious attempt at taking the union of
     deeply incompatible SomeXxx instances."""
 
-    def __init__(self, s_obj1, s_obj2, msg=None):
-        """
-        This exception expresses the fact that s_obj1 and s_obj2 cannot be unified.
-        The msg paramter is appended to a generic message. This can be used to
-        give the user a little more information.
-        """
-        s = ""
-        if msg is not None:
-            s += "%s\n\n" % msg
-        s += "Offending annotations:\n"
-        s += "  %s\n  %s" % (s_obj1, s_obj2)
-        self.s_obj1 = s_obj1
-        self.s_obj2 = s_obj2
-        self.msg = s
-        self.source = None
-
-    def __repr__(self):
-        return str(self)
 
 def unionof(*somevalues):
     "The most precise SomeValue instance that contains all the values."
@@ -758,20 +751,19 @@ def unionof(*somevalues):
 
 def add_knowntypedata(ktd, truth, vars, s_obj):
     for v in vars:
-        ktd[truth][v] = s_obj
+        ktd[(truth, v)] = s_obj
 
 
 def merge_knowntypedata(ktd1, ktd2):
-    r = defaultdict(dict)
-    for truth, constraints in ktd1.items():
-        for v in constraints:
-            if truth in ktd2 and v in ktd2[truth]:
-                r[truth][v] = unionof(ktd1[truth][v], ktd2[truth][v])
+    r = {}
+    for truth_v in ktd1:
+        if truth_v in ktd2:
+            r[truth_v] = unionof(ktd1[truth_v], ktd2[truth_v])
     return r
 
 
 def not_const(s_obj):
-    if s_obj.is_constant() and not isinstance(s_obj, (SomePBC, SomeNone)):
+    if s_obj.is_constant() and not isinstance(s_obj, SomePBC):
         new_s_obj = SomeObject.__new__(s_obj.__class__)
         dic = new_s_obj.__dict__ = s_obj.__dict__.copy()
         if 'const' in dic:
@@ -796,6 +788,21 @@ def commonbase(cls1, cls2):   # XXX single inheritance only  XXX hum
         if x in l2:
             return x
     assert 0, "couldn't get to commonbase of %r and %r" % (cls1, cls2)
+
+
+def missing_operation(cls, name):
+    def default_op(*args):
+        if args and isinstance(args[0], tuple):
+            flattened = tuple(args[0]) + args[1:]
+        else:
+            flattened = args
+        for arg in flattened:
+            if arg.__class__ is SomeObject and arg.knowntype is not type:
+                return SomeObject()
+        bookkeeper = rpython.annotator.bookkeeper.getbookkeeper()
+        bookkeeper.warning("no precise annotation supplied for %s%r" % (name, args))
+        return s_ImpossibleValue
+    setattr(cls, name, default_op)
 
 
 class HarmlesslyBlocked(Exception):

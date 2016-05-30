@@ -1,7 +1,7 @@
+
 from pypy.module.micronumpy.arrayimpl import base
 from pypy.module.micronumpy.base import W_NDimArray, convert_to_array
 from pypy.module.micronumpy import support
-from pypy.module.micronumpy.interp_boxes import W_GenericBox
 from pypy.interpreter.error import OperationError
 
 class ScalarIterator(base.BaseArrayIterator):
@@ -12,14 +12,8 @@ class ScalarIterator(base.BaseArrayIterator):
     def next(self):
         self.called_once = True
 
-    def next_skip_x(self, n):
-        self.called_once = True
-
     def getitem(self):
         return self.v.get_scalar_value()
-
-    def getitem_bool(self):
-        return self.v.dtype.itemtype.bool(self.v.value)
 
     def setitem(self, v):
         self.v.set_scalar_value(v)
@@ -47,14 +41,13 @@ class Scalar(base.BaseArrayImplementation):
     def get_backstrides(self):
         return []
 
-    def create_iter(self, shape=None, backward_broadcast=False, require_index=False):
+    def create_iter(self, shape=None, backward_broadcast=False):
         return ScalarIterator(self)
 
     def get_scalar_value(self):
         return self.value
 
     def set_scalar_value(self, w_val):
-        assert isinstance(w_val, W_GenericBox)
         self.value = w_val.convert_to(self.dtype)
 
     def copy(self, space):
@@ -68,11 +61,6 @@ class Scalar(base.BaseArrayImplementation):
     def transpose(self, _):
         return self
 
-    def get_view(self, orig_array, dtype, new_shape):
-        scalar = Scalar(dtype)
-        scalar.value = self.value.convert_to(dtype)
-        return scalar
-
     def get_real(self, orig_array):
         if self.dtype.is_complex_type():
             scalar = Scalar(self.dtype.float_type)
@@ -85,7 +73,7 @@ class Scalar(base.BaseArrayImplementation):
         dtype = self.dtype.float_type or self.dtype
         if len(w_arr.get_shape()) > 0:
             raise OperationError(space.w_ValueError, space.wrap(
-                "could not broadcast input array from shape " +
+                "could not broadcast input array from shape " + 
                 "(%s) into shape ()" % (
                     ','.join([str(x) for x in w_arr.get_shape()],))))
         if self.dtype.is_complex_type():
@@ -114,7 +102,7 @@ class Scalar(base.BaseArrayImplementation):
         dtype = self.dtype.float_type
         if len(w_arr.get_shape()) > 0:
             raise OperationError(space.w_ValueError, space.wrap(
-                "could not broadcast input array from shape " +
+                "could not broadcast input array from shape " + 
                 "(%s) into shape ()" % (
                     ','.join([str(x) for x in w_arr.get_shape()],))))
         self.value = self.dtype.itemtype.composite(
@@ -141,7 +129,7 @@ class Scalar(base.BaseArrayImplementation):
         if not new_shape:
             return self
         if support.product(new_shape) == 1:
-            arr = W_NDimArray.from_shape(space, new_shape, self.dtype)
+            arr = W_NDimArray.from_shape(new_shape, self.dtype)
             arr_iter = arr.create_iter(new_shape)
             arr_iter.setitem(self.value)
             return arr.implementation
@@ -154,15 +142,8 @@ class Scalar(base.BaseArrayImplementation):
     def create_axis_iter(self, shape, dim, cum):
         raise Exception("axis iter should not happen on scalar")
 
-    def swapaxes(self, space, orig_array, axis1, axis2):
+    def swapaxes(self, orig_array, axis1, axis2):
         raise Exception("should not be called")
-
-    def nonzero(self, space, index_type):
-        s = self.dtype.itemtype.bool(self.value)
-        w_res = W_NDimArray.from_shape(space, [s], index_type)
-        if s == 1:
-            w_res.implementation.setitem(0, index_type.itemtype.box(0)) 
-        return space.newtuple([w_res])
 
     def fill(self, w_value):
         self.value = w_value
@@ -175,7 +156,7 @@ class Scalar(base.BaseArrayImplementation):
         return space.wrap(0)
 
     def astype(self, space, dtype):
-        raise Exception("should not be called")
+        return W_NDimArray.new_scalar(space, dtype, self.value)
 
     def base(self):
         return None
@@ -183,3 +164,4 @@ class Scalar(base.BaseArrayImplementation):
     def get_buffer(self, space):
         raise OperationError(space.w_ValueError, space.wrap(
             "cannot point buffer to a scalar"))
+

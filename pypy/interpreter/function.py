@@ -7,14 +7,11 @@ attribute.
 """
 
 from rpython.rlib.unroll import unrolling_iterable
+from pypy.interpreter.error import OperationError, operationerrfmt
 from pypy.interpreter.baseobjspace import W_Root
-from pypy.interpreter.error import OperationError, oefmt
 from pypy.interpreter.eval import Code
 from pypy.interpreter.argument import Arguments
 from rpython.rlib import jit
-
-from rpython.rlib.rarithmetic import LONG_BIT
-from rpython.rlib.rbigint import rbigint
 
 
 funccallunrolling = unrolling_iterable(range(4))
@@ -108,7 +105,7 @@ class Function(W_Root):
                                                    self)
                 for i in funccallunrolling:
                     if i < nargs:
-                        new_frame.locals_cells_stack_w[i] = args_w[i]
+                        new_frame.locals_stack_w[i] = args_w[i]
                 return new_frame.run()
         elif nargs >= 1 and fast_natural_arity == Code.PASSTHROUGHARGS1:
             assert isinstance(code, gateway.BuiltinCodePassThroughArguments1)
@@ -174,7 +171,7 @@ class Function(W_Root):
                                                    self)
         for i in xrange(nargs):
             w_arg = frame.peekvalue(nargs-1-i)
-            new_frame.locals_cells_stack_w[i] = w_arg
+            new_frame.locals_stack_w[i] = w_arg
 
         return new_frame.run()
 
@@ -185,13 +182,13 @@ class Function(W_Root):
                                                    self)
         for i in xrange(nargs):
             w_arg = frame.peekvalue(nargs-1-i)
-            new_frame.locals_cells_stack_w[i] = w_arg
+            new_frame.locals_stack_w[i] = w_arg
 
         ndefs = len(self.defs_w)
         start = ndefs - defs_to_load
         i = nargs
         for j in xrange(start, ndefs):
-            new_frame.locals_cells_stack_w[i] = self.defs_w[j]
+            new_frame.locals_stack_w[i] = self.defs_w[j]
             i += 1
         return new_frame.run()
 
@@ -377,11 +374,14 @@ class Function(W_Root):
         return space.wrap(self.name)
 
     def fset_func_name(self, space, w_name):
-        if space.isinstance_w(w_name, space.w_str):
+        try:
             self.name = space.str_w(w_name)
-        else:
-            raise OperationError(space.w_TypeError,
-                space.wrap("__name__ must be set to a string object"))
+        except OperationError, e:
+            if e.match(space, space.w_TypeError):
+                raise OperationError(space.w_TypeError,
+                                     space.wrap("func_name must be set "
+                                                "to a string object"))
+            raise
 
     def fdel_func_doc(self, space):
         self.w_doc = space.w_None
@@ -413,9 +413,9 @@ class Function(W_Root):
         if self.closure:
             closure_len = len(self.closure)
         if isinstance(code, PyCode) and closure_len != len(code.co_freevars):
-            raise oefmt(space.w_ValueError,
-                        "%N() requires a code object with %d free vars, not "
-                        "%d", self, closure_len, len(code.co_freevars))
+            raise operationerrfmt(space.w_ValueError,
+                "%s() requires a code object with %d free vars, not %d",
+                self.name, closure_len, len(code.co_freevars))
         self.fget_func_doc(space)    # see test_issue1293
         self.code = code
 
@@ -482,22 +482,25 @@ class Method(W_Root):
                 space.abstract_isinstance_w(w_firstarg, self.w_class)):
             pass  # ok
         else:
-            clsdescr = self.w_class.getname(space)
-            if clsdescr and clsdescr != '?':
+            myname = self.getname(space, "")
+            clsdescr = self.w_class.getname(space, "")
+            if clsdescr:
                 clsdescr += " instance"
             else:
                 clsdescr = "instance"
             if w_firstarg is None:
                 instdescr = "nothing"
             else:
-                instname = space.abstract_getclass(w_firstarg).getname(space)
-                if instname and instname != '?':
+                instname = space.abstract_getclass(w_firstarg).getname(space,
+                                                                       "")
+                if instname:
                     instdescr = instname + " instance"
                 else:
                     instdescr = "instance"
-            raise oefmt(space.w_TypeError,
-                        "unbound method %N() must be called with %s as first "
-                        "argument (got %s instead)", self, clsdescr, instdescr)
+            msg = ("unbound method %s() must be called with %s "
+                   "as first argument (got %s instead)")
+            raise operationerrfmt(space.w_TypeError, msg,
+                                  myname, clsdescr, instdescr)
         return space.call_args(self.w_function, args)
 
     def descr_method_get(self, w_obj, w_cls=None):
@@ -560,26 +563,6 @@ class Method(W_Root):
                 return space.w_False
         return space.eq(self.w_function, w_other.w_function)
 
-    def is_w(self, space, other):
-        if not isinstance(other, Method):
-            return False
-        return (self.w_instance is other.w_instance and
-                self.w_function is other.w_function and
-                self.w_class is other.w_class)
-
-    def immutable_unique_id(self, space):
-        from pypy.objspace.std.util import IDTAG_METHOD as tag
-        from pypy.objspace.std.util import IDTAG_SHIFT
-        if self.w_instance is not None:
-            id = space.bigint_w(space.id(self.w_instance))
-            id = id.lshift(LONG_BIT)
-        else:
-            id = rbigint.fromint(0)
-        id = id.or_(space.bigint_w(space.id(self.w_function)))
-        id = id.lshift(LONG_BIT).or_(space.bigint_w(space.id(self.w_class)))
-        id = id.lshift(IDTAG_SHIFT).int_or_(tag)
-        return space.newlong_from_rbigint(id)
-
     def descr_method_hash(self):
         space = self.space
         w_result = space.hash(self.w_function)
@@ -636,8 +619,7 @@ class ClassMethod(W_Root):
     def descr_classmethod_get(self, space, w_obj, w_klass=None):
         if space.is_none(w_klass):
             w_klass = space.type(w_obj)
-        return space.wrap(Method(space, self.w_function, w_klass,
-                                 space.type(w_klass)))
+        return space.wrap(Method(space, self.w_function, w_klass, space.w_None))
 
     def descr_classmethod__new__(space, w_subtype, w_function):
         instance = space.allocate_instance(ClassMethod, w_subtype)

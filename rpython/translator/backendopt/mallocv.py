@@ -1,10 +1,11 @@
 from rpython.flowspace.model import Variable, Constant, Block, Link
 from rpython.flowspace.model import SpaceOperation, copygraph
 from rpython.flowspace.model import checkgraph
+from rpython.flowspace.model import c_last_exception
 from rpython.translator.backendopt.support import log
 from rpython.translator.simplify import join_blocks
 from rpython.translator.unsimplify import varoftype
-from rpython.rtyper.lltypesystem.lltype import getfunctionptr
+from rpython.rtyper.typesystem import getfunctionptr
 from rpython.rtyper.lltypesystem import lltype
 from rpython.rtyper.lltypesystem.lloperation import llop
 
@@ -251,7 +252,7 @@ class MallocVirtualizer(object):
     def __init__(self, graphs, rtyper, verbose=False):
         self.graphs = graphs
         self.rtyper = rtyper
-        self.excdata = rtyper.exceptiondata
+        self.excdata = rtyper.getexceptiondata()
         self.graphbuilders = {}
         self.specialized_graphs = {}
         self.specgraphorigin = {}
@@ -533,7 +534,7 @@ class GraphBuilder(object):
             return None
 
     def has_exception_catching(self, catchingframe):
-        if not catchingframe.sourceblock.canraise:
+        if catchingframe.sourceblock.exitswitch != c_last_exception:
             return False
         else:
             operations = catchingframe.sourceblock.operations
@@ -710,7 +711,7 @@ class BlockSpecializer(object):
         self.specblock.exitswitch = self.rename_nonvirtual(block.exitswitch,
                                                            'exitswitch')
         links = block.exits
-        catch_exc = self.specblock.canraise
+        catch_exc = self.specblock.exitswitch == c_last_exception
 
         if not catch_exc and isinstance(self.specblock.exitswitch, Constant):
             # constant-fold the switch

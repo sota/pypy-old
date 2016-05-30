@@ -102,10 +102,8 @@ def copystat(src, dst):
         try:
             os.chflags(dst, st.st_flags)
         except OSError, why:
-            for err in 'EOPNOTSUPP', 'ENOTSUP':
-                if hasattr(errno, err) and why.errno == getattr(errno, err):
-                    break
-            else:
+            if (not hasattr(errno, 'EOPNOTSUPP') or
+                why.errno != errno.EOPNOTSUPP):
                 raise
 
 def copy(src, dst):
@@ -203,7 +201,7 @@ def copytree(src, dst, symlinks=False, ignore=None):
             # Copying file access times may fail on Windows
             pass
         else:
-            errors.append((src, dst, str(why)))
+            errors.extend((src, dst, str(why)))
     if errors:
         raise Error, errors
 
@@ -259,8 +257,7 @@ def rmtree(path, ignore_errors=False, onerror=None):
 def _basename(path):
     # A basename() variant which first strips the trailing slash, if present.
     # Thus we always get the last component of the path, even for directories.
-    sep = os.path.sep + (os.path.altsep or '')
-    return os.path.basename(path.rstrip(sep))
+    return os.path.basename(path.rstrip(os.path.sep))
 
 def move(src, dst):
     """Recursively move a file or directory to another location. This is
@@ -362,7 +359,7 @@ def _make_tarball(base_name, base_dir, compress="gzip", verbose=0, dry_run=0,
     archive_name = base_name + '.tar' + compress_ext.get(compress, '')
     archive_dir = os.path.dirname(archive_name)
 
-    if archive_dir and not os.path.exists(archive_dir):
+    if not os.path.exists(archive_dir):
         if logger is not None:
             logger.info("creating %s", archive_dir)
         if not dry_run:
@@ -426,7 +423,7 @@ def _make_zipfile(base_name, base_dir, verbose=0, dry_run=0, logger=None):
     zip_filename = base_name + ".zip"
     archive_dir = os.path.dirname(base_name)
 
-    if archive_dir and not os.path.exists(archive_dir):
+    if not os.path.exists(archive_dir):
         if logger is not None:
             logger.info("creating %s", archive_dir)
         if not dry_run:
@@ -447,15 +444,17 @@ def _make_zipfile(base_name, base_dir, verbose=0, dry_run=0, logger=None):
                         zip_filename, base_dir)
 
         if not dry_run:
-            with zipfile.ZipFile(zip_filename, "w",
-                                 compression=zipfile.ZIP_DEFLATED) as zf:
-                for dirpath, dirnames, filenames in os.walk(base_dir):
-                    for name in filenames:
-                        path = os.path.normpath(os.path.join(dirpath, name))
-                        if os.path.isfile(path):
-                            zf.write(path, path)
-                            if logger is not None:
-                                logger.info("adding '%s'", path)
+            zip = zipfile.ZipFile(zip_filename, "w",
+                                  compression=zipfile.ZIP_DEFLATED)
+
+            for dirpath, dirnames, filenames in os.walk(base_dir):
+                for name in filenames:
+                    path = os.path.normpath(os.path.join(dirpath, name))
+                    if os.path.isfile(path):
+                        zip.write(path, path)
+                        if logger is not None:
+                            logger.info("adding '%s'", path)
+            zip.close()
 
     return zip_filename
 

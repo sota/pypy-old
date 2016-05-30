@@ -82,7 +82,6 @@ class FormatIterator(object):
     def finished(self):
         pass
 
-
 class CalcSizeFormatIterator(FormatIterator):
     totalsize = 0
 

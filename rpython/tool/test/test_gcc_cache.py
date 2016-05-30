@@ -1,11 +1,8 @@
 import sys
-import cStringIO
-import py
+from rpython.tool.gcc_cache import *
 from rpython.tool.udir import udir
+import md5, cStringIO
 from rpython.translator.tool.cbuild import ExternalCompilationInfo
-from rpython.translator.platform import CompilationError
-from rpython.tool.gcc_cache import (
-    cache_file_path, build_executable_cache, try_compile_cache)
 
 localudir = udir.join('test_gcc_cache').ensure(dir=1)
 
@@ -93,3 +90,4 @@ def test_execute_code_ignore_errors():
     finally:
         sys.stderr = oldstderr
     assert 'ERROR' not in capture.getvalue().upper()
+    

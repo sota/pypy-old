@@ -79,7 +79,7 @@ class AppTestIntObject(AppTestCpythonExtensionBase):
             ("newEnum", "METH_VARARGS",
              """
                 EnumObject *enumObj;
-                int intval;
+                long intval;
                 PyObject *name;
 
                 if (!PyArg_ParseTuple(args, "Oi", &name, &intval))
@@ -97,9 +97,8 @@ class AppTestIntObject(AppTestCpythonExtensionBase):
 
                 return (PyObject *)enumObj;
              """),
-            ],
+            ], 
             prologue="""
-            #include "structmember.h"
             typedef struct
             {
                 PyObject_HEAD
@@ -108,10 +107,10 @@ class AppTestIntObject(AppTestCpythonExtensionBase):
             } EnumObject;
 
             static void
-            enum_dealloc(PyObject *op)
+            enum_dealloc(EnumObject *op)
             {
-                    Py_DECREF(((EnumObject *)op)->ob_name);
-                    Py_TYPE(op)->tp_free(op);
+                    Py_DECREF(op->ob_name);
+                    Py_TYPE(op)->tp_free((PyObject *)op);
             }
 
             static PyMemberDef enum_members[] = {
@@ -151,7 +150,7 @@ class AppTestIntObject(AppTestCpythonExtensionBase):
                 /*tp_methods*/          0,
                 /*tp_members*/          enum_members,
                 /*tp_getset*/           0,
-                /*tp_base*/             0, /* set to &PyInt_Type in init function for MSVC */
+                /*tp_base*/             &PyInt_Type,
                 /*tp_dict*/             0,
                 /*tp_descr_get*/        0,
                 /*tp_descr_set*/        0,
@@ -160,34 +159,10 @@ class AppTestIntObject(AppTestCpythonExtensionBase):
                 /*tp_alloc*/            0,
                 /*tp_new*/              0
             };
-            """, more_init = '''
-            Enum_Type.tp_base = &PyInt_Type;
-            ''')
+            """)
 
         a = module.newEnum("ULTIMATE_ANSWER", 42)
         assert type(a).__name__ == "Enum"
         assert isinstance(a, int)
         assert a == int(a) == 42
         assert a.name == "ULTIMATE_ANSWER"
-
-    def test_int_cast(self):
-        mod = self.import_extension('foo', [
-                #prove it works for ints
-                ("test_int", "METH_NOARGS",
-                """
-                PyObject * obj = PyInt_FromLong(42);
-                PyObject * val;
-                if (!PyInt_Check(obj)) {
-                    Py_DECREF(obj);
-                    PyErr_SetNone(PyExc_ValueError);
-                    return NULL;
-                }
-                val = PyInt_FromLong(((PyIntObject *)obj)->ob_ival);
-                Py_DECREF(obj);
-                return val;
-                """
-                ),
-                ])
-        i = mod.test_int()
-        assert isinstance(i, int)
-        assert i == 42

@@ -19,6 +19,15 @@ def _a2b_read(space, s, index):
     return (ord(c) - 0x20) & 0x3f
 _a2b_read._always_inline_ = True
 
+def _a2b_write(space, res, length, char):
+    if res.getlength() < length:    # common case: we have enough room.
+        res.append(chr(char))
+    else:
+        # overflows.  Only accept zeros from now on.
+        if char != 0:
+            raise_Error(space, "Trailing garbage")
+_a2b_write._always_inline_ = True
+
 
 @unwrap_spec(ascii='bufferstr')
 def a2b_uu(space, ascii):
@@ -36,20 +45,9 @@ def a2b_uu(space, ascii):
         C = _a2b_read(space, ascii, i+2)
         D = _a2b_read(space, ascii, i+3)
         #
-        if res.getlength() < length:
-            res.append(chr(A << 2 | B >> 4))
-        elif A != 0 or B != 0:
-            raise_Error(space, "Trailing garbage")
-        #
-        if res.getlength() < length:
-            res.append(chr((B & 0xf) << 4 | C >> 2))
-        elif C != 0:
-            raise_Error(space, "Trailing garbage")
-        #
-        if res.getlength() < length:
-            res.append(chr((C & 0x3) << 6 | D))
-        elif D != 0:
-            raise_Error(space, "Trailing garbage")
+        _a2b_write(space, res, length, A << 2 | B >> 4)
+        _a2b_write(space, res, length, (B & 0xf) << 4 | C >> 2)
+        _a2b_write(space, res, length, (C & 0x3) << 6 | D)
 
     remaining = length - res.getlength()
     if remaining > 0:
@@ -63,7 +61,7 @@ def _b2a_read(bin, i):
         return ord(bin[i])
     except IndexError:
         return 0
-_b2a_read._always_inline_ = True
+_a2b_read._always_inline_ = True
 
 @unwrap_spec(bin='bufferstr')
 def b2a_uu(space, bin):

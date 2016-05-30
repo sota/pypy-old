@@ -60,7 +60,7 @@ class OsEnvironController(Controller):
 
 # ____________________________________________________________
 # Access to the 'environ' external variable
-prefix = ''
+
 if sys.platform.startswith('darwin'):
     CCHARPPP = rffi.CArrayPtr(rffi.CCHARPP)
     _os_NSGetEnviron = rffi.llexternal(
@@ -77,7 +77,6 @@ elif _WIN32:
         rffi.CCHARPP, '_environ', eci)
     get__wenviron, _set__wenviron = rffi.CExternVariable(
         CWCHARPP, '_wenviron', eci, c_type='wchar_t **')
-    prefix = '_'    
 else:
     os_get_environ, _os_set_environ = rffi.CExternVariable(
         rffi.CCHARPP, 'environ', ExternalCompilationInfo())
@@ -117,15 +116,13 @@ def r_putenv(name, value):
     just_a_placeholder
 
 os_getenv = rffi.llexternal('getenv', [rffi.CCHARP], rffi.CCHARP,
-                            releasegil=False)
-os_putenv = rffi.llexternal(prefix + 'putenv', [rffi.CCHARP], rffi.INT,
-                            save_err=rffi.RFFI_SAVE_ERRNO)
+                            threadsafe=False)
+os_putenv = rffi.llexternal('putenv', [rffi.CCHARP], rffi.INT)
 if _WIN32:
     _wgetenv = rffi.llexternal('_wgetenv', [rffi.CWCHARP], rffi.CWCHARP,
-                               compilation_info=eci, releasegil=False)
+                               compilation_info=eci, threadsafe=False)
     _wputenv = rffi.llexternal('_wputenv', [rffi.CWCHARP], rffi.INT,
-                               compilation_info=eci,
-                               save_err=rffi.RFFI_SAVE_LASTERROR)
+                               compilation_info=eci)
 
 class EnvKeepalive:
     pass
@@ -140,12 +137,12 @@ def make_env_impls(win32=False):
         byname, eq = envkeepalive.byname, '='
         def last_error(msg):
             from rpython.rlib import rposix
-            raise OSError(rposix.get_saved_errno(), msg)
+            raise OSError(rposix.get_errno(), msg)
     else:
         traits = UnicodeTraits()
         get_environ, getenv, putenv = get__wenviron, _wgetenv, _wputenv
         byname, eq = envkeepalive.bywname, u'='
-        from rpython.rlib.rwin32 import lastSavedWindowsError as last_error
+        from rpython.rlib.rwin32 import lastWindowsError as last_error
 
     def envitems_llimpl():
         environ = get_environ()
@@ -199,15 +196,14 @@ def r_unsetenv(name):
     r_putenv(name, '')
 
 if hasattr(__import__(os.name), 'unsetenv'):
-    os_unsetenv = rffi.llexternal('unsetenv', [rffi.CCHARP], rffi.INT,
-                                  save_err=rffi.RFFI_SAVE_ERRNO)
+    os_unsetenv = rffi.llexternal('unsetenv', [rffi.CCHARP], rffi.INT)
 
     def unsetenv_llimpl(name):
         with rffi.scoped_str2charp(name) as l_name:
             error = rffi.cast(lltype.Signed, os_unsetenv(l_name))
         if error:
             from rpython.rlib import rposix
-            raise OSError(rposix.get_saved_errno(), "os_unsetenv failed")
+            raise OSError(rposix.get_errno(), "os_unsetenv failed")
         try:
             l_oldstring = envkeepalive.byname[name]
         except KeyError:

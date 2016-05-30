@@ -1,9 +1,9 @@
 import py, weakref
 from rpython.rlib import rgc
 from rpython.rtyper.lltypesystem import lltype, llmemory
-from rpython.rtyper.test.tool import BaseRtypingTest
+from rpython.rtyper.test.tool import BaseRtypingTest, LLRtypeMixin, OORtypeMixin
 
-class TestRweakref(BaseRtypingTest):
+class BaseTestRweakref(BaseRtypingTest):
 
     def test_weakref_simple(self):
         class A:
@@ -123,6 +123,7 @@ class TestRweakref(BaseRtypingTest):
         assert self.interpret(fn, [0]) is False
         assert self.interpret(fn, [1]) is True
 
+class TestLLtype(BaseTestRweakref, LLRtypeMixin):
     def test_ll_weakref(self):
         S = lltype.GcStruct('S', ('x',lltype.Signed))
         def g():
@@ -138,3 +139,7 @@ class TestRweakref(BaseRtypingTest):
 
         res = self.interpret(f, [])
         assert res == lltype.nullptr(S)
+
+
+class TestOOtype(BaseTestRweakref, OORtypeMixin):
+    pass

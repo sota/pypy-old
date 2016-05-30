@@ -1,5 +1,4 @@
 from rpython.flowspace.model import Constant
-from rpython.flowspace.operation import op
 from rpython.rtyper.error import TyperError
 from rpython.rtyper.rmodel import Repr
 from rpython.tool.pairtype import pairtype
@@ -29,8 +28,8 @@ class ControlledInstanceRepr(Repr):
     def rtype_setattr(self, hop):
         return self.controller.rtype_setattr(hop)
 
-    def rtype_bool(self, hop):
-        return self.controller.rtype_bool(hop)
+    def rtype_is_true(self, hop):
+        return self.controller.rtype_is_true(hop)
 
     def rtype_simple_call(self, hop):
         return self.controller.rtype_call(hop)
@@ -72,7 +71,5 @@ def rtypedelegate(callable, hop, revealargs=[0], revealresult=False):
         s_new, r_new = r_controlled.s_real_obj, r_controlled.r_real_obj
         hop2.s_result, hop2.r_result = s_new, r_new
     hop2.v_s_insertfirstarg(c_meth, s_meth)
-    spaceop = op.simple_call(*hop2.args_v)
-    spaceop.result = hop2.spaceop.result
-    hop2.spaceop = spaceop
+    hop2.forced_opname = 'simple_call'
     return hop2.dispatch()

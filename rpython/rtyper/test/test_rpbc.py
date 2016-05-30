@@ -1,10 +1,8 @@
 import py
 
-from rpython.annotator import model as annmodel
-from rpython.annotator import specialize
+from rpython.annotator import policy, specialize
 from rpython.rtyper.lltypesystem.lltype import typeOf
-from rpython.rtyper.test.tool import BaseRtypingTest
-from rpython.rtyper.llannotation import SomePtr, lltype_to_annotation
+from rpython.rtyper.test.tool import BaseRtypingTest, LLRtypeMixin, OORtypeMixin
 
 
 class MyBase:
@@ -42,7 +40,7 @@ class Freezing:
         return self.x + y
 
 
-class TestRPBC(BaseRtypingTest):
+class BaseTestRPBC(BaseRtypingTest):
 
     def test_easy_call(self):
         def f(x):
@@ -184,7 +182,7 @@ class TestRPBC(BaseRtypingTest):
         class DeviceTask(Task):
             def fn(self, a):
                 return self.waitTask(a)+3
-
+        
         def f(a, b):
             if b:
                 inst = HandlerTask()
@@ -192,7 +190,7 @@ class TestRPBC(BaseRtypingTest):
                 inst = DeviceTask()
 
             return inst.runTask(a)
-
+                
         assert self.interpret(f, [42, True]) == 45
         assert self.interpret(f, [42, False]) == 46
 
@@ -325,9 +323,9 @@ class TestRPBC(BaseRtypingTest):
                 fr = fr2
             return getorbuild(fr)
 
-        res = self.interpret(f1, [0])
+        res = self.interpret(f1, [0]) 
         assert res == 7
-        res = self.interpret(f1, [1])
+        res = self.interpret(f1, [1]) 
         assert res == 3
 
     def test_call_memoized_function_with_bools(self):
@@ -359,25 +357,25 @@ class TestRPBC(BaseRtypingTest):
 
     def test_call_memoized_cache(self):
 
-        # this test checks that we add a separate field
-        # per specialization and also it uses a subclass of
+        # this test checks that we add a separate field 
+        # per specialization and also it uses a subclass of 
         # the standard rpython.rlib.cache.Cache
 
         from rpython.rlib.cache import Cache
         fr1 = Freezing()
         fr2 = Freezing()
 
-        class Cache1(Cache):
-            def _build(self, key):
-                "NOT_RPYTHON"
+        class Cache1(Cache): 
+            def _build(self, key): 
+                "NOT_RPYTHON" 
                 if key is fr1:
-                    return fr2
+                    return fr2 
                 else:
-                    return fr1
+                    return fr1 
 
-        class Cache2(Cache):
-            def _build(self, key):
-                "NOT_RPYTHON"
+        class Cache2(Cache): 
+            def _build(self, key): 
+                "NOT_RPYTHON" 
                 a = 1
                 if key is fr1:
                     result = eval("a+2")
@@ -396,9 +394,9 @@ class TestRPBC(BaseRtypingTest):
             newfr = cache1.getorbuild(fr)
             return cache2.getorbuild(newfr)
 
-        res = self.interpret(f1, [0])
+        res = self.interpret(f1, [0])  
         assert res == 3
-        res = self.interpret(f1, [1])
+        res = self.interpret(f1, [1]) 
         assert res == 7
 
     def test_call_memo_with_single_value(self):
@@ -527,7 +525,7 @@ class TestRPBC(BaseRtypingTest):
         res = self.interpret(f, [7])
         assert res == 42
 
-    def test_simple_function_pointer(self):
+    def test_simple_function_pointer(self): 
         def f1(x):
             return x + 1
         def f2(x):
@@ -535,7 +533,7 @@ class TestRPBC(BaseRtypingTest):
 
         l = [f1, f2]
 
-        def pointersimple(i):
+        def pointersimple(i): 
             return l[i](i)
 
         res = self.interpret(pointersimple, [1])
@@ -623,7 +621,7 @@ class TestRPBC(BaseRtypingTest):
         class A(object): pass
         def none():
             return None
-
+        
         def f(i):
             if i == 1:
                 return none()
@@ -633,7 +631,7 @@ class TestRPBC(BaseRtypingTest):
         assert not res
         res = self.interpret(f, [0])
         assert self.ll_to_string(res) == "ab"
-
+            
         def g(i):
             if i == 1:
                 return none()
@@ -644,7 +642,7 @@ class TestRPBC(BaseRtypingTest):
         res = self.interpret(g, [0])
         assert self.class_name(res) == 'A'
 
-
+    
     def test_conv_from_classpbcset_to_larger(self):
         class A(object): pass
         class B(A): pass
@@ -654,7 +652,7 @@ class TestRPBC(BaseRtypingTest):
             return A
         def b():
             return B
-
+        
 
         def g(i):
             if i == 1:
@@ -684,10 +682,10 @@ class TestRPBC(BaseRtypingTest):
         res = self.interpret(g, [0, 0])
         assert self.class_name(res) == 'C'
         res = self.interpret(g, [0, 1])
-        assert self.class_name(res) == 'B'
+        assert self.class_name(res) == 'B'    
         res = self.interpret(g, [1, 0])
-        assert self.class_name(res) == 'A'
-
+        assert self.class_name(res) == 'A'    
+        
     def test_call_starargs(self):
         def g(x=-100, *arg):
             return x + len(arg)
@@ -851,7 +849,7 @@ class TestRPBC(BaseRtypingTest):
             return f1
         def b():
             return f2
-
+        
 
         def g(i):
             if i == 1:
@@ -934,7 +932,7 @@ class TestRPBC(BaseRtypingTest):
         class B(A):
             def meth(self, a, b=0):
                 return a+b
-
+            
         class C(A):
             def meth(self, a, b=0):
                 return a*b
@@ -951,7 +949,7 @@ class TestRPBC(BaseRtypingTest):
         assert res == 1+3+2+7+11
         res = self.interpret(f, [1])
         assert res == 3*2+11*7
-
+        
 
     def test_multiple_ll_one_hl_op(self):
         class E(Exception):
@@ -1611,7 +1609,7 @@ class TestRPBC(BaseRtypingTest):
             if a.func:
                 return a.func(n)
             return -1
-
+        
         res = self.interpret(fn, [0])
         assert res == -1
 
@@ -1642,53 +1640,77 @@ class TestRPBC(BaseRtypingTest):
         res = self.interpret(g, [])
         assert res == False
 
-    def test_class___name__(self):
-        class Base(object): pass
-        class ASub(Base): pass
-        def g(n):
-            if n == 1:
-                x = Base()
-            else:
-                x = ASub()
-            return x.__class__.__name__
-        res = self.interpret(g, [1])
-        assert self.ll_to_string(res) == "Base"
-        res = self.interpret(g, [2])
-        assert self.ll_to_string(res) == "ASub"
+class TestLLtype(BaseTestRPBC, LLRtypeMixin):
+    pass
 
-    def test_str_class(self):
-        class Base(object): pass
-        class ASub(Base): pass
-        def g(n):
-            if n == 1:
-                x = Base()
-            else:
-                x = ASub()
-            return str(x.__class__)
-        res = self.interpret(g, [1])
-        assert self.ll_to_string(res) == "Base"
-        res = self.interpret(g, [2])
-        assert self.ll_to_string(res) == "ASub"
-
-    def test_bug_callfamily(self):
-        def cb1():
-            xxx    # never actually called
-        def cb2():
-            pass
-        def g(cb, result):
-            assert (cb is None) == (result == 0)
-        def h(cb):
-            cb()
-        def f():
-            g(None, 0)
-            g(cb1, 1)
-            g(cb2, 2)
-            h(cb2)
-            return 42
-        res = self.interpret(f, [])
-        assert res == 42
+class TestOOtype(BaseTestRPBC, OORtypeMixin):
+    pass
 
 # ____________________________________________________________
+
+class BaseTestRPBCExtra(BaseRtypingTest):
+    
+    def test_folding_specialize_support(self):
+
+        class S(object):
+            
+            def w(s, x):
+                if isinstance(x, int):
+                    return x
+                if isinstance(x, str):
+                    return len(x)
+                return -1
+            w._annspecialcase_ = "specialize:w"
+
+            def _freeze_(self):
+                return True
+
+        s = S()
+
+        def f(i, n):
+            w = s.w
+            if i == 0:
+                return w(0)
+            elif i == 1:
+                return w("abc")
+            elif i == 2:
+                return w(3*n)
+            elif i == 3:
+                return w(str(n))
+            return -1
+
+        class P(policy.AnnotatorPolicy):
+            def specialize__w(pol, funcdesc, args_s):
+                typ = args_s[1].knowntype
+                if args_s[0].is_constant() and args_s[1].is_constant():
+                    x = args_s[1].const
+                    v = s.w(x)
+                    builder = specialize.make_constgraphbuilder(2, v)
+                    return funcdesc.cachedgraph(x, builder=builder)
+                return funcdesc.cachedgraph(typ)
+
+        p = P()
+        
+        res = self.interpret(f, [0, 66], policy=p)
+        assert res == 0
+        res = self.interpret(f, [1, 66], policy=p)
+        assert res == 3
+        res = self.interpret(f, [2, 4], policy=p)
+        assert res == 12
+        res = self.interpret(f, [3, 5555], policy=p)
+        assert res == 4
+            
+class TestExtraLLtype(BaseTestRPBCExtra, LLRtypeMixin):
+    pass
+
+class TestExtraOOtype(BaseTestRPBCExtra, OORtypeMixin):
+    pass
+
+# ____________________________________________________________
+# We don't care about the following test_hlinvoke tests working on
+# ootype. Maybe later. This kind of thing is only used in rdict
+# anyway, that will probably have a different kind of implementation
+# in ootype.
 
 def test_hlinvoke_simple():
     def f(a,b):
@@ -1696,8 +1718,9 @@ def test_hlinvoke_simple():
     from rpython.translator import translator
     from rpython.annotator import annrpython
     a = annrpython.RPythonAnnotator()
-
-    s_f = a.bookkeeper.immutablevalue(f)
+    from rpython.annotator import model as annmodel
+    
+    s_f = a.bookkeeper.immutablevalue(f) 
     a.bookkeeper.emulate_pbc_call('f', s_f, [annmodel.SomeInteger(), annmodel.SomeInteger()])
     a.complete()
 
@@ -1714,7 +1737,7 @@ def test_hlinvoke_simple():
     r_f = rt.getrepr(s_f)
 
     s_R = a.bookkeeper.immutablevalue(r_f)
-    s_ll_f = lltype_to_annotation(r_f.lowleveltype)
+    s_ll_f = annmodel.lltype_to_annotation(r_f.lowleveltype)
     ll_h_graph = annlowlevel.annotate_lowlevel_helper(a, ll_h, [s_R, s_ll_f, annmodel.SomeInteger()])
     assert a.binding(ll_h_graph.getreturnvar()).knowntype == int
     rt.specialize_more_blocks()
@@ -1733,7 +1756,8 @@ def test_hlinvoke_simple2():
         return a - b
     from rpython.annotator import annrpython
     a = annrpython.RPythonAnnotator()
-
+    from rpython.annotator import model as annmodel
+    
     def g(i):
         if i:
             f = f1
@@ -1741,7 +1765,7 @@ def test_hlinvoke_simple2():
             f = f2
         f(5,4)
         f(3,2)
-
+        
     a.build_types(g, [int])
 
     from rpython.rtyper import rtyper
@@ -1761,7 +1785,7 @@ def test_hlinvoke_simple2():
     r_f = rt.getrepr(s_f)
 
     s_R = a.bookkeeper.immutablevalue(r_f)
-    s_ll_f = lltype_to_annotation(r_f.lowleveltype)
+    s_ll_f = annmodel.lltype_to_annotation(r_f.lowleveltype)
     ll_h_graph= annlowlevel.annotate_lowlevel_helper(a, ll_h, [s_R, s_ll_f, annmodel.SomeInteger()])
     assert a.binding(ll_h_graph.getreturnvar()).knowntype == int
     rt.specialize_more_blocks()
@@ -1784,6 +1808,7 @@ def test_hlinvoke_hltype():
 
     from rpython.annotator import annrpython
     a = annrpython.RPythonAnnotator()
+    from rpython.annotator import model as annmodel
 
     def g():
         a = A(None)
@@ -1806,18 +1831,17 @@ def test_hlinvoke_hltype():
     r_f = rt.getrepr(s_f)
 
     s_R = a.bookkeeper.immutablevalue(r_f)
-    s_ll_f = lltype_to_annotation(r_f.lowleveltype)
+    s_ll_f = annmodel.lltype_to_annotation(r_f.lowleveltype)
     A_repr = rclass.getinstancerepr(rt, a.bookkeeper.getdesc(A).
                                     getuniqueclassdef())
-    ll_h_graph = annlowlevel.annotate_lowlevel_helper(
-        a, ll_h, [s_R, s_ll_f, SomePtr(A_repr.lowleveltype)])
+    ll_h_graph = annlowlevel.annotate_lowlevel_helper(a, ll_h, [s_R, s_ll_f, annmodel.SomePtr(A_repr.lowleveltype)])
     s = a.binding(ll_h_graph.getreturnvar())
     assert s.ll_ptrtype == A_repr.lowleveltype
     rt.specialize_more_blocks()
-
+    
     from rpython.rtyper.llinterp import LLInterpreter
     interp = LLInterpreter(rt)
-
+    
     #a.translator.view()
     c_a = A_repr.convert_const(A(None))
     res = interp.eval_graph(ll_h_graph, [None, None, c_a])
@@ -1833,6 +1857,7 @@ def test_hlinvoke_method_hltype():
 
     from rpython.annotator import annrpython
     a = annrpython.RPythonAnnotator()
+    from rpython.annotator import model as annmodel
 
     def g():
         a = A(None)
@@ -1862,18 +1887,17 @@ def test_hlinvoke_method_hltype():
     r_f = rt.getrepr(s_f)
 
     s_R = a.bookkeeper.immutablevalue(r_f)
-    s_ll_f = lltype_to_annotation(r_f.lowleveltype)
+    s_ll_f = annmodel.lltype_to_annotation(r_f.lowleveltype)
     A_repr = rclass.getinstancerepr(rt, a.bookkeeper.getdesc(A).
-                                    getuniqueclassdef())
-    ll_h_graph = annlowlevel.annotate_lowlevel_helper(
-        a, ll_h, [s_R, s_ll_f, SomePtr(A_repr.lowleveltype)])
+                                    getuniqueclassdef()) 
+    ll_h_graph = annlowlevel.annotate_lowlevel_helper(a, ll_h, [s_R, s_ll_f, annmodel.SomePtr(A_repr.lowleveltype)])
     s = a.binding(ll_h_graph.getreturnvar())
     assert s.ll_ptrtype == A_repr.lowleveltype
     rt.specialize_more_blocks()
 
-    from rpython.rtyper.llinterp import LLInterpreter
+    from rpython.rtyper.llinterp import LLInterpreter    
     interp = LLInterpreter(rt)
-
+    
     # low-level value is just the instance
     c_f = rclass.getinstancerepr(rt, Impl_def).convert_const(Impl())
     c_a = A_repr.convert_const(A(None))
@@ -1893,6 +1917,7 @@ def test_hlinvoke_pbc_method_hltype():
 
     from rpython.annotator import annrpython
     a = annrpython.RPythonAnnotator()
+    from rpython.annotator import model as annmodel
 
     i = Impl()
 
@@ -1917,17 +1942,16 @@ def test_hlinvoke_pbc_method_hltype():
     r_f = rt.getrepr(s_f)
 
     s_R = a.bookkeeper.immutablevalue(r_f)
-    s_ll_f = lltype_to_annotation(r_f.lowleveltype)
+    s_ll_f = annmodel.lltype_to_annotation(r_f.lowleveltype)
 
     A_repr = rclass.getinstancerepr(rt, a.bookkeeper.getdesc(A).
                                     getuniqueclassdef())
-    ll_h_graph = annlowlevel.annotate_lowlevel_helper(
-        a, ll_h, [s_R, s_ll_f, SomePtr(A_repr.lowleveltype)])
+    ll_h_graph = annlowlevel.annotate_lowlevel_helper(a, ll_h, [s_R, s_ll_f, annmodel.SomePtr(A_repr.lowleveltype)])
     s = a.binding(ll_h_graph.getreturnvar())
     assert s.ll_ptrtype == A_repr.lowleveltype
     rt.specialize_more_blocks()
 
-    from rpython.rtyper.llinterp import LLInterpreter
+    from rpython.rtyper.llinterp import LLInterpreter    
     interp = LLInterpreter(rt)
 
     c_f = r_f.convert_const(i.f)
@@ -1937,7 +1961,7 @@ def test_hlinvoke_pbc_method_hltype():
 
 # ____________________________________________________________
 
-class TestSmallFuncSets(TestRPBC):
+class TestLLtypeSmallFuncSets(TestLLtype):
     def setup_class(cls):
         from rpython.config.translationoption import get_combined_translation_config
         cls.config = get_combined_translation_config(translating=True)
@@ -1945,7 +1969,7 @@ class TestSmallFuncSets(TestRPBC):
 
     def interpret(self, fn, args, **kwds):
         kwds['config'] = self.config
-        return TestRPBC.interpret(fn, args, **kwds)
+        return TestLLtype.interpret(self, fn, args, **kwds)
 
 def test_smallfuncsets_basic():
     from rpython.translator.translator import TranslationContext, graphof

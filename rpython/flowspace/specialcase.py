@@ -1,70 +1,26 @@
-import os
 from rpython.flowspace.model import Constant
+from rpython.flowspace.operation import OperationName, Arity
+from rpython.rlib.rarithmetic import r_uint
+from rpython.rlib.objectmodel import we_are_translated
 
-SPECIAL_CASES = {}
+def sc_import(space, fn, args_w):
+    assert len(args_w) > 0 and len(args_w) <= 5, 'import needs 1 to 5 arguments'
+    args = [space.unwrap(arg) for arg in args_w]
+    return space.import_name(*args)
 
-def register_flow_sc(func):
-    """Decorator triggering special-case handling of ``func``.
-
-    When the flow graph builder sees ``func``, it calls the decorated function
-    with ``decorated_func(ctx, *args_w)``, where ``args_w`` is a sequence of
-    flow objects (Constants or Variables).
-    """
-    def decorate(sc_func):
-        SPECIAL_CASES[func] = sc_func
-    return decorate
-
-def redirect_function(srcfunc, dstfuncname):
-    @register_flow_sc(srcfunc)
-    def sc_redirected_function(ctx, *args_w):
-        components = dstfuncname.split('.')
-        obj = __import__('.'.join(components[:-1]))
-        for name in components[1:]:
-            obj = getattr(obj, name)
-        return ctx.appcall(obj, *args_w)
-
-
-@register_flow_sc(__import__)
-def sc_import(ctx, *args_w):
-    assert all(isinstance(arg, Constant) for arg in args_w)
-    args = [arg.value for arg in args_w]
-    return ctx.import_name(*args)
-
-@register_flow_sc(locals)
-def sc_locals(_, *args):
-    raise Exception(
-        "A function calling locals() is not RPython.  "
-        "Note that if you're translating code outside the PyPy "
-        "repository, a likely cause is that py.test's --assert=rewrite "
-        "mode is getting in the way.  You should copy the file "
-        "pytest.ini from the root of the PyPy repository into your "
-        "own project.")
-
-@register_flow_sc(getattr)
-def sc_getattr(ctx, w_obj, w_index, w_default=None):
-    if w_default is not None:
-        return ctx.appcall(getattr, w_obj, w_index, w_default)
-    else:
-        from rpython.flowspace.operation import op
-        return op.getattr(w_obj, w_index).eval(ctx)
-
-# _________________________________________________________________________
-
-redirect_function(open,       'rpython.rlib.rfile.create_file')
-redirect_function(os.fdopen,  'rpython.rlib.rfile.create_fdopen_rfile')
-redirect_function(os.tmpfile, 'rpython.rlib.rfile.create_temp_rfile')
-
-# on top of PyPy only: 'os.remove != os.unlink'
-# (on CPython they are '==', but not identical either)
-redirect_function(os.remove,  'os.unlink')
-
-redirect_function(os.path.isdir,   'rpython.rlib.rpath.risdir')
-redirect_function(os.path.isabs,   'rpython.rlib.rpath.risabs')
-redirect_function(os.path.normpath,'rpython.rlib.rpath.rnormpath')
-redirect_function(os.path.abspath, 'rpython.rlib.rpath.rabspath')
-redirect_function(os.path.join,    'rpython.rlib.rpath.rjoin')
-if hasattr(os.path, 'splitdrive'):
-    redirect_function(os.path.splitdrive, 'rpython.rlib.rpath.rsplitdrive')
+def sc_operator(space, fn, args_w):
+    opname = OperationName[fn]
+    if len(args_w) != Arity[opname]:
+        if opname == 'pow' and len(args_w) == 2:
+            args_w = args_w + [Constant(None)]
+        elif opname == 'getattr' and len(args_w) == 3:
+            return space.frame.do_operation('simple_call', Constant(getattr), *args_w)
+        else:
+            raise Exception("should call %r with exactly %d arguments" % (
+                fn, Arity[opname]))
+    # completely replace the call with the underlying
+    # operation and its limited implicit exceptions semantic
+    return getattr(space, opname)(*args_w)
 
 # _________________________________________________________________________
 # a simplified version of the basic printing routines, for RPython programs
@@ -88,3 +44,32 @@ def rpython_print_newline():
         s = '\n'
     import os
     os.write(1, s)
+
+# _________________________________________________________________________
+
+def sc_r_uint(space, r_uint, args_w):
+    # special case to constant-fold r_uint(32-bit-constant)
+    # (normally, the 32-bit constant is a long, and is not allowed to
+    # show up in the flow graphs at all)
+    [w_value] = args_w
+    if isinstance(w_value, Constant):
+        return Constant(r_uint(w_value.value))
+    return space.frame.do_operation('simple_call', space.wrap(r_uint), w_value)
+
+def sc_we_are_translated(space, we_are_translated, args_w):
+    return Constant(True)
+
+def sc_locals(space, locals, args):
+    raise Exception(
+        "A function calling locals() is not RPython.  "
+        "Note that if you're translating code outside the PyPy "
+        "repository, a likely cause is that py.test's --assert=rewrite "
+        "mode is getting in the way.  You should copy the file "
+        "pytest.ini from the root of the PyPy repository into your "
+        "own project.")
+
+SPECIAL_CASES = {__import__: sc_import, r_uint: sc_r_uint,
+        we_are_translated: sc_we_are_translated,
+        locals: sc_locals}
+for fn in OperationName:
+    SPECIAL_CASES[fn] = sc_operator

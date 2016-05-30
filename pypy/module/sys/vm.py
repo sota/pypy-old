@@ -1,20 +1,16 @@
 """
 Implementation of interpreter-level 'sys' routines.
 """
-
+from pypy.interpreter import gateway
+from pypy.interpreter.error import OperationError
+from pypy.interpreter.gateway import unwrap_spec, WrappedDefault
 from rpython.rlib import jit
 from rpython.rlib.runicode import MAXUNICODE
 
-from pypy.interpreter import gateway
-from pypy.interpreter.error import OperationError
-from pypy.interpreter.gateway import unwrap_spec
-
-
 # ____________________________________________________________
 
-
-@unwrap_spec(depth=int)
-def _getframe(space, depth=0):
+@unwrap_spec(w_depth = WrappedDefault(0))
+def _getframe(space, w_depth):
     """Return a frame object from the call stack.  If optional integer depth is
 given, return the frame object that many calls below the top of the stack.
 If that is deeper than the call stack, ValueError is raised.  The default
@@ -22,14 +18,10 @@ for depth is zero, returning the frame at the top of the call stack.
 
 This function should be used for internal and specialized
 purposes only."""
+    depth = space.int_w(w_depth)
     if depth < 0:
         raise OperationError(space.w_ValueError,
                              space.wrap("frame index must not be negative"))
-    return getframe(space, depth)
-
-
-@jit.look_inside_iff(lambda space, depth: jit.isconstant(depth))
-def getframe(space, depth):
     ec = space.getexecutioncontext()
     f = ec.gettopframe_nohidden()
     while True:
@@ -37,11 +29,11 @@ def getframe(space, depth):
             raise OperationError(space.w_ValueError,
                                  space.wrap("call stack is not deep enough"))
         if depth == 0:
-            f.mark_as_escaped()
-            return space.wrap(f)
+            break
         depth -= 1
         f = ec.getnextframe_nohidden(f)
-
+    f.mark_as_escaped()
+    return space.wrap(f)
 
 @unwrap_spec(new_limit="c_int")
 def setrecursionlimit(space, new_limit):
@@ -57,7 +49,8 @@ value to N reserves N/1000 times 768KB of stack space.
         raise OperationError(space.w_ValueError,
                              space.wrap("recursion limit must be positive"))
     space.sys.recursionlimit = new_limit
-    _stack_set_length_fraction(new_limit * 0.001)
+    if space.config.translation.type_system == 'lltype':
+        _stack_set_length_fraction(new_limit * 0.001)
 
 def getrecursionlimit(space):
     """Return the last value set by setrecursionlimit().
@@ -154,7 +147,9 @@ def exc_clear(space):
 to exc_info() will return (None,None,None) until another exception is
 raised and caught in the current thread or the execution stack returns to a
 frame where another exception is being handled."""
-    space.getexecutioncontext().clear_sys_exc_info()
+    operror = space.getexecutioncontext().sys_exc_info()
+    if operror is not None:
+        operror.clear(space)
 
 def settrace(space, w_func):
     """Set the global debug tracing function.  It will be called on each
@@ -232,6 +227,8 @@ def getwindowsversion(space):
 def get_dllhandle(space):
     if not space.config.objspace.usemodules.cpyext:
         return space.wrap(0)
+    if not space.config.objspace.usemodules._rawffi:
+        return space.wrap(0)
 
     return _get_dllhandle(space)
 
@@ -240,14 +237,10 @@ def _get_dllhandle(space):
     from pypy.module.cpyext.api import State
     handle = space.fromcache(State).get_pythonapi_handle()
 
-    # It used to be a CDLL
-    # from pypy.module._rawffi.interp_rawffi import W_CDLL
-    # from rpython.rlib.clibffi import RawCDLL
-    # cdll = RawCDLL(handle)
-    # return space.wrap(W_CDLL(space, "python api", cdll))
-    # Provide a cpython-compatible int
-    from rpython.rtyper.lltypesystem import lltype, rffi
-    return space.wrap(rffi.cast(lltype.Signed, handle))
+    # Make a dll object with it
+    from pypy.module._rawffi.interp_rawffi import W_CDLL, RawCDLL
+    cdll = RawCDLL(handle)
+    return space.wrap(W_CDLL(space, "python api", cdll))
 
 def getsizeof(space, w_object, w_default=None):
     """Not implemented on PyPy."""

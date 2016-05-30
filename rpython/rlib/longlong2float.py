@@ -7,9 +7,8 @@ in which it does not work.
 """
 
 from __future__ import with_statement
-import sys
 from rpython.annotator import model as annmodel
-from rpython.rlib.rarithmetic import r_int64, intmask
+from rpython.rlib.rarithmetic import r_int64
 from rpython.rtyper.lltypesystem import lltype, rffi
 from rpython.rtyper.extregistry import ExtRegistryEntry
 from rpython.translator.tool.cbuild import ExternalCompilationInfo
@@ -69,12 +68,14 @@ static unsigned int pypy__singlefloat2uint(float x) {
 uint2singlefloat = rffi.llexternal(
     "pypy__uint2singlefloat", [rffi.UINT], rffi.FLOAT,
     _callable=uint2singlefloat_emulator, compilation_info=eci,
-    _nowrapper=True, elidable_function=True, sandboxsafe=True)
+    _nowrapper=True, elidable_function=True, sandboxsafe=True,
+    oo_primitive="pypy__uint2singlefloat")
 
 singlefloat2uint = rffi.llexternal(
     "pypy__singlefloat2uint", [rffi.FLOAT], rffi.UINT,
     _callable=singlefloat2uint_emulator, compilation_info=eci,
-    _nowrapper=True, elidable_function=True, sandboxsafe=True)
+    _nowrapper=True, elidable_function=True, sandboxsafe=True,
+    oo_primitive="pypy__singlefloat2uint")
 
 
 class Float2LongLongEntry(ExtRegistryEntry):
@@ -100,46 +101,3 @@ class LongLong2FloatEntry(ExtRegistryEntry):
         [v_longlong] = hop.inputargs(lltype.SignedLongLong)
         hop.exception_cannot_occur()
         return hop.genop("convert_longlong_bytes_to_float", [v_longlong], resulttype=lltype.Float)
-
-# ____________________________________________________________
-
-
-# For encoding integers inside nonstandard NaN bit patterns.
-#   ff ff ff fe xx xx xx xx    (signed 32-bit int)
-nan_high_word_int32 = -2       # -2 == (int)0xfffffffe
-nan_encoded_zero = r_int64(nan_high_word_int32 << 32)
-
-def encode_int32_into_longlong_nan(value):
-    return (nan_encoded_zero +
-            rffi.cast(rffi.LONGLONG, rffi.cast(rffi.UINT, value)))
-
-def decode_int32_from_longlong_nan(value):
-    return rffi.cast(lltype.Signed, rffi.cast(rffi.INT, value))
-
-def is_int32_from_longlong_nan(value):
-    return intmask(value >> 32) == nan_high_word_int32
-
-CAN_ALWAYS_ENCODE_INT32 = (sys.maxint == 2147483647)
-
-def can_encode_int32(value):
-    if CAN_ALWAYS_ENCODE_INT32:
-        return True
-    return value == rffi.cast(lltype.Signed, rffi.cast(rffi.INT, value))
-
-def can_encode_float(value):
-    return intmask(float2longlong(value) >> 32) != nan_high_word_int32
-
-def maybe_decode_longlong_as_float(value):
-    # Decode a longlong value.  If a float, just return it as a float.
-    # If an encoded integer, return a float that has the (exact) same
-    # value.  This relies on the fact that casting from a decoded int
-    # to a float is an exact operation.  If we had full 64-bit
-    # integers, this cast would loose precision.  But this works
-    # because the integers are only 32-bit.  This would also work even
-    # if we encoded larger integers: as long as they are encoded
-    # inside a subset of the mantissa of a float, then the
-    # cast-to-float will be exact.
-    if is_int32_from_longlong_nan(value):
-        return float(decode_int32_from_longlong_nan(value))
-    else:
-        return longlong2float(value)

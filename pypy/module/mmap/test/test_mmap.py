@@ -1,21 +1,12 @@
 from __future__ import with_statement
 from rpython.tool.udir import udir
-import os, sys, py
+import os
 
 class AppTestMMap:
     spaceconfig = dict(usemodules=('mmap',))
 
     def setup_class(cls):
         cls.w_tmpname = cls.space.wrap(str(udir.join('mmap-')))
-
-    def setup_method(self, meth):
-        if getattr(meth, 'is_large', False):
-            if sys.maxsize < 2**32 and not self.runappdirect:
-                # this fails because it uses ll2ctypes to call the posix
-                # functions like 'open' and 'lseek', whereas a real compiled
-                # C program would macro-define them to their longlong versions
-                py.test.skip("emulation of files can't use "
-                             "larger-than-long offsets")
 
     def test_page_size(self):
         import mmap
@@ -533,13 +524,6 @@ class AppTestMMap:
         f.seek(0)
         m = mmap(f.fileno(), 6)
         assert m[-3:7] == "bar"
-        assert m.__getslice__(-3, 7) == "foobar"
-        m.__setslice__(2, 4, "zz")
-        assert m.__getslice__(-3, 7) == "fozzar"
-        raises(TypeError, m.__getslice__, "abc", 2)
-        raises(IndexError, m.__setslice__, 2, 4, None)
-
-        assert m[1:0:1] == ""
 
         f.close()
 
@@ -563,34 +547,6 @@ class AppTestMMap:
         assert len(b) == 6
         assert b[3] == "b"
         assert b[:] == "foobar"
-        m.close()
-        f.close()
-
-    def test_buffer_write(self):
-        from mmap import mmap
-        f = open(self.tmpname + "y", "w+")
-        f.write("foobar")
-        f.flush()
-        m = mmap(f.fileno(), 6)
-        m[5] = '?'
-        b = buffer(m)
-        exc = raises(TypeError, 'b[:3] = "FOO"')
-        assert str(exc.value) == "buffer is read-only"
-        m.close()
-        f.seek(0)
-        got = f.read()
-        assert got == "fooba?"
-        f.close()
-
-    def test_memoryview(self):
-        from mmap import mmap
-        f = open(self.tmpname + "y", "w+")
-        f.write("foobar")
-        f.flush()
-        m = mmap(f.fileno(), 6)
-        m[5] = '?'
-        exc = raises(TypeError, memoryview, m)
-        assert 'buffer interface' in str(exc.value)
         m.close()
         f.close()
 
@@ -657,7 +613,6 @@ class AppTestMMap:
                 assert m[0xFFFFFFF] == b'A'
             finally:
                 m.close()
-    test_large_offset.is_large = True
 
     def test_large_filesize(self):
         import mmap
@@ -675,7 +630,6 @@ class AppTestMMap:
                 assert m.size() ==  0x180000000
             finally:
                 m.close()
-    test_large_filesize.is_large = True
 
     def test_all(self):
         # this is a global test, ported from test_mmap.py
@@ -858,17 +812,3 @@ class AppTestMMap:
         assert m.read(10) == "ABCDEABCDE"
         m.close()
         f.close()
-
-    def test_empty_file(self):
-        import mmap
-        f = open(self.tmpname, 'w+b')
-        f.close()
-        with open(self.tmpname, 'rb') as f:
-            try:
-                m = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
-                m.close()
-                assert False, "should not have been able to mmap empty file"
-            except ValueError as e:
-                assert str(e) == "cannot mmap an empty file"
-            except BaseException as e:
-                assert False, "unexpected exception: " + str(e)

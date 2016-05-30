@@ -7,7 +7,6 @@ from pypy.interpreter.typedef import interp_attrproperty_w, interp_attrproperty
 from pypy.module._csv.interp_csv import _build_dialect
 from pypy.module._csv.interp_csv import (QUOTE_MINIMAL, QUOTE_ALL,
                                          QUOTE_NONNUMERIC, QUOTE_NONE)
-from pypy.objspace.std.util import wrap_parsestringerror
 
 (START_RECORD, START_FIELD, ESCAPED_CHAR, IN_FIELD,
  IN_QUOTED_FIELD, ESCAPE_IN_QUOTED_FIELD, QUOTE_IN_QUOTED_FIELD,
@@ -40,19 +39,19 @@ class W_Reader(W_Root):
         field_builder.append(c)
 
     def save_field(self, field_builder):
-        space = self.space
         field = field_builder.build()
         if self.numeric_field:
-            from rpython.rlib.rstring import ParseStringError
-            from rpython.rlib.rfloat import string_to_float
+            from pypy.objspace.std.strutil import ParseStringError
+            from pypy.objspace.std.strutil import string_to_float
             self.numeric_field = False
             try:
                 ff = string_to_float(field)
-            except ParseStringError as e:
-                raise wrap_parsestringerror(space, e, space.wrap(field))
-            w_obj = space.wrap(ff)
+            except ParseStringError, e:
+                raise OperationError(self.space.w_ValueError,
+                                     self.space.wrap(e.msg))
+            w_obj = self.space.wrap(ff)
         else:
-            w_obj = space.wrap(field)
+            w_obj = self.space.wrap(field)
         self.fields_w.append(w_obj)
 
     def next_w(self):
@@ -245,7 +244,8 @@ def csv_reader(space, w_iterator, w_dialect=None,
     return W_Reader(space, dialect, w_iter)
 
 W_Reader.typedef = TypeDef(
-        '_csv.reader',
+        'reader',
+        __module__ = '_csv',
         dialect = interp_attrproperty_w('dialect', W_Reader),
         line_num = interp_attrproperty('line_num', W_Reader),
         __iter__ = interp2app(W_Reader.iter_w),

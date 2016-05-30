@@ -1,18 +1,13 @@
 from rpython.rlib.rarithmetic import ovfcheck, LONG_BIT, maxint, is_valid_int
 from rpython.rlib.objectmodel import we_are_translated
 from rpython.jit.metainterp.resoperation import rop, ResOperation
-from rpython.jit.metainterp.optimizeopt.info import AbstractInfo, INFO_NONNULL,\
-     INFO_UNKNOWN, INFO_NULL
-from rpython.jit.metainterp.history import ConstInt
-
-
+from rpython.jit.metainterp.history import BoxInt, ConstInt
 MAXINT = maxint
 MININT = -maxint - 1
 
-
-class IntBound(AbstractInfo):
+class IntBound(object):
     _attrs_ = ('has_upper', 'has_lower', 'upper', 'lower')
-
+    
     def __init__(self, lower, upper):
         self.has_upper = True
         self.has_lower = True
@@ -34,7 +29,7 @@ class IntBound(AbstractInfo):
 
     def make_lt(self, other):
         return self.make_le(other.add(-1))
-
+ 
     def make_ge(self, other):
         if other.has_lower:
             if not self.has_lower or other.lower > self.lower:
@@ -43,32 +38,18 @@ class IntBound(AbstractInfo):
                 return True
         return False
 
-    def make_ge_const(self, other):
-        return self.make_ge(ConstIntBound(other))
-
-    def make_gt_const(self, other):
-        return self.make_gt(ConstIntBound(other))
-
-    def make_eq_const(self, intval):
-        self.has_upper = True
-        self.has_lower = True
-        self.upper = intval
-        self.lower = intval
-
     def make_gt(self, other):
         return self.make_ge(other.add(1))
 
-    def is_constant(self):
-        return self.has_upper and self.has_lower and self.lower == self.upper
+    def make_constant(self, value):
+        self.has_lower = True
+        self.has_upper = True
+        self.lower = value
+        self.upper = value
 
-    def getint(self):
-        assert self.is_constant()
-        return self.lower
-
-    def equal(self, value):
-        if not self.is_constant():
-            return False
-        return self.lower == value
+    def make_unbounded(self):
+        self.has_lower = False
+        self.has_upper = False
 
     def bounded(self):
         return self.has_lower and self.has_upper
@@ -105,7 +86,7 @@ class IntBound(AbstractInfo):
                 r = True
 
         return r
-
+    
     def add(self, offset):
         res = self.clone()
         try:
@@ -120,7 +101,7 @@ class IntBound(AbstractInfo):
 
     def mul(self, value):
         return self.mul_bound(IntBound(value, value))
-
+    
     def add_bound(self, other):
         res = self.clone()
         if other.has_upper:
@@ -134,7 +115,7 @@ class IntBound(AbstractInfo):
             try:
                 res.lower = ovfcheck(res.lower + other.lower)
             except OverflowError:
-                res.has_lower = False
+                res.has_lower = False            
         else:
             res.has_lower = False
         return res
@@ -152,7 +133,7 @@ class IntBound(AbstractInfo):
             try:
                 res.lower = ovfcheck(res.lower - other.upper)
             except OverflowError:
-                res.has_lower = False
+                res.has_lower = False            
         else:
             res.has_lower = False
         return res
@@ -215,11 +196,8 @@ class IntBound(AbstractInfo):
         else:
             return IntUnbounded()
 
+
     def contains(self, val):
-        if not isinstance(val, int):
-            if ((not self.has_lower or self.lower == MININT) and
-                not self.has_upper or self.upper == MAXINT):
-                return True # workaround for address as int
         if self.has_lower and val < self.lower:
             return False
         if self.has_upper and val > self.upper:
@@ -227,7 +205,6 @@ class IntBound(AbstractInfo):
         return True
 
     def contains_bound(self, other):
-        assert isinstance(other, IntBound)
         if other.has_lower:
             if not self.contains(other.lower):
                 return False
@@ -239,7 +216,7 @@ class IntBound(AbstractInfo):
         elif self.has_upper:
             return False
         return True
-
+        
     def __repr__(self):
         if self.has_lower:
             l = '%d' % self.lower
@@ -257,63 +234,59 @@ class IntBound(AbstractInfo):
         res.has_upper = self.has_upper
         return res
 
-    def make_guards(self, box, guards, optimizer):
-        if self.is_constant():
-            guards.append(ResOperation(rop.GUARD_VALUE,
-                                       [box, ConstInt(self.upper)]))
-            return
+    def make_guards(self, box, guards):
         if self.has_lower and self.lower > MININT:
             bound = self.lower
-            op = ResOperation(rop.INT_GE, [box, ConstInt(bound)])
+            res = BoxInt()
+            op = ResOperation(rop.INT_GE, [box, ConstInt(bound)], res)
             guards.append(op)
-            op = ResOperation(rop.GUARD_TRUE, [op])
+            op = ResOperation(rop.GUARD_TRUE, [res], None)
             guards.append(op)
         if self.has_upper and self.upper < MAXINT:
             bound = self.upper
-            op = ResOperation(rop.INT_LE, [box, ConstInt(bound)])
+            res = BoxInt()
+            op = ResOperation(rop.INT_LE, [box, ConstInt(bound)], res)
             guards.append(op)
-            op = ResOperation(rop.GUARD_TRUE, [op])
+            op = ResOperation(rop.GUARD_TRUE, [res], None)
             guards.append(op)
+    
 
-    def is_bool(self):
-        return (self.bounded() and self.known_ge(ConstIntBound(0)) and
-                self.known_le(ConstIntBound(1)))
+class IntUpperBound(IntBound):
+    def __init__(self, upper):
+        self.has_upper = True
+        self.has_lower = False
+        self.upper = upper
+        self.lower = 0
 
-    def make_bool(self):
-        self.intersect(IntBound(0, 1))
+class IntLowerBound(IntBound):
+    def __init__(self, lower):
+        self.has_upper = False
+        self.has_lower = True
+        self.upper = 0
+        self.lower = lower
 
-    def getconst(self):
-        if not self.is_constant():
-            raise Exception("not a constant")
-        return ConstInt(self.getint())
+class IntUnbounded(IntBound):
+    def __init__(self):
+        self.has_upper = False
+        self.has_lower = False
+        self.upper = 0
+        self.lower = 0
 
-    def getnullness(self):
-        if self.known_gt(IntBound(0, 0)) or \
-           self.known_lt(IntBound(0, 0)):
-            return INFO_NONNULL
-        if self.known_ge(IntBound(0, 0)) and \
-           self.known_le(IntBound(0, 0)):
-            return INFO_NULL
-        return INFO_UNKNOWN
-
-def IntUpperBound(upper):
-    b = IntBound(lower=0, upper=upper)
-    b.has_lower = False
-    return b
-
-def IntLowerBound(lower):
-    b = IntBound(upper=0, lower=lower)
-    b.has_upper = False
-    return b
-
-def IntUnbounded():
-    b = IntBound(upper=0, lower=0)
-    b.has_lower = False
-    b.has_upper = False
-    return b
-
-def ConstIntBound(value):
-    return IntBound(value, value)
+class ImmutableIntUnbounded(IntUnbounded):
+    def _raise(self):
+        raise TypeError('ImmutableIntUnbounded is immutable')
+    def make_le(self, other):
+        self._raise()
+    def make_lt(self, other):
+        self._raise()
+    def make_ge(self, other):
+        self._raise()
+    def make_gt(self, other):
+        self._raise()
+    def make_constant(self, value):
+        self._raise()
+    def intersect(self, other):        
+        self._raise()
 
 def min4(t):
     return min(min(t[0], t[1]), min(t[2], t[3]))

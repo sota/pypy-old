@@ -3,31 +3,32 @@ import py
 from pypy.conftest import pypydir
 from pypy.tool.release import package
 from pypy.module.sys.version import  CPYTHON_VERSION
-from rpython.tool.udir import udir
-import tarfile, zipfile, sys
+import tarfile, zipfile, os, sys
 
-class TestPackaging:
-    def setup_class(cls):
-        # make sure we have sort of pypy-c
-        if sys.platform == 'win32':
-            basename = 'pypy-c.exe'
-            cls.rename_pypy_c = 'pypy-c'
-            cls.exe_name_in_archive = 'pypy-c.exe'
-        else:
-            basename = 'pypy-c'
-            cls.rename_pypy_c = 'pypy'
-            cls.exe_name_in_archive = 'bin/pypy'
-        cls.pypy_c = py.path.local(pypydir).join('goal', basename)
-
-    def test_dir_structure(self, test='test'):
-        retval, builddir = package.package(
-            '--without-cffi', str(py.path.local(pypydir).dirpath()),
-            test, self.rename_pypy_c, _fake=True)
-        assert retval == 0
+def test_dir_structure(test='test'):
+    # make sure we have sort of pypy-c
+    if sys.platform == 'win32':
+        basename = 'pypy-c.exe'
+        rename_pypy_c = 'pypy-c'
+        exe_name_in_archive = 'pypy-c.exe'
+    else:
+        basename = 'pypy-c'
+        rename_pypy_c = 'pypy'
+        exe_name_in_archive = 'bin/pypy'
+    pypy_c = py.path.local(pypydir).join('goal', basename)
+    if not pypy_c.check():
+        pypy_c.write("#!/bin/sh")
+        pypy_c.chmod(0755)
+        fake_pypy_c = True
+    else:
+        fake_pypy_c = False
+    try:
+        builddir = package.package(py.path.local(pypydir).dirpath(), test,
+                                   rename_pypy_c)
         prefix = builddir.join(test)
         cpyver = '%d.%d' % CPYTHON_VERSION[:2]
         assert prefix.join('lib-python', cpyver, 'test').check()
-        assert prefix.join(self.exe_name_in_archive).check()
+        assert prefix.join(exe_name_in_archive).check()
         assert prefix.join('lib_pypy', 'syslog.py').check()
         assert not prefix.join('lib_pypy', 'py').check()
         assert not prefix.join('lib_pypy', 'ctypes_configure').check()
@@ -39,7 +40,7 @@ class TestPackaging:
         else:
             th = tarfile.open(str(builddir.join('%s.tar.bz2' % test)))
             syslog = th.getmember('%s/lib_pypy/syslog.py' % test)
-            exe = th.getmember('%s/%s' % (test, self.exe_name_in_archive))
+            exe = th.getmember('%s/%s' % (test, exe_name_in_archive))
             assert syslog.mode == 0644
             assert exe.mode == 0755
             assert exe.uname == ''
@@ -60,32 +61,23 @@ class TestPackaging:
                     assert zh.open(member)
                 else:
                     assert th.getmember(member)
-            else:
-                print 'include file "%s" not found, are we translated?' % includedir.join(name)
         check_include('Python.h')
         check_include('modsupport.h')
         check_include('pypy_decl.h')
-        check_include('numpy/arrayobject.h')
+    finally:
+        if fake_pypy_c:
+            pypy_c.remove()
 
-    def test_options(self, test='testoptions'):
-        builddir = udir.ensure("build", dir=True)
-        retval, builddir = package.package(
-            '--without-cffi', '--builddir', str(builddir),
-            str(py.path.local(pypydir).dirpath()),
-            test, self.rename_pypy_c, _fake=True)
-
-    def test_with_zipfile_module(self):
-        prev = package.USE_ZIPFILE_MODULE
-        try:
-            package.USE_ZIPFILE_MODULE = True
-            self.test_dir_structure(test='testzipfile')
-        finally:
-            package.USE_ZIPFILE_MODULE = prev
-
+def test_with_zipfile_module():
+    from pypy.tool.release import package
+    prev = package.USE_ZIPFILE_MODULE
+    try:
+        package.USE_ZIPFILE_MODULE = True
+        test_dir_structure(test='testzipfile')
+    finally:
+        package.USE_ZIPFILE_MODULE = prev
 
 def test_fix_permissions(tmpdir):
-    if sys.platform == 'win32':
-        py.test.skip('needs to be more general for windows')
     def check(f, mode):
         assert f.stat().mode & 0777 == mode
     #
@@ -107,28 +99,3 @@ def test_fix_permissions(tmpdir):
     check(file1, 0644)
     check(file2, 0644)
     check(pypy,  0755)
-
-def test_generate_license():
-    py.test.skip('generation of license from platform documentation is disabled')
-    from os.path import dirname, abspath, join, exists
-    class Options(object):
-        pass
-    options = Options()
-    basedir = dirname(dirname(dirname(dirname(dirname(abspath(__file__))))))
-    options.no_tk = False
-    if sys.platform == 'win32':
-        for p in [join(basedir, r'..\..\..\local'), #buildbot
-                  join(basedir, r'..\local')]: # pypy/doc/windows.rst
-            if exists(p):
-                license_base = p
-                break
-        else:
-            license_base = 'unkown'
-        options.license_base = license_base
-    else:
-        options.license_base = '/usr/share/doc'
-    license = package.generate_license(py.path.local(basedir), options)
-    assert 'bzip2' in license
-    assert 'openssl' in license
-    assert 'Tcl' in license
-

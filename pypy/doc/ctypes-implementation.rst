@@ -72,11 +72,7 @@ necessary; this too could be improved.
 Here is a list of the limitations and missing features of the
 current implementation:
 
-* ``ctypes.pythonapi`` is missing.  In previous versions, it was present
-  and redirected to the `cpyext` C API emulation layer, but our
-  implementation did not do anything sensible about the GIL and the
-  functions were named with an extra "Py", for example
-  ``PyPyInt_FromLong()``.  It was removed for being unhelpful.
+* No support for ``PyXxx`` functions from ``libpython``, for obvious reasons.
 
 * We copy Python strings instead of having pointers to raw buffers
 

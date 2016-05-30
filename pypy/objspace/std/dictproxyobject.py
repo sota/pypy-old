@@ -1,13 +1,15 @@
-from rpython.rlib import rerased
-from rpython.rlib.objectmodel import iteritems_with_hash
-
-from pypy.interpreter.error import OperationError, oefmt
-from pypy.objspace.std.dictmultiobject import (
-    DictStrategy, create_iterator_classes)
+from pypy.objspace.std.model import registerimplementation, W_Object
+from pypy.objspace.std.register_all import register_all
+from pypy.objspace.std.dictmultiobject import W_DictMultiObject, create_iterator_classes
+from pypy.objspace.std.dictmultiobject import DictStrategy
 from pypy.objspace.std.typeobject import unwrap_cell
+from pypy.interpreter.error import OperationError, operationerrfmt
+
+from rpython.rlib import rerased
 
 
 class DictProxyStrategy(DictStrategy):
+
     erase, unerase = rerased.new_erasing_pair("dictproxy")
     erase = staticmethod(erase)
     unerase = staticmethod(unerase)
@@ -60,6 +62,7 @@ class DictProxyStrategy(DictStrategy):
             w_type.dict_w[key] = w_value
 
     def setdefault(self, w_dict, w_key, w_default):
+        space = self.space
         w_result = self.getitem(w_dict, w_key)
         if w_result is not None:
             return w_result
@@ -81,7 +84,7 @@ class DictProxyStrategy(DictStrategy):
 
     def w_keys(self, w_dict):
         space = self.space
-        return space.newlist_bytes(self.unerase(w_dict.dstorage).dict_w.keys())
+        return space.newlist_str(self.unerase(w_dict.dstorage).dict_w.keys())
 
     def values(self, w_dict):
         return [unwrap_cell(self.space, w_value) for w_value in self.unerase(w_dict.dstorage).dict_w.itervalues()]
@@ -95,8 +98,8 @@ class DictProxyStrategy(DictStrategy):
         space = self.space
         w_type = self.unerase(w_dict.dstorage)
         if not w_type.is_heaptype():
-            raise oefmt(space.w_TypeError,
-                        "can't clear dictionary of type '%N'", w_type)
+            msg = "can't clear dictionary of type '%s'"
+            raise operationerrfmt(space.w_TypeError, msg, w_type.name)
         w_type.dict_w.clear()
         w_type.mutated(None)
 
@@ -104,8 +107,8 @@ class DictProxyStrategy(DictStrategy):
         return self.unerase(w_dict.dstorage).dict_w.iterkeys()
     def getitervalues(self, w_dict):
         return self.unerase(w_dict.dstorage).dict_w.itervalues()
-    def getiteritems_with_hash(self, w_dict):
-        return iteritems_with_hash(self.unerase(w_dict.dstorage).dict_w)
+    def getiteritems(self, w_dict):
+        return self.unerase(w_dict.dstorage).dict_w.iteritems()
     def wrapkey(space, key):
         return space.wrap(key)
     def wrapvalue(space, value):

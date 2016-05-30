@@ -2,12 +2,10 @@ import py
 from rpython.rtyper.lltypesystem import lltype, rffi, llmemory
 from rpython.rtyper.lltypesystem.lloperation import llop
 from rpython.jit.backend.llsupport import symbolic, support
-from rpython.jit.metainterp.history import AbstractDescr, getkind, FLOAT, INT
+from rpython.jit.metainterp.history import AbstractDescr, getkind
 from rpython.jit.metainterp import history
 from rpython.jit.codewriter import heaptracker, longlong
 from rpython.jit.codewriter.longlong import is_longlong
-from rpython.jit.metainterp.optimizeopt import intbounds
-from rpython.rtyper import rclass
 
 
 class GcCache(object):
@@ -22,7 +20,7 @@ class GcCache(object):
         self._cache_interiorfield = {}
 
     def init_size_descr(self, STRUCT, sizedescr):
-        pass
+        assert isinstance(STRUCT, lltype.GcStruct)
 
     def init_array_descr(self, ARRAY, arraydescr):
         assert (isinstance(ARRAY, lltype.GcArray) or
@@ -35,70 +33,36 @@ class GcCache(object):
 class SizeDescr(AbstractDescr):
     size = 0      # help translation
     tid = llop.combine_ushort(lltype.Signed, 0, 0)
-    vtable = lltype.nullptr(rclass.OBJECT_VTABLE)
-    immutable_flag = False
 
-    def __init__(self, size, gc_fielddescrs=None, all_fielddescrs=None,
-                 vtable=lltype.nullptr(rclass.OBJECT_VTABLE),
-                 immutable_flag=False):
-        assert lltype.typeOf(vtable) == lltype.Ptr(rclass.OBJECT_VTABLE)
+    def __init__(self, size, count_fields_if_immut=-1):
         self.size = size
-        self.gc_fielddescrs = gc_fielddescrs
-        self.all_fielddescrs = all_fielddescrs
-        self.vtable = vtable
-        self.immutable_flag = immutable_flag
+        self.count_fields_if_immut = count_fields_if_immut
 
-    def get_all_fielddescrs(self):
-        return self.all_fielddescrs
+    def count_fields_if_immutable(self):
+        return self.count_fields_if_immut
 
     def repr_of_descr(self):
         return '<SizeDescr %s>' % self.size
 
-    def is_object(self):
-        return bool(self.vtable)
+class SizeDescrWithVTable(SizeDescr):
+    def as_vtable_size_descr(self):
+        return self
 
-    def is_valid_class_for(self, struct):
-        objptr = lltype.cast_opaque_ptr(rclass.OBJECTPTR, struct)
-        cls = llmemory.cast_adr_to_ptr(
-            heaptracker.int2adr(self.get_vtable()),
-            lltype.Ptr(rclass.OBJECT_VTABLE))
-        # this first comparison is necessary, since we want to make sure
-        # that vtable for JitVirtualRef is the same without actually reading
-        # fields
-        return objptr.typeptr == cls or rclass.ll_isinstance(objptr, cls)
+BaseSizeDescr = SizeDescr
 
-    def is_immutable(self):
-        return self.immutable_flag
-
-    def get_vtable(self):
-        return heaptracker.adr2int(llmemory.cast_ptr_to_adr(self.vtable))
-
-    def get_type_id(self):
-        assert self.tid
-        return self.tid
-
-def get_size_descr(gccache, STRUCT, vtable=lltype.nullptr(rclass.OBJECT_VTABLE)):
+def get_size_descr(gccache, STRUCT):
     cache = gccache._cache_size
-    assert not isinstance(vtable, bool)
     try:
         return cache[STRUCT]
     except KeyError:
         size = symbolic.get_size(STRUCT, gccache.translate_support_code)
-        immutable_flag = heaptracker.is_immutable_struct(STRUCT)
-        if vtable:
-            assert heaptracker.has_gcstruct_a_vtable(STRUCT)
+        count_fields_if_immut = heaptracker.count_fields_if_immutable(STRUCT)
+        if heaptracker.has_gcstruct_a_vtable(STRUCT):
+            sizedescr = SizeDescrWithVTable(size, count_fields_if_immut)
         else:
-            assert not heaptracker.has_gcstruct_a_vtable(STRUCT)
-        sizedescr = SizeDescr(size, vtable=vtable,
-                              immutable_flag=immutable_flag)
+            sizedescr = SizeDescr(size, count_fields_if_immut)
         gccache.init_size_descr(STRUCT, sizedescr)
         cache[STRUCT] = sizedescr
-        # XXX do we really need gc_fielddescrs if we also have
-        # all_fielddescrs and can ask is_pointer_field() on them?
-        gc_fielddescrs = heaptracker.gc_fielddescrs(gccache, STRUCT)
-        sizedescr.gc_fielddescrs = gc_fielddescrs
-        all_fielddescrs = heaptracker.all_fielddescrs(gccache, STRUCT)
-        sizedescr.all_fielddescrs = all_fielddescrs
         return sizedescr
 
 
@@ -112,40 +76,17 @@ FLAG_SIGNED   = 'S'
 FLAG_STRUCT   = 'X'
 FLAG_VOID     = 'V'
 
-class ArrayOrFieldDescr(AbstractDescr):
-    vinfo = None
-
-    def get_vinfo(self):
-        return self.vinfo
-
-class FieldDescr(ArrayOrFieldDescr):
+class FieldDescr(AbstractDescr):
     name = ''
     offset = 0      # help translation
     field_size = 0
     flag = '\x00'
 
-    def __init__(self, name, offset, field_size, flag, index_in_parent=0,
-                 is_pure=False):
+    def __init__(self, name, offset, field_size, flag):
         self.name = name
         self.offset = offset
         self.field_size = field_size
         self.flag = flag
-        self.index = index_in_parent
-        self._is_pure = is_pure
-
-    def is_always_pure(self):
-        return self._is_pure
-
-    def __repr__(self):
-        return 'FieldDescr<%s>' % (self.name,)
-
-    def assert_correct_type(self, struct):
-        # similar to cpu.protect_speculative_field(), but works also
-        # if supports_guard_gc_type is false (and is allowed to crash).
-        if self.parent_descr.is_object():
-            assert self.parent_descr.is_valid_class_for(struct)
-        else:
-            pass
 
     def is_pointer_field(self):
         return self.flag == FLAG_POINTER
@@ -156,38 +97,11 @@ class FieldDescr(ArrayOrFieldDescr):
     def is_field_signed(self):
         return self.flag == FLAG_SIGNED
 
-    def is_integer_bounded(self):
-        return self.flag in (FLAG_SIGNED, FLAG_UNSIGNED) \
-            and self.field_size < symbolic.WORD
-
-    def get_integer_min(self):
-        if self.flag == FLAG_UNSIGNED:
-            return intbounds.get_integer_min(True, self.field_size)
-        elif self.flag == FLAG_SIGNED:
-            return intbounds.get_integer_min(False, self.field_size)
-
-        assert False
-
-    def get_integer_max(self):
-        if self.flag == FLAG_UNSIGNED:
-            return intbounds.get_integer_max(True, self.field_size)
-        elif self.flag == FLAG_SIGNED:
-            return intbounds.get_integer_max(False, self.field_size)
-
-        assert False
-
     def sort_key(self):
         return self.offset
 
     def repr_of_descr(self):
-        ispure = " pure" if self._is_pure else ""
-        return '<Field%s %s %s%s>' % (self.flag, self.name, self.offset, ispure)
-
-    def get_parent_descr(self):
-        return self.parent_descr
-
-    def get_index(self):
-        return self.index
+        return '<Field%s %s %s>' % (self.flag, self.name, self.offset)
 
 
 def get_field_descr(gccache, STRUCT, fieldname):
@@ -200,17 +114,9 @@ def get_field_descr(gccache, STRUCT, fieldname):
         FIELDTYPE = getattr(STRUCT, fieldname)
         flag = get_type_flag(FIELDTYPE)
         name = '%s.%s' % (STRUCT._name, fieldname)
-        index_in_parent = heaptracker.get_fielddescr_index_in(STRUCT, fieldname)
-        is_pure = STRUCT._immutable_field(fieldname) != False
-        fielddescr = FieldDescr(name, offset, size, flag, index_in_parent,
-                                is_pure)
+        fielddescr = FieldDescr(name, offset, size, flag)
         cachedict = cache.setdefault(STRUCT, {})
         cachedict[fieldname] = fielddescr
-        if STRUCT is rclass.OBJECT:
-            vtable = lltype.nullptr(rclass.OBJECT_VTABLE)
-        else:
-            vtable = heaptracker.get_vtable_for_gcstruct(gccache, STRUCT)
-        fielddescr.parent_descr = get_size_descr(gccache, STRUCT, vtable)
         return fielddescr
 
 def get_type_flag(TYPE):
@@ -237,7 +143,6 @@ def get_field_arraylen_descr(gccache, ARRAY_OR_STRUCT):
         (_, _, ofs) = symbolic.get_array_token(ARRAY_OR_STRUCT, tsc)
         size = symbolic.get_size(lltype.Signed, tsc)
         result = FieldDescr("len", ofs, size, get_type_flag(lltype.Signed))
-        result.parent_descr = None
         cache[ARRAY_OR_STRUCT] = result
         return result
 
@@ -245,37 +150,18 @@ def get_field_arraylen_descr(gccache, ARRAY_OR_STRUCT):
 # ____________________________________________________________
 # ArrayDescrs
 
-class ArrayDescr(ArrayOrFieldDescr):
+class ArrayDescr(AbstractDescr):
     tid = 0
     basesize = 0       # workaround for the annotator
     itemsize = 0
     lendescr = None
     flag = '\x00'
-    vinfo = None
-    all_interiorfielddescrs = None
-    concrete_type = '\x00'
 
-    def __init__(self, basesize, itemsize, lendescr, flag, is_pure=False, concrete_type='\x00'):
+    def __init__(self, basesize, itemsize, lendescr, flag):
         self.basesize = basesize
         self.itemsize = itemsize
         self.lendescr = lendescr    # or None, if no length
         self.flag = flag
-        self._is_pure = is_pure
-        self.concrete_type = concrete_type
-
-    def get_all_fielddescrs(self):
-        return self.all_interiorfielddescrs
-
-    def is_always_pure(self):
-        return self._is_pure
-
-    def getconcrete_type(self):
-        return self.concrete_type
-
-    def is_array_of_primitives(self):
-        return self.flag == FLAG_FLOAT or \
-               self.flag == FLAG_SIGNED or \
-               self.flag == FLAG_UNSIGNED
 
     def is_array_of_pointers(self):
         return self.flag == FLAG_POINTER
@@ -286,35 +172,8 @@ class ArrayDescr(ArrayOrFieldDescr):
     def is_item_signed(self):
         return self.flag == FLAG_SIGNED
 
-    def get_item_size_in_bytes(self):
-        return self.itemsize
-
     def is_array_of_structs(self):
         return self.flag == FLAG_STRUCT
-
-    def is_item_integer_bounded(self):
-        return self.flag in (FLAG_SIGNED, FLAG_UNSIGNED) \
-            and self.itemsize < symbolic.WORD
-
-    def get_item_integer_min(self):
-        if self.flag == FLAG_UNSIGNED:
-            return intbounds.get_integer_min(True, self.itemsize)
-        elif self.flag == FLAG_SIGNED:
-            return intbounds.get_integer_min(False, self.itemsize)
-
-        assert False
-
-    def get_item_integer_max(self):
-        if self.flag == FLAG_UNSIGNED:
-            return intbounds.get_integer_max(True, self.itemsize)
-        elif self.flag == FLAG_SIGNED:
-            return intbounds.get_integer_max(False, self.itemsize)
-
-        assert False
-
-    def get_type_id(self):
-        assert self.tid
-        return self.tid
 
     def repr_of_descr(self):
         return '<Array%s %s>' % (self.flag, self.itemsize)
@@ -336,20 +195,10 @@ def get_array_descr(gccache, ARRAY_OR_STRUCT):
         else:
             lendescr = get_field_arraylen_descr(gccache, ARRAY_OR_STRUCT)
         flag = get_type_flag(ARRAY_INSIDE.OF)
-        is_pure = bool(ARRAY_INSIDE._immutable_field(None))
-        arraydescr = ArrayDescr(basesize, itemsize, lendescr, flag, is_pure)
-        if ARRAY_INSIDE.OF is lltype.SingleFloat or \
-           ARRAY_INSIDE.OF is lltype.Float:
-            # it would be better to set the flag as FLOAT_TYPE
-            # for single float -> leads to problems
-            arraydescr = ArrayDescr(basesize, itemsize, lendescr, flag, is_pure, concrete_type='f')
-        cache[ARRAY_OR_STRUCT] = arraydescr
-        if isinstance(ARRAY_INSIDE.OF, lltype.Struct):
-            descrs = heaptracker.all_interiorfielddescrs(gccache,
-                ARRAY_INSIDE, get_field_descr=get_interiorfield_descr)
-            arraydescr.all_interiorfielddescrs = descrs
+        arraydescr = ArrayDescr(basesize, itemsize, lendescr, flag)
         if ARRAY_OR_STRUCT._gckind == 'gc':
             gccache.init_array_descr(ARRAY_OR_STRUCT, arraydescr)
+        cache[ARRAY_OR_STRUCT] = arraydescr
         return arraydescr
 
 
@@ -365,15 +214,6 @@ class InteriorFieldDescr(AbstractDescr):
         self.arraydescr = arraydescr
         self.fielddescr = fielddescr
 
-    def get_index(self):
-        return self.fielddescr.get_index()
-
-    def get_arraydescr(self):
-        return self.arraydescr
-
-    def get_field_descr(self):
-        return self.fielddescr
-
     def sort_key(self):
         return self.fielddescr.sort_key()
 
@@ -382,15 +222,6 @@ class InteriorFieldDescr(AbstractDescr):
 
     def is_float_field(self):
         return self.fielddescr.is_float_field()
-
-    def is_integer_bounded(self):
-        return self.fielddescr.is_integer_bounded()
-
-    def get_integer_min(self):
-        return self.fielddescr.get_integer_min()
-
-    def get_integer_max(self):
-        return self.fielddescr.get_integer_max()
 
     def repr_of_descr(self):
         return '<InteriorFieldDescr %s>' % self.fielddescr.repr_of_descr()
@@ -415,18 +246,17 @@ def get_interiorfield_descr(gc_ll_descr, ARRAY, name, arrayfieldname=None):
 # ____________________________________________________________
 # CallDescrs
 
-def _missing_call_stub_i(func, args_i, args_r, args_f):
-    return 0
-def _missing_call_stub_r(func, args_i, args_r, args_f):
-    return lltype.nullptr(llmemory.GCREF.TO)
-def _missing_call_stub_f(func, args_i, args_r, args_f):
-    return longlong.ZEROF
-
 class CallDescr(AbstractDescr):
     arg_classes = ''     # <-- annotation hack
     result_type = '\x00'
     result_flag = '\x00'
     ffi_flags = 1
+    call_stub_i = staticmethod(lambda func, args_i, args_r, args_f:
+                               0)
+    call_stub_r = staticmethod(lambda func, args_i, args_r, args_f:
+                               lltype.nullptr(llmemory.GCREF.TO))
+    call_stub_f = staticmethod(lambda func,args_i,args_r,args_f:
+                               longlong.ZEROF)
 
     def __init__(self, arg_classes, result_type, result_signed, result_size,
                  extrainfo=None, ffi_flags=1):
@@ -443,9 +273,6 @@ class CallDescr(AbstractDescr):
         self.result_size = result_size
         self.extrainfo = extrainfo
         self.ffi_flags = ffi_flags
-        self.call_stub_i = _missing_call_stub_i
-        self.call_stub_r = _missing_call_stub_r
-        self.call_stub_f = _missing_call_stub_f
         # NB. the default ffi_flags is 1, meaning FUNCFLAG_CDECL, which
         # makes sense on Windows as it's the one for all the C functions
         # we are compiling together with the JIT.  On non-Windows platforms
@@ -497,13 +324,6 @@ class CallDescr(AbstractDescr):
         return self.arg_classes
 
     def get_result_type(self):
-        return self.result_type
-
-    def get_normalized_result_type(self):
-        if self.result_type == 'S':
-            return 'i'
-        if self.result_type == 'L':
-            return 'f'
         return self.result_type
 
     def get_result_size(self):

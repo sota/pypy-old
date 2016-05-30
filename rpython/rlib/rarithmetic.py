@@ -33,8 +33,6 @@ mark where overflow checking is required.
 import sys, struct
 from rpython.rtyper import extregistry
 from rpython.rlib import objectmodel
-from rpython.flowspace.model import Constant, const
-from rpython.flowspace.specialcase import register_flow_sc
 
 """
 Long-term target:
@@ -155,8 +153,6 @@ _should_widen_type._annspecialcase_ = 'specialize:memo'
 
 # the replacement for sys.maxint
 maxint = int(LONG_TEST - 1)
-# for now, it should be equal to sys.maxint on all supported platforms
-assert maxint == sys.maxint
 
 def is_valid_int(r):
     if objectmodel.we_are_translated():
@@ -175,7 +171,7 @@ def ovfcheck(r):
     if type(r) is long and not is_valid_int(r):
         # checks only if applicable to r's type.
         # this happens in the garbage collector.
-        raise OverflowError("signed integer expression did overflow")
+        raise OverflowError, "signed integer expression did overflow"
     return r
 
 # Strange things happening for float to int on 64 bit:
@@ -215,7 +211,7 @@ def compute_restype(self_type, other_type):
         return other_type
     if self_type.SIGNED == other_type.SIGNED:
         return build_int(None, self_type.SIGNED, max(self_type.BITS, other_type.BITS))
-    raise AssertionError("Merging these types (%s, %s) is not supported" % (self_type, other_type))
+    raise AssertionError, "Merging these types (%s, %s) is not supported" % (self_type, other_type)
 
 def signedtype(t):
     if t in (bool, int, long):
@@ -293,6 +289,7 @@ def highest_bit(n):
 
 class base_int(long):
     """ fake unsigned integer implementation """
+
 
     def _widen(self, other, value):
         """
@@ -516,15 +513,6 @@ class BaseIntTypeEntry(extregistry.ExtRegistryEntry):
 r_int = build_int('r_int', True, LONG_BIT)
 r_uint = build_int('r_uint', False, LONG_BIT)
 
-@register_flow_sc(r_uint)
-def sc_r_uint(ctx, w_value):
-    # (normally, the 32-bit constant is a long, and is not allowed to
-    # show up in the flow graphs at all)
-    if isinstance(w_value, Constant):
-        return Constant(r_uint(w_value.value))
-    return ctx.appcall(r_uint, w_value)
-
-
 r_longlong = build_int('r_longlong', True, 64)
 r_ulonglong = build_int('r_ulonglong', False, 64)
 
@@ -536,15 +524,11 @@ if r_longlong is not r_int:
 else:
     r_int64 = int
 
-# needed for rposix_stat.time_t_to_FILE_TIME in the 64 bit case
+# needed for ll_os_stat.time_t_to_FILE_TIME in the 64 bit case
 r_uint32 = build_int('r_uint32', False, 32)
 
-SHRT_MIN = -2**(_get_bitsize('h') - 1)
-SHRT_MAX = 2**(_get_bitsize('h') - 1) - 1
-USHRT_MAX = 2**_get_bitsize('h') - 1
-INT_MIN = int(-2**(_get_bitsize('i') - 1))
-INT_MAX = int(2**(_get_bitsize('i') - 1) - 1)
-UINT_MAX = r_uint(2**_get_bitsize('i') - 1)
+# needed for ll_time.time_sleep_llimpl
+maxint32 = int((1 << 31) -1)
 
 # the 'float' C type
 
@@ -637,12 +621,6 @@ def int_between(n, m, p):
         assert n <= p
     return llop.int_between(lltype.Bool, n, m, p)
 
-def int_force_ge_zero(n):
-    """ The JIT special-cases this too. """
-    from rpython.rtyper.lltypesystem import lltype
-    from rpython.rtyper.lltypesystem.lloperation import llop
-    return llop.int_force_ge_zero(lltype.Signed, n)
-
 @objectmodel.specialize.ll()
 def byteswap(arg):
     """ Convert little->big endian and the opposite
@@ -690,34 +668,3 @@ def byteswap(arg):
     if T == lltype.Float:
         return longlong2float(rffi.cast(rffi.LONGLONG, res))
     return rffi.cast(T, res)
-
-
-# String parsing support
-# ---------------------------
-
-def string_to_int(s, base=10):
-    """Utility to converts a string to an integer.
-    If base is 0, the proper base is guessed based on the leading
-    characters of 's'.  Raises ParseStringError in case of error.
-    Raises ParseStringOverflowError in case the result does not fit.
-    """
-    from rpython.rlib.rstring import (
-        NumberStringParser, ParseStringOverflowError, strip_spaces)
-    s = literal = strip_spaces(s)
-    p = NumberStringParser(s, literal, base, 'int')
-    base = p.base
-    result = 0
-    while True:
-        digit = p.next_digit()
-        if digit == -1:
-            return result
-
-        if p.sign == -1:
-            digit = -digit
-
-        try:
-            result = ovfcheck(result * base)
-            result = ovfcheck(result + digit)
-        except OverflowError:
-            raise ParseStringOverflowError(p)
-string_to_int._elidable_function_ = True

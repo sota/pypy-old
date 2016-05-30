@@ -26,9 +26,6 @@ try:
 
         def system_message(self, level, message, *children, **kwargs):
             self.messages.append((level, message, children, kwargs))
-            return nodes.system_message(message, level=level,
-                                        type=self.levels[level],
-                                        *children, **kwargs)
 
     HAS_DOCUTILS = True
 except ImportError:
@@ -126,7 +123,7 @@ class check(Command):
         """Returns warnings when the provided data doesn't compile."""
         source_path = StringIO()
         parser = Parser()
-        settings = frontend.OptionParser(components=(Parser,)).get_default_values()
+        settings = frontend.OptionParser().get_default_values()
         settings.tab_width = 4
         settings.pep_references = None
         settings.rfc_references = None
@@ -142,8 +139,8 @@ class check(Command):
         document.note_source(source_path, -1)
         try:
             parser.parse(data, document)
-        except AttributeError as e:
-            reporter.messages.append(
-                (-1, 'Could not finish the parsing: %s.' % e, '', {}))
+        except AttributeError:
+            reporter.messages.append((-1, 'Could not finish the parsing.',
+                                      '', {}))
 
         return reporter.messages

@@ -1,4 +1,4 @@
-import py, sys, zlib, re
+import py
 from pypy.tool import gdb_pypy
 
 class FakeGdb(object):
@@ -9,30 +9,15 @@ class FakeGdb(object):
     TYPE_CODE_ARRAY = 2
     TYPE_CODE_STRUCT = 3
 
-    def __init__(self, typeids, exprs):
-        self.typeids_z = zlib.compress(typeids)
-        exprs['*(long*)pypy_g_rpython_memory_gctypelayout_GCData'
-              '.gcd_inst_typeids_z'] = len(self.typeids_z)
+    def __init__(self, exprs, progspace=None):
         self.exprs = exprs
-        self._parsed = []
+        self.progspace = progspace
 
     def parse_and_eval(self, expr):
-        self._parsed.append(expr)
         return self.exprs[expr]
 
-    def execute(self, command):
-        r = re.compile(r"dump binary memory (\S+) (\S+) (\S+)$")
-        match = r.match(command)
-        assert match
-        fn, start, stop = match.groups()
-        assert start == (
-            '(char*)(((long*)pypy_g_rpython_memory_gctypelayout_GCData'
-            '.gcd_inst_typeids_z)+1)')
-        assert stop == (
-            '(char*)(((long*)pypy_g_rpython_memory_gctypelayout_GCData'
-            '.gcd_inst_typeids_z)+1)+%d' % (len(self.typeids_z),))
-        with open(fn, 'wb') as f:
-            f.write(self.typeids_z)
+    def current_progspace(self):
+        return self.progspace
 
 
 class Mock(object):
@@ -115,36 +100,31 @@ def test_lookup():
     hdr = gdb_pypy.lookup(obj, 'gcheader')
     assert hdr['h_tid'] == 123
 
-def exprmember(n):
-    if sys.maxint < 2**32:
-        TIDT = "int*"
-    else:
-        TIDT = "char*"
-    return ('((%s)(&pypy_g_typeinfo.member%d)) - (%s)&pypy_g_typeinfo'
-            % (TIDT, n, TIDT))
-
 def test_load_typeids(tmpdir):
-    typeids = """
-member0    ?
-member1    GcStruct xxx {}
-""".lstrip()
-    exprs = {exprmember(1): 111}
-    gdb = FakeGdb(typeids, exprs)
+    exe = tmpdir.join('testing_1').join('pypy-c')
+    typeids = tmpdir.join('typeids.txt')
+    typeids.write("""
+member0    GcStruct xxx {}
+""".strip())
+    progspace = Mock(filename=str(exe))
+    exprs = {
+        '((char*)(&pypy_g_typeinfo.member0)) - (char*)&pypy_g_typeinfo': 0,
+        }
+    gdb = FakeGdb(exprs, progspace)
     cmd = gdb_pypy.RPyType(gdb)
-    typeids = cmd.load_typeids()
-    assert typeids[0] == '(null typeid)'
-    assert typeids[111] == 'GcStruct xxx {}'
-    py.test.raises(KeyError, "typeids[50]")
-    py.test.raises(KeyError, "typeids[150]")
+    typeids = cmd.load_typeids(progspace)
+    assert typeids[0] == 'GcStruct xxx {}'
 
 def test_RPyType(tmpdir):
-    typeids = """
-member0    ?
-member1    GcStruct xxx {}
-member2    GcStruct yyy {}
-member3    GcStruct zzz {}
-""".lstrip()
+    exe = tmpdir.join('pypy-c')
+    typeids = tmpdir.join('typeids.txt')
+    typeids.write("""
+member0    GcStruct xxx {}
+member1    GcStruct yyy {}
+member2    GcStruct zzz {}
+""".strip())
     #
+    progspace = Mock(filename=str(exe))
     d = {'r_super': {
             '_gcheader': {
                 'h_tid': 123,
@@ -155,11 +135,11 @@ member3    GcStruct zzz {}
     myvar = Value(d)
     exprs = {
         '*myvar': myvar,
-        exprmember(1): 0,
-        exprmember(2): 123,
-        exprmember(3): 456,
+        '((char*)(&pypy_g_typeinfo.member0)) - (char*)&pypy_g_typeinfo': 0,
+        '((char*)(&pypy_g_typeinfo.member1)) - (char*)&pypy_g_typeinfo': 123,
+        '((char*)(&pypy_g_typeinfo.member2)) - (char*)&pypy_g_typeinfo': 456,
         }
-    gdb = FakeGdb(typeids, exprs)
+    gdb = FakeGdb(exprs, progspace)
     cmd = gdb_pypy.RPyType(gdb)
     assert cmd.do_invoke('*myvar', True) == 'GcStruct yyy {}'
 
@@ -203,39 +183,3 @@ def test_pprint_list():
 
     mylist.type.target().tag = None
     assert gdb_pypy.RPyListPrinter.lookup(mylist, FakeGdb) is None
-
-def test_pprint_array():
-    d = {'_gcheder': {'h_tid': 234}, 'length': 3, 'items': [20, 21, 22]}
-    mylist = PtrValue(d, type_tag='pypy_array1')
-    printer = gdb_pypy.RPyListPrinter.lookup(mylist, FakeGdb)
-    assert printer.to_string() == 'r[20, 21, 22] (len=3)'
-
-def test_pprint_null_list():
-    mylist = PtrValue({}, type_tag='pypy_list1')
-    printer = gdb_pypy.RPyListPrinter.lookup(mylist, FakeGdb)
-    assert printer.to_string() == 'r(null_list)'
-
-def test_pprint_null_array():
-    mylist = PtrValue({}, type_tag='pypy_array1')
-    printer = gdb_pypy.RPyListPrinter.lookup(mylist, FakeGdb)
-    assert printer.to_string() == 'r(null_array)'
-
-def test_typeidsmap():
-    gdb = FakeGdb('', {exprmember(1): 111,
-                       exprmember(2): 222,
-                       exprmember(3): 333})
-    typeids = gdb_pypy.TypeIdsMap(["member0  ?\n",
-                                   "member1  FooBar\n",
-                                   "member2  Baz\n",
-                                   "member3  Bok\n"], gdb)
-    assert gdb._parsed == []
-    assert typeids.get(111) == "FooBar"
-    assert gdb._parsed == [exprmember(2), exprmember(1)]
-    assert typeids.get(222) == "Baz"
-    assert gdb._parsed == [exprmember(2), exprmember(1)]
-    assert typeids.get(333) == "Bok"
-    assert gdb._parsed == [exprmember(2), exprmember(1), exprmember(3)]
-    assert typeids.get(400) == None
-    assert typeids.get(300) == None
-    assert typeids.get(200) == None
-    assert typeids.get(100) == None

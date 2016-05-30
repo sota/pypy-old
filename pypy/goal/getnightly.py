@@ -7,10 +7,8 @@ import py
 if sys.platform.startswith('linux'):
     arch = 'linux'
     cmd = 'wget "%s"'
-    tar = "tar -x -v --wildcards --strip-components=2 -f %s '*/bin/pypy' '*/bin/libpypy-c.so'"
-    if os.uname()[-1].startswith('arm'):
-        arch += '-armhf-raspbian'
-elif sys.platform.startswith('darwin'):
+    tar = "tar -x -v --wildcards --strip-components=2 -f %s '*/bin/pypy'"
+if sys.platform.startswith('darwin'):
     arch = 'osx'
     cmd = 'curl -O "%s"'
     tar = "tar -x -v --strip-components=2 -f %s '*/bin/pypy'"
@@ -26,12 +24,7 @@ branch = hg.sysexec('branch').strip()
 if branch == 'default':
     branch = 'trunk'
 
-if '--nojit' in sys.argv:
-    kind = 'nojit'
-else:
-    kind = 'jit'
-
-filename = 'pypy-c-%s-latest-%s.tar.bz2' % (kind, arch)
+filename = 'pypy-c-jit-latest-%s.tar.bz2' % arch
 url = 'http://buildbot.pypy.org/nightly/%s/%s' % (branch, filename)
 tmp = py.path.local.mkdtemp()
 mydir = tmp.chdir()

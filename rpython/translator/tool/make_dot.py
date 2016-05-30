@@ -1,6 +1,7 @@
 import os
 import inspect, linecache
 from rpython.flowspace.model import *
+from rpython.flowspace.objspace import build_flow
 from rpython.tool.udir import udir
 from py.process import cmdexec
 from rpython.tool.error import offset2lineno
@@ -142,13 +143,13 @@ class FlowGraphDotGen(DotGen):
         color = "black"
         fillcolor = getattr(block, "blockcolor", "white")
         if not numblocks:
-            shape = "box"
-            if len(block.inputargs) == 1:
-                lines[-1] += 'return %s' % tuple(block.inputargs)
-                fillcolor = RETURN_COLOR
-            elif len(block.inputargs) == 2:
-                lines[-1] += 'raise %s, %s' % tuple(block.inputargs)
-                fillcolor = EXCEPT_COLOR
+           shape = "box"
+           if len(block.inputargs) == 1:
+               lines[-1] += 'return %s' % tuple(block.inputargs)
+               fillcolor= RETURN_COLOR
+           elif len(block.inputargs) == 2:
+               lines[-1] += 'raise %s, %s' % tuple(block.inputargs)
+               fillcolor= EXCEPT_COLOR
         elif numblocks == 1:
             shape = "box"
         else:
@@ -237,3 +238,14 @@ def safename(name):
     # not a keyword
     name = ''.join([CHAR_MAP[c] for c in name])
     return '_' + name
+
+
+if __name__ == '__main__':
+    def f(x):
+        i = 0
+        while i < x:
+            i += 1
+        return i
+
+    graph = build_flow(f)
+    make_dot('f', graph)

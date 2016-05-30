@@ -18,7 +18,7 @@ class FinalizerAnalyzer(graphanalyze.BoolGraphAnalyzer):
     """
     ok_operations = ['ptr_nonzero', 'ptr_eq', 'ptr_ne', 'free', 'same_as',
                      'direct_ptradd', 'force_cast', 'track_alloc_stop',
-                     'raw_free', 'adr_eq', 'adr_ne']
+                     'raw_free']
 
     def analyze_light_finalizer(self, graph):
         result = self.analyze_direct_call(graph)
@@ -31,7 +31,7 @@ class FinalizerAnalyzer(graphanalyze.BoolGraphAnalyzer):
         if op.opname in self.ok_operations:
             return self.bottom_result()
         if (op.opname.startswith('int_') or op.opname.startswith('float_')
-            or op.opname.startswith('uint_') or op.opname.startswith('cast_')):
+            or op.opname.startswith('cast_')):
             return self.bottom_result()
         if op.opname == 'setfield' or op.opname == 'bare_setfield':
             TP = op.args[2].concretetype

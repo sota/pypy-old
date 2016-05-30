@@ -1,96 +1,252 @@
-Getting Started Developing With PyPy
-====================================
+============================
+Getting Started with RPython
+============================
 
 .. contents::
 
+RPython is a subset of Python that can be statically compiled. The PyPy
+interpreter is written mostly in RPython (with pieces in Python), while
+the RPython compiler is written in Python. The hard to understand part
+is that Python is a meta-programming language for RPython, that is,
+RPython is considered from live objects **after** the imports are done.
+This might require more explanation. You start writing RPython from
+``entry_point``, a good starting point is
+``rpython/translator/goal/targetnopstandalone.py``. This does not do all that
+much, but is a start. Now if code analyzed (in this case ``entry_point``)
+calls some functions, those calls will be followed. Those followed calls
+have to be RPython themselves (and everything they call etc.), however not
+entire module files. To show how you can use metaprogramming, we can do
+a silly example (note that closures are not RPython)::
 
-Using Mercurial
----------------
+  def generator(operation):
+      if operation == 'add':
+         def f(a, b):
+             return a + b
+      else:
+         def f(a, b):
+             return a - b
+      return f
 
-PyPy development is based on Mercurial (hg).  If you are not used to
-version control, the cycle for a new PyPy contributor goes typically
-like this:
+  add = generator('add')
+  sub = generator('sub')
 
-* Make an account on bitbucket_.
+  def entry_point(argv):
+      print add(sub(int(argv[1]), 3) 4)
+      return 0
 
-* Go to https://bitbucket.org/pypy/pypy/ and click "fork" (left
-  icons).  You get a fork of the repository, e.g. in
-  https://bitbucket.org/yourname/pypy/.
+In this example ``entry_point`` is RPython,  ``add`` and ``sub`` are RPython,
+however, ``generator`` is not.
 
-* Clone this new repo (i.e. the fork) to your local machine with the command 
-  ``hg clone ssh://hg@bitbucket.org/yourname/pypy``.  It is a very slow
-  operation but only ever needs to be done once.  See also 
-  http://pypy.org/download.html#building-from-source .
-  If you already cloned
-  ``https://bitbucket.org/pypy/pypy`` before, even if some time ago,
-  then you can reuse the same clone by editing the file ``.hg/hgrc`` in
-  your clone to contain the line ``default =
-  ssh://hg@bitbucket.org/yourname/pypy``, and then do ``hg pull && hg
-  up``.  If you already have such a clone but don't want to change it,
-  you can clone that copy with ``hg clone /path/to/other/copy``, and
-  then edit ``.hg/hgrc`` as above and do ``hg pull && hg up``.
+A good introductory level articles are available:
 
-* Now you have a complete copy of the PyPy repo.  Make a branch
-  with a command like ``hg branch name_of_your_branch``.
+* Laurence Tratt -- `Fast Enough VMs in Fast Enough Time`_.
 
-* Edit things.  Use ``hg diff`` to see what you changed.  Use ``hg add``
-  to make Mercurial aware of new files you added, e.g. new test files.
-  Use ``hg status`` to see if there are such files.  Run tests!  (See
-  the rest of this page.)
+* `How to write interpreters in RPython`_ and `part 2`_ by Andrew Brown.
 
-* Commit regularly with ``hg commit``.  A one-line commit message is
-  fine.  We love to have tons of commits; make one as soon as you have
-  some progress, even if it is only some new test that doesn't pass yet,
-  or fixing things even if not all tests pass.  Step by step, you are
-  building the history of your changes, which is the point of a version
-  control system.  (There are commands like ``hg log`` and ``hg up``
-  that you should read about later, to learn how to navigate this
-  history.)
+.. _`Fast Enough VMs in Fast Enough Time`: http://tratt.net/laurie/tech_articles/articles/fast_enough_vms_in_fast_enough_time
 
-* The commits stay on your machine until you do ``hg push`` to "push"
-  them back to the repo named in the file ``.hg/hgrc``.  Repos are
-  basically just collections of commits (a commit is also called a
-  changeset): there is one repo per url, plus one for each local copy on
-  each local machine.  The commands ``hg push`` and ``hg pull`` copy
-  commits around, with the goal that all repos in question end up with
-  the exact same set of commits.  By opposition, ``hg up`` only updates
-  the "working copy" by reading the local repository, i.e. it makes the
-  files that you see correspond to the latest (or any other) commit
-  locally present.
+.. _`How to write interpreters in RPython`: http://morepypy.blogspot.com/2011/04/tutorial-writing-interpreter-with-pypy.html
 
-* You should push often; there is no real reason not to.  Remember that
-  even if they are pushed, with the setup above, the commits are (1)
-  only in ``bitbucket.org/yourname/pypy``, and (2) in the branch you
-  named.  Yes, they are publicly visible, but don't worry about someone
-  walking around the thousands of repos on bitbucket saying "hah, look
-  at the bad coding style of that guy".  Try to get into the mindset
-  that your work is not secret and it's fine that way.  We might not
-  accept it as is for PyPy, asking you instead to improve some things,
-  but we are not going to judge you.
+.. _`part 2`: http://morepypy.blogspot.com/2011/04/tutorial-part-2-adding-jit.html
 
-* The final step is to open a pull request, so that we know that you'd
-  like to merge that branch back to the original ``pypy/pypy`` repo.
-  This can also be done several times if you have interesting
-  intermediate states, but if you get there, then we're likely to
-  proceed to the next stage, which is...
+.. _`try out the translator`:
 
-* Get a regular account for pushing directly to
-  ``bitbucket.org/pypy/pypy`` (just ask and you'll get it, basically).
-  Once you have it you can rewrite your file ``.hg/hgrc`` to contain
-  ``default = ssh://hg@bitbucket.org/pypy/pypy``.  Your changes will
-  then be pushed directly to the official repo, but (if you follow these
-  rules) they are still on a branch, and we can still review the
-  branches you want to merge.
+Trying out the translator
+-------------------------
 
-* If you get closer to the regular day-to-day development, you'll notice
-  that we generally push small changes as one or a few commits directly
-  to the branch ``default``.  Also, we often collaborate even if we are
-  on other branches, which do not really "belong" to anyone.  At this
-  point you'll need ``hg merge`` and learn how to resolve conflicts that
-  sometimes occur when two people try to push different commits in
-  parallel on the same branch.  But it is likely an issue for later ``:-)``
+The translator is a tool based on the PyPy interpreter which can translate
+sufficiently static RPython programs into low-level code (in particular it can
+be used to translate the `full Python interpreter`_). To be able to experiment with it
+you need to download and install the usual (CPython) version of:
 
-.. _bitbucket: https://bitbucket.org/
+  * Pygame_
+  * `Dot Graphviz`_
+
+To start the interactive translator shell do::
+
+    cd rpython
+    python bin/translatorshell.py
+
+Test snippets of translatable code are provided in the file
+``rpython/translator/test/snippet.py``, which is imported under the name
+``snippet``.  For example::
+
+    >>> t = Translation(snippet.is_perfect_number, [int])
+    >>> t.view()
+
+After that, the graph viewer pops up, that lets you interactively inspect the
+flow graph. To move around, click on something that you want to inspect.
+To get help about how to use it, press 'H'. To close it again, press 'Q'.
+
+Trying out the type annotator
++++++++++++++++++++++++++++++
+
+We have a type annotator that can completely infer types for functions like
+``is_perfect_number`` (as well as for much larger examples)::
+
+    >>> t.annotate()
+    >>> t.view()
+
+Move the mouse over variable names (in red) to see their inferred types.
+
+
+Translating the flow graph to C code
+++++++++++++++++++++++++++++++++++++
+
+The graph can be turned into C code::
+
+   >>> t.rtype()
+   >>> lib = t.compile_c()
+
+The first command replaces the operations with other low level versions that
+only use low level types that are available in C (e.g. int). The compiled
+version is now in a ``.so`` library. You can run it say using ctypes:
+
+   >>> f = get_c_function(lib, snippet.is_perfect_number)
+   >>> f(5)
+   0
+   >>> f(6)
+   1
+
+Translating the flow graph to CLI or JVM code
++++++++++++++++++++++++++++++++++++++++++++++
+
+PyPy also contains a `CLI backend`_ and JVM backend which
+can translate flow graphs into .NET executables or a JVM jar
+file respectively.  Both are able to translate the entire
+interpreter.  You can try out the CLI and JVM backends
+from the interactive translator shells as follows::
+
+    >>> def myfunc(a, b): return a+b
+    ... 
+    >>> t = Translation(myfunc, [int, int])
+    >>> t.annotate()
+    >>> f = t.compile_cli() # or compile_jvm()
+    >>> f(4, 5)
+    9
+
+The object returned by ``compile_cli`` or ``compile_jvm``
+is a wrapper around the real
+executable: the parameters are passed as command line arguments, and
+the returned value is read from the standard output.
+
+Once you have compiled the snippet, you can also try to launch the
+executable directly from the shell. You will find the
+executable in one of the ``/tmp/usession-*`` directories::
+
+    # For CLI:
+    $ mono /tmp/usession-trunk-<username>/main.exe 4 5
+    9
+
+    # For JVM:
+    $ java -cp /tmp/usession-trunk-<username>/pypy pypy.Main 4 5
+    9
+
+To translate and run for the CLI you must have the SDK installed: Windows
+users need the `.NET Framework SDK`_, while Linux and Mac users
+can use Mono_.  To translate and run for the JVM you must have a JDK 
+installed (at least version 6) and ``java``/``javac`` on your path.
+
+A slightly larger example
++++++++++++++++++++++++++
+
+There is a small-to-medium demo showing the translator and the annotator::
+
+    python bin/rpython --view --annotate translator/goal/bpnn.py
+
+This causes ``bpnn.py`` to display itself as a call graph and class
+hierarchy.  Clicking on functions shows the flow graph of the particular
+function.  Clicking on a class shows the attributes of its instances.  All
+this information (call graph, local variables' types, attributes of
+instances) is computed by the annotator.
+
+To turn this example to C code (compiled to the executable ``bpnn-c``),
+type simply::
+
+    python bin/rpython translator/goal/bpnn.py
+
+
+Translating Full Programs
++++++++++++++++++++++++++
+
+To translate full RPython programs, there is the script ``translate.py`` in
+``rpython/translator/goal``. Examples for this are a slightly changed version of
+Pystone::
+
+    python bin/rpython translator/goal/targetrpystonedalone
+
+This will produce the executable "targetrpystonedalone-c".
+
+The largest example of this process is to translate the `full Python
+interpreter`_. There is also an FAQ about how to set up this process for `your
+own interpreters`_.
+
+There are several environment variables you can find useful while playing with the RPython:
+
+``PYPY_USESSION_DIR``
+    RPython uses temporary session directories to store files that are generated during the 
+    translation process(e.g., translated C files). ``PYPY_USESSION_DIR`` serves as a base directory for these session
+    dirs. The default value for this variable is the system's temporary dir.
+
+``PYPY_USESSION_KEEP``
+    By default RPython keeps only the last ``PYPY_USESSION_KEEP`` (defaults to 3) session dirs inside ``PYPY_USESSION_DIR``. 
+    Increase this value if you want to preserve C files longer (useful when producing lots of lldebug builds).
+
+.. _`your own interpreters`: faq.html#how-do-i-compile-my-own-interpreters
+
+.. _`start reading sources`: 
+
+Where to start reading the sources
+---------------------------------- 
+
+PyPy is made from parts that are relatively independent of each other.
+You should start looking at the part that attracts you most (all paths are
+relative to the PyPy top level directory).  You may look at our `directory reference`_ 
+or start off at one of the following points:
+
+*  `pypy/interpreter`_ contains the bytecode interpreter: bytecode dispatcher
+   in `pypy/interpreter/pyopcode.py`_, frame and code objects in `pypy/interpreter/eval.py`_ and `pypy/interpreter/pyframe.py`_,
+   function objects and argument passing in `pypy/interpreter/function.py`_ and `pypy/interpreter/argument.py`_,
+   the object space interface definition in `pypy/interpreter/baseobjspace.py`_, modules in
+   `pypy/interpreter/module.py`_ and `pypy/interpreter/mixedmodule.py`_.  Core types supporting the bytecode 
+   interpreter are defined in `pypy/interpreter/typedef.py`_.
+
+*  `pypy/interpreter/pyparser`_ contains a recursive descent parser,
+   and grammar files that allow it to parse the syntax of various Python
+   versions. Once the grammar has been processed, the parser can be
+   translated by the above machinery into efficient code.
+
+*  `pypy/interpreter/astcompiler`_ contains the compiler.  This
+   contains a modified version of the compiler package from CPython
+   that fixes some bugs and is translatable.
+
+*  `pypy/objspace/std`_ contains the `Standard object space`_.  The main file
+   is `pypy/objspace/std/objspace.py`_.  For each type, the files ``xxxtype.py`` and
+   ``xxxobject.py`` contain respectively the definition of the type and its
+   (default) implementation.
+
+*  `rpython/translator`_ contains the code analysis and generation stuff.
+   Start reading from translator.py, from which it should be easy to follow
+   the pieces of code involved in the various translation phases.
+
+*  `rpython/annotator`_ contains the data model for the type annotation that
+   can be inferred about a graph.  The graph "walker" that uses this is in
+   `rpython/annotator/annrpython.py`_.
+
+*  `rpython/rtyper`_ contains the code of the RPython typer. The typer transforms
+   annotated flow graphs in a way that makes them very similar to C code so
+   that they can be easy translated. The graph transformations are controlled
+   by the code in `rpython/rtyper/rtyper.py`_. The object model that is used can
+   be found in `rpython/rtyper/lltypesystem/lltype.py`_. For each RPython type
+   there is a file rxxxx.py that contains the low level functions needed for
+   this type.
+
+*  `rpython/rlib`_ contains the `RPython standard library`_, things that you can
+   use from rpython.
+
+.. _`RPython standard library`: rlib.html
+
+.. _optionaltool: 
 
 
 Running PyPy's unit tests
@@ -98,7 +254,7 @@ Running PyPy's unit tests
 
 PyPy development always was and is still thoroughly test-driven.
 We use the flexible `py.test testing tool`_ which you can `install independently
-<http://pytest.org/latest/getting-started.html#getstarted>`_ and use for other projects.
+<http://pytest.org/getting-started.html>`_ and use for other projects.
 
 The PyPy source tree comes with an inlined version of ``py.test``
 which you can invoke by typing::
@@ -121,7 +277,7 @@ and you can use shell completion to point at directories or files::
     # or for running tests of a whole subdirectory
     py.test pypy/interpreter/
 
-See `py.test usage and invocations`_ for some more generic info
+See `py.test usage and invocations`_ for some more generic info 
 on how you can run tests.
 
 Beware trying to run "all" pypy tests by pointing to the root
@@ -139,9 +295,8 @@ side, it's usually still faster than doing a full translation
 and running the regression test with the translated PyPy Python
 interpreter.
 
-.. _py.test testing tool: http://pytest.org
-.. _py.test usage and invocations: http://pytest.org/latest/usage.html#usage
-
+.. _`py.test testing tool`: http://pytest.org
+.. _`py.test usage and invocations`: http://pytest.org/usage.html#usage
 
 Special Introspection Features of the Untranslated Python Interpreter
 ---------------------------------------------------------------------
@@ -150,24 +305,17 @@ If you are interested in the inner workings of the PyPy Python interpreter,
 there are some features of the untranslated Python interpreter that allow you
 to introspect its internals.
 
-
 Interpreter-level console
-~~~~~~~~~~~~~~~~~~~~~~~~~
++++++++++++++++++++++++++
 
-To start interpreting Python with PyPy, install a C compiler that is
-supported by distutils and use Python 2.7 or greater to run PyPy::
+If you start an untranslated Python interpreter via::
 
-    cd pypy
-    python bin/pyinteractive.py
-
-After a few seconds (remember: this is running on top of CPython), you should
-be at the PyPy prompt, which is the same as the Python prompt, but with an
-extra ">".
+    python pypy/bin/pyinteractive.py
 
 If you press
 <Ctrl-C> on the console you enter the interpreter-level console, a
 usual CPython console.  You can then access internal objects of PyPy
-(e.g. the :ref:`object space <objspace>`) and any variables you have created on the PyPy
+(e.g. the `object space`_) and any variables you have created on the PyPy
 prompt with the prefix ``w_``::
 
     >>>> a = 123
@@ -186,100 +334,68 @@ The mechanism works in both directions. If you define a variable with the ``w_``
     >>>> l
     [1, 'abc']
 
+.. _`object space`: objspace.html
+
 Note that the prompt of the interpreter-level console is only '>>>' since
 it runs on CPython level. If you want to return to PyPy, press <Ctrl-D> (under
 Linux) or <Ctrl-Z>, <Enter> (under Windows).
 
-Also note that not all modules are available by default in this mode (for
-example: ``_continuation`` needed by ``greenlet``) , you may need to use one of
-``--withmod-...`` command line options.
-
 You may be interested in reading more about the distinction between
-:ref:`interpreter-level and app-level <interpreter-level>`.
+`interpreter-level and app-level`_.
 
-pyinteractive.py options
-~~~~~~~~~~~~~~~~~~~~~~~~
+.. _`interpreter-level and app-level`: coding-guide.html#interpreter-level
 
-To list the PyPy interpreter command line options, type::
-
-    cd pypy
-    python bin/pyinteractive.py --help
-
-pyinteractive.py supports most of the options that CPython supports too (in addition to a
-large amount of options that can be used to customize pyinteractive.py).
-As an example of using PyPy from the command line, you could type::
-
-    python pyinteractive.py --withmod-time -c "from test import pystone; pystone.main(10)"
-
-Alternatively, as with regular Python, you can simply give a
-script name on the command line::
-
-    python pyinteractive.py --withmod-time ../../lib-python/2.7/test/pystone.py 10
-
-The ``--withmod-xxx`` option enables the built-in module ``xxx``.  By
-default almost none of them are, because initializing them takes time.
-If you want anyway to enable all built-in modules, you can use
-``--allworkingmodules``.
-
-See our :doc:`configuration sections <config/index>` for details about what all the commandline
-options do.
-
-
-.. _trace example:
+.. _`trace example`: 
 
 Tracing bytecode and operations on objects
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+++++++++++++++++++++++++++++++++++++++++++ 
 
-You can use a simple tracing mode to monitor the interpretation of
-bytecodes.  To enable it, set ``__pytrace__ = 1`` on the interactive
-PyPy console::
+You can use the trace object space to monitor the interpretation
+of bytecodes in connection with object space operations.  To enable 
+it, set ``__pytrace__=1`` on the interactive PyPy console:: 
 
     >>>> __pytrace__ = 1
     Tracing enabled
-    >>>> x = 5
-            <module>:           LOAD_CONST    0 (5)
-            <module>:           STORE_NAME    0 (x)
-            <module>:           LOAD_CONST    1 (None)
-            <module>:           RETURN_VALUE    0 
-    >>>> x
-            <module>:           LOAD_NAME    0 (x)
-            <module>:           PRINT_EXPR    0 
-    5
-            <module>:           LOAD_CONST    0 (None)
-            <module>:           RETURN_VALUE    0 
-    >>>>
-
+    >>>> a = 1 + 2
+    |- <<<< enter <inline>a = 1 + 2 @ 1 >>>>
+    |- 0    LOAD_CONST    0 (W_IntObject(1))
+    |- 3    LOAD_CONST    1 (W_IntObject(2))
+    |- 6    BINARY_ADD
+      |-    add(W_IntObject(1), W_IntObject(2))   -> W_IntObject(3)
+    |- 7    STORE_NAME    0 (a)
+      |-    hash(W_StringObject('a'))   -> W_IntObject(-468864544)
+      |-    int_w(W_IntObject(-468864544))   -> -468864544
+    |-10    LOAD_CONST    2 (<W_NoneObject()>)
+    |-13    RETURN_VALUE
+    |- <<<< leave <inline>a = 1 + 2 @ 1 >>>>
 
 Demos
------
+-------
 
 The `example-interpreter`_ repository contains an example interpreter
 written using the RPython translation toolchain.
 
-.. _example-interpreter: https://bitbucket.org/pypy/example-interpreter
+.. _`example-interpreter`: https://bitbucket.org/pypy/example-interpreter
 
-
-Additional Tools for running (and hacking) PyPy
+Additional Tools for running (and hacking) PyPy 
 -----------------------------------------------
 
-We use some optional tools for developing PyPy. They are not required to run
+We use some optional tools for developing PyPy. They are not required to run 
 the basic tests or to get an interactive PyPy prompt but they help to
-understand  and debug PyPy especially for the translation process.
-
+understand  and debug PyPy especially for the translation process.  
 
 graphviz & pygame for flow graph viewing (highly recommended)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 graphviz and pygame are both necessary if you
-want to look at generated flow graphs:
+want to look at generated flow graphs: 
 
-	graphviz: http://www.graphviz.org/Download.php
+	graphviz: http://www.graphviz.org/Download.php 
 
 	pygame: http://www.pygame.org/download.shtml
 
-
-py.test and the py lib
-~~~~~~~~~~~~~~~~~~~~~~
+py.test and the py lib 
++++++++++++++++++++++++
 
 The `py.test testing tool`_ drives all our testing needs.
 
@@ -289,53 +405,38 @@ writing, logging and some other support  functionality.
 You don't necessarily need to install these two libraries because
 we also ship them inlined in the PyPy source tree.
 
-.. _py library: http://pylib.readthedocs.org/
-
-
-Getting involved
-----------------
+Getting involved 
+-----------------
 
 PyPy employs an open development process.  You are invited to join our
-`pypy-dev mailing list`_ or look at the other :ref:`contact
-possibilities <contact>`.  Usually we give out commit rights fairly liberally, so if you
-want to do something with PyPy, you can become a committer. We also run frequent
-coding sprints which are separately announced and often happen around Python
-conferences such as EuroPython or PyCon. Upcoming events are usually announced
-on `the blog`_.
+`pypy-dev mailing list`_ or look at the other `contact
+possibilities`_.  Usually we give out commit rights fairly liberally, so if you
+want to do something with PyPy, you can become a committer. We are also doing
+coding Sprints which are
+separately announced and often happen around Python conferences such
+as EuroPython or Pycon. Upcoming events are usually announced on `the blog`_.
 
-.. _the blog: http://morepypy.blogspot.com
-.. _pypy-dev mailing list: http://mail.python.org/mailman/listinfo/pypy-dev
+.. _`full Python interpreter`: getting-started-python.html
+.. _`the blog`: http://morepypy.blogspot.com
+.. _`pypy-dev mailing list`: http://python.org/mailman/listinfo/pypy-dev
+.. _`contact possibilities`: index.html
 
+.. _`py library`: http://pylib.org
 
-.. _start-reading-sources:
+.. _`Spidermonkey`: http://www.mozilla.org/js/spidermonkey/
 
-Where to start reading the sources
-----------------------------------
+.. _`.NET Framework SDK`: http://msdn.microsoft.com/netframework/
+.. _Mono: http://www.mono-project.com/Main_Page
+.. _`CLI backend`: cli-backend.html
+.. _clr: clr-module.html
 
-PyPy is made from parts that are relatively independent of each other.
-You should start looking at the part that attracts you most (all paths are
-relative to the PyPy top level directory).  You may look at our :doc:`directory reference <dir-reference>`
-or start off at one of the following points:
+.. _`Dot Graphviz`:           http://www.graphviz.org/
+.. _Pygame:                 http://www.pygame.org/
+.. _Standard object space:  objspace.html#the-standard-object-space
+.. _mailing lists:          index.html
+.. _documentation:          index.html#project-documentation
+.. _unit tests:             coding-guide.html#test-design
 
-*  :source:`pypy/interpreter` contains the bytecode interpreter: bytecode dispatcher
-   in :source:`pypy/interpreter/pyopcode.py`, frame and code objects in
-   :source:`pypy/interpreter/eval.py` and :source:`pypy/interpreter/pyframe.py`,
-   function objects and argument passing in :source:`pypy/interpreter/function.py`
-   and :source:`pypy/interpreter/argument.py`, the object space interface
-   definition in :source:`pypy/interpreter/baseobjspace.py`, modules in
-   :source:`pypy/interpreter/module.py` and :source:`pypy/interpreter/mixedmodule.py`.
-   Core types supporting the bytecode interpreter are defined in :source:`pypy/interpreter/typedef.py`.
+.. _`directory reference`: index.html#pypy-directory-reference
 
-*  :source:`pypy/interpreter/pyparser` contains a recursive descent parser,
-   and grammar files that allow it to parse the syntax of various Python
-   versions. Once the grammar has been processed, the parser can be
-   translated by the above machinery into efficient code.
-
-*  :source:`pypy/interpreter/astcompiler` contains the compiler.  This
-   contains a modified version of the compiler package from CPython
-   that fixes some bugs and is translatable.
-
-*  :source:`pypy/objspace/std` contains the :ref:`Standard object space <standard-object-space>`.  The main file
-   is :source:`pypy/objspace/std/objspace.py`.  For each type, the files ``xxxtype.py`` and
-   ``xxxobject.py`` contain respectively the definition of the type and its
-   (default) implementation.
+.. include:: _ref.txt

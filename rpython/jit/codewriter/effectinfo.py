@@ -1,6 +1,7 @@
 from rpython.jit.metainterp.typesystem import deref, fieldType, arrayItem
-from rpython.rtyper.rclass import OBJECT
+from rpython.rtyper.lltypesystem.rclass import OBJECT
 from rpython.rtyper.lltypesystem import lltype, llmemory
+from rpython.rtyper.ootypesystem import ootype
 from rpython.translator.backendopt.graphanalyze import BoolGraphAnalyzer
 
 
@@ -11,20 +12,15 @@ class EffectInfo(object):
     EF_ELIDABLE_CANNOT_RAISE           = 0 #elidable function (and cannot raise)
     EF_LOOPINVARIANT                   = 1 #special: call it only once per loop
     EF_CANNOT_RAISE                    = 2 #a function which cannot raise
-    EF_ELIDABLE_OR_MEMORYERROR         = 3 #elidable, can only raise MemoryError
-    EF_ELIDABLE_CAN_RAISE              = 4 #elidable function (but can raise)
-    EF_CAN_RAISE                       = 5 #normal function (can raise)
-    EF_FORCES_VIRTUAL_OR_VIRTUALIZABLE = 6 #can raise and force virtualizables
-    EF_RANDOM_EFFECTS                  = 7 #can do whatever
+    EF_ELIDABLE_CAN_RAISE              = 3 #elidable function (but can raise)
+    EF_CAN_RAISE                       = 4 #normal function (can raise)
+    EF_FORCES_VIRTUAL_OR_VIRTUALIZABLE = 5 #can raise and force virtualizables
+    EF_RANDOM_EFFECTS                  = 6 #can do whatever
 
     # the 'oopspecindex' field is one of the following values:
     OS_NONE                     = 0    # normal case, no oopspec
     OS_ARRAYCOPY                = 1    # "list.ll_arraycopy"
     OS_STR2UNICODE              = 2    # "str.str2unicode"
-    OS_SHRINK_ARRAY             = 3    # rgc.ll_shrink_array
-    OS_DICT_LOOKUP              = 4    # ll_dict_lookup
-    OS_THREADLOCALREF_GET       = 5    # llop.threadlocalref_get
-    OS_NOT_IN_TRACE             = 8    # for calls not recorded in the jit trace
     #
     OS_STR_CONCAT               = 22   # "stroruni.concat"
     OS_STR_SLICE                = 23   # "stroruni.slice"
@@ -36,7 +32,6 @@ class EffectInfo(object):
     OS_STREQ_NONNULL_CHAR       = 29   # s1 == char  (assert s1!=NULL)
     OS_STREQ_CHECKNULL_CHAR     = 30   # s1!=NULL and s1==char
     OS_STREQ_LENGTHOK           = 31   # s1 == s2    (assert len(s1)==len(s2))
-    OS_STR_CMP                  = 32   # "stroruni.cmp"
     #
     OS_UNI_CONCAT               = 42   #
     OS_UNI_SLICE                = 43   #
@@ -48,7 +43,6 @@ class EffectInfo(object):
     OS_UNIEQ_NONNULL_CHAR       = 49   #   (must be the same amount as for
     OS_UNIEQ_CHECKNULL_CHAR     = 50   #   STR, in the same order)
     OS_UNIEQ_LENGTHOK           = 51   #
-    OS_UNI_CMP                  = 52
     _OS_offset_uni              = OS_UNI_CONCAT - OS_STR_CONCAT
     #
     OS_LIBFFI_CALL              = 62
@@ -81,102 +75,71 @@ class EffectInfo(object):
     OS_LLONG_U_TO_FLOAT         = 94
     #
     OS_MATH_SQRT                = 100
-    OS_MATH_READ_TIMESTAMP      = 101
     #
     OS_RAW_MALLOC_VARSIZE_CHAR  = 110
     OS_RAW_FREE                 = 111
-    #
-    OS_STR_COPY_TO_RAW          = 112
-    OS_UNI_COPY_TO_RAW          = 113
 
     OS_JIT_FORCE_VIRTUAL        = 120
-    OS_JIT_FORCE_VIRTUALIZABLE  = 121
 
     # for debugging:
-    _OS_CANRAISE = set([
-        OS_NONE, OS_STR2UNICODE, OS_LIBFFI_CALL, OS_RAW_MALLOC_VARSIZE_CHAR,
-        OS_JIT_FORCE_VIRTUAL, OS_SHRINK_ARRAY, OS_DICT_LOOKUP,
-        OS_NOT_IN_TRACE,
-    ])
-
-    _NO_CALL_RELEASE_GIL_TARGET = (llmemory.NULL, 0)
+    _OS_CANRAISE = set([OS_NONE, OS_STR2UNICODE, OS_LIBFFI_CALL,
+                        OS_RAW_MALLOC_VARSIZE_CHAR, OS_JIT_FORCE_VIRTUAL])
 
     def __new__(cls, readonly_descrs_fields, readonly_descrs_arrays,
-                readonly_descrs_interiorfields,
                 write_descrs_fields, write_descrs_arrays,
-                write_descrs_interiorfields,
                 extraeffect=EF_CAN_RAISE,
                 oopspecindex=OS_NONE,
                 can_invalidate=False,
-                call_release_gil_target=_NO_CALL_RELEASE_GIL_TARGET,
-                extradescrs=None):
+                call_release_gil_target=llmemory.NULL):
         key = (frozenset_or_none(readonly_descrs_fields),
                frozenset_or_none(readonly_descrs_arrays),
-               frozenset_or_none(readonly_descrs_interiorfields),
                frozenset_or_none(write_descrs_fields),
                frozenset_or_none(write_descrs_arrays),
-               frozenset_or_none(write_descrs_interiorfields),
                extraeffect,
                oopspecindex,
                can_invalidate)
-        tgt_func, tgt_saveerr = call_release_gil_target
-        if tgt_func:
+        if call_release_gil_target:
             key += (object(),)    # don't care about caching in this case
         if key in cls._cache:
             return cls._cache[key]
         if extraeffect == EffectInfo.EF_RANDOM_EFFECTS:
             assert readonly_descrs_fields is None
             assert readonly_descrs_arrays is None
-            assert readonly_descrs_interiorfields is None
             assert write_descrs_fields is None
             assert write_descrs_arrays is None
-            assert write_descrs_interiorfields is None
         else:
             assert readonly_descrs_fields is not None
             assert readonly_descrs_arrays is not None
-            assert readonly_descrs_interiorfields is not None
             assert write_descrs_fields is not None
             assert write_descrs_arrays is not None
-            assert write_descrs_interiorfields is not None
         result = object.__new__(cls)
         result.readonly_descrs_fields = readonly_descrs_fields
         result.readonly_descrs_arrays = readonly_descrs_arrays
-        result.readonly_descrs_interiorfields = readonly_descrs_interiorfields
         if extraeffect == EffectInfo.EF_LOOPINVARIANT or \
            extraeffect == EffectInfo.EF_ELIDABLE_CANNOT_RAISE or \
-           extraeffect == EffectInfo.EF_ELIDABLE_OR_MEMORYERROR or \
            extraeffect == EffectInfo.EF_ELIDABLE_CAN_RAISE:
-            # Ignore the writes.  Note that this ignores also writes with
-            # no corresponding reads (rarely the case, but possible).
             result.write_descrs_fields = []
             result.write_descrs_arrays = []
-            result.write_descrs_interiorfields = []
         else:
             result.write_descrs_fields = write_descrs_fields
             result.write_descrs_arrays = write_descrs_arrays
-            result.write_descrs_interiorfields = write_descrs_interiorfields
         result.extraeffect = extraeffect
         result.can_invalidate = can_invalidate
         result.oopspecindex = oopspecindex
-        result.extradescrs = extradescrs
         result.call_release_gil_target = call_release_gil_target
-        if result.check_can_raise(ignore_memoryerror=True):
+        if result.check_can_raise():
             assert oopspecindex in cls._OS_CANRAISE
         cls._cache[key] = result
         return result
 
-    def check_can_raise(self, ignore_memoryerror=False):
-        if ignore_memoryerror:
-            return self.extraeffect > self.EF_ELIDABLE_OR_MEMORYERROR
-        else:
-            return self.extraeffect > self.EF_CANNOT_RAISE
+    def check_can_raise(self):
+        return self.extraeffect > self.EF_CANNOT_RAISE
 
     def check_can_invalidate(self):
         return self.can_invalidate
 
     def check_is_elidable(self):
         return (self.extraeffect == self.EF_ELIDABLE_CAN_RAISE or
-                self.extraeffect == self.EF_ELIDABLE_OR_MEMORYERROR or
                 self.extraeffect == self.EF_ELIDABLE_CANNOT_RAISE)
 
     def check_forces_virtual_or_virtualizable(self):
@@ -186,14 +149,7 @@ class EffectInfo(object):
         return self.extraeffect >= self.EF_RANDOM_EFFECTS
 
     def is_call_release_gil(self):
-        tgt_func, tgt_saveerr = self.call_release_gil_target
-        return bool(tgt_func)
-
-    def __repr__(self):
-        more = ''
-        if self.oopspecindex:
-            more = ' OS=%r' % (self.oopspecindex,)
-        return '<EffectInfo 0x%x: EF=%r%s>' % (id(self), self.extraeffect, more)
+        return bool(self.call_release_gil_target)
 
 
 def frozenset_or_none(x):
@@ -201,7 +157,7 @@ def frozenset_or_none(x):
         return None
     return frozenset(x)
 
-EffectInfo.MOST_GENERAL = EffectInfo(None, None, None, None, None, None,
+EffectInfo.MOST_GENERAL = EffectInfo(None, None, None, None,
                                      EffectInfo.EF_RANDOM_EFFECTS,
                                      can_invalidate=True)
 
@@ -210,25 +166,19 @@ def effectinfo_from_writeanalyze(effects, cpu,
                                  extraeffect=EffectInfo.EF_CAN_RAISE,
                                  oopspecindex=EffectInfo.OS_NONE,
                                  can_invalidate=False,
-                                 call_release_gil_target=
-                                     EffectInfo._NO_CALL_RELEASE_GIL_TARGET,
-                                 extradescr=None):
+                                 call_release_gil_target=llmemory.NULL):
     from rpython.translator.backendopt.writeanalyze import top_set
     if effects is top_set or extraeffect == EffectInfo.EF_RANDOM_EFFECTS:
         readonly_descrs_fields = None
         readonly_descrs_arrays = None
-        readonly_descrs_interiorfields = None
         write_descrs_fields = None
         write_descrs_arrays = None
-        write_descrs_interiorfields = None
         extraeffect = EffectInfo.EF_RANDOM_EFFECTS
     else:
         readonly_descrs_fields = []
         readonly_descrs_arrays = []
-        readonly_descrs_interiorfields = []
         write_descrs_fields = []
         write_descrs_arrays = []
-        write_descrs_interiorfields = []
 
         def add_struct(descrs_fields, (_, T, fieldname)):
             T = deref(T)
@@ -242,29 +192,6 @@ def effectinfo_from_writeanalyze(effects, cpu,
                 descr = cpu.arraydescrof(ARRAY)
                 descrs_arrays.append(descr)
 
-        def add_interiorfield(descrs_interiorfields, (_, T, fieldname)):
-            T = deref(T)
-            if not isinstance(T, lltype.Array):
-                return # let's not consider structs for now
-            if not consider_array(T):
-                return
-            if getattr(T.OF, fieldname) is lltype.Void:
-                return
-            descr = cpu.interiorfielddescrof(T, fieldname)
-            descrs_interiorfields.append(descr)
-
-        # a read or a write to an interiorfield, inside an array of
-        # structs, is additionally recorded as a read or write of
-        # the array itself
-        extraef = set()
-        for tup in effects:
-            if tup[0] == "interiorfield" or tup[0] == "readinteriorfield":
-                T = deref(tup[1])
-                if isinstance(T, lltype.Array) and consider_array(T):
-                    extraef.add((tup[0].replace("interiorfield", "array"),
-                                 tup[1]))
-        effects |= extraef
-
         for tup in effects:
             if tup[0] == "struct":
                 add_struct(write_descrs_fields, tup)
@@ -272,12 +199,6 @@ def effectinfo_from_writeanalyze(effects, cpu,
                 tupw = ("struct",) + tup[1:]
                 if tupw not in effects:
                     add_struct(readonly_descrs_fields, tup)
-            elif tup[0] == "interiorfield":
-                add_interiorfield(write_descrs_interiorfields, tup)
-            elif tup[0] == "readinteriorfield":
-                tupw = ('interiorfield',) + tup[1:]
-                if tupw not in effects:
-                    add_interiorfield(readonly_descrs_interiorfields, tup)
             elif tup[0] == "array":
                 add_array(write_descrs_arrays, tup)
             elif tup[0] == "readarray":
@@ -289,19 +210,18 @@ def effectinfo_from_writeanalyze(effects, cpu,
     #
     return EffectInfo(readonly_descrs_fields,
                       readonly_descrs_arrays,
-                      readonly_descrs_interiorfields,
                       write_descrs_fields,
                       write_descrs_arrays,
-                      write_descrs_interiorfields,
                       extraeffect,
                       oopspecindex,
                       can_invalidate,
-                      call_release_gil_target,
-                      extradescr)
+                      call_release_gil_target)
 
 def consider_struct(TYPE, fieldname):
     if fieldType(TYPE, fieldname) is lltype.Void:
         return False
+    if isinstance(TYPE, ootype.OOType):
+        return True
     if not isinstance(TYPE, lltype.GcStruct): # can be a non-GC-struct
         return False
     if fieldname == "typeptr" and TYPE is OBJECT:
@@ -314,6 +234,8 @@ def consider_struct(TYPE, fieldname):
 def consider_array(ARRAY):
     if arrayItem(ARRAY) is lltype.Void:
         return False
+    if isinstance(ARRAY, ootype.Array):
+        return True
     if not isinstance(ARRAY, lltype.GcArray): # can be a non-GC-array
         return False
     return True
@@ -330,11 +252,15 @@ class QuasiImmutAnalyzer(BoolGraphAnalyzer):
         return op.opname == 'jit_force_quasi_immutable'
 
 class RandomEffectsAnalyzer(BoolGraphAnalyzer):
-    def analyze_external_call(self, funcobj, seen=None):
-        if funcobj.random_effects_on_gcobjs:
-            return True
+    def analyze_external_call(self, op, seen=None):
+        try:
+            funcobj = op.args[0].value._obj
+            if funcobj.random_effects_on_gcobjs:
+                return True
+        except (AttributeError, lltype.DelayedPointer):
+            return True   # better safe than sorry
         return super(RandomEffectsAnalyzer, self).analyze_external_call(
-            funcobj, seen)
+            op, seen)
 
     def analyze_simple_operation(self, op, graphinfo):
         return False

@@ -31,7 +31,7 @@ class TestDictError(object):
         msg = excinfo.value.nice_error_message("<stdin>")
         print msg
         assert msg == """\
-  File <stdin>, line 3
+  File <stdin>, line 2
     'type': 'SCRIPT',$#
                      ^
 LexerError"""
@@ -51,7 +51,7 @@ LexerError"""
         msg = excinfo.value.nice_error_message("<stdin>", source)
         print msg
         assert msg == """\
-  File <stdin>, line 5
+  File <stdin>, line 4
     'length':: '1',
              ^
 ParseError: expected '{', 'QUOTED_STRING' or '['"""

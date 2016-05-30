@@ -5,7 +5,7 @@ import os
 import errno
 
 from pypy.interpreter.gateway import interp2app, unwrap_spec
-from rpython.rlib import rgil
+from pypy.module.thread import gil
 
 
 NORMAL_TIMEOUT = 300.0   # 5 minutes
@@ -15,9 +15,9 @@ def waitfor(space, w_condition, delay=1):
     adaptivedelay = 0.04
     limit = time.time() + delay * NORMAL_TIMEOUT
     while time.time() <= limit:
-        rgil.release()
+        gil.before_external_call()
         time.sleep(adaptivedelay)
-        rgil.acquire()
+        gil.after_external_call()
         gc.collect()
         if space.is_true(space.call_function(w_condition)):
             return
@@ -41,10 +41,9 @@ def timeout_killer(pid, delay):
 
 
 class GenericTestThread:
-    spaceconfig = dict(usemodules=('thread', 'time', 'signal'))
+    spaceconfig = dict(usemodules=('thread', 'rctime', 'signal'))
 
     def setup_class(cls):
-        cls.w_runappdirect = cls.space.wrap(cls.runappdirect)
         if cls.runappdirect:
             def plain_waitfor(self, condition, delay=1):
                 adaptivedelay = 0.04

@@ -32,7 +32,7 @@ Verbosity
 
 Selecting tests
 
--r/--randomize  -- randomize test execution order (see below)
+-r/--random     -- randomize test execution order (see below)
    --randseed   -- pass a random seed to reproduce a previous random run
 -f/--fromfile   -- read names of tests to run from a file (see below)
 -x/--exclude    -- arguments are tests to *exclude*
@@ -158,7 +158,6 @@ import json
 import os
 import random
 import re
-import shutil
 import sys
 import time
 import traceback
@@ -259,7 +258,7 @@ def main(tests=None, testdir=None, verbose=0, quiet=False,
     try:
         opts, args = getopt.getopt(sys.argv[1:], 'hvqxsSrf:lu:t:TD:NLR:FwWM:j:',
             ['help', 'verbose', 'verbose2', 'verbose3', 'quiet',
-             'exclude', 'single', 'slow', 'randomize', 'fromfile=', 'findleaks',
+             'exclude', 'single', 'slow', 'random', 'fromfile', 'findleaks',
              'use=', 'threshold=', 'trace', 'coverdir=', 'nocoverdir',
              'runleaks', 'huntrleaks=', 'memlimit=', 'randseed=',
              'multiprocess=', 'slaveargs=', 'forever', 'header'])
@@ -475,12 +474,8 @@ def main(tests=None, testdir=None, verbose=0, quiet=False,
                     if bad:
                         return
         tests = test_forever()
-        test_count = ''
-        test_count_width = 3
     else:
         tests = iter(selected)
-        test_count = '/{}'.format(len(selected))
-        test_count_width = len(test_count) - 1
 
     if use_mp:
         try:
@@ -525,6 +520,8 @@ def main(tests=None, testdir=None, verbose=0, quiet=False,
                         output.put((None, None, None, None))
                         return
                     result = json.loads(result)
+                    if not quiet:
+                        stdout = test+'\n'+stdout
                     output.put((test, stdout.rstrip(), stderr.rstrip(), result))
             except BaseException:
                 output.put((None, None, None, None))
@@ -533,7 +530,6 @@ def main(tests=None, testdir=None, verbose=0, quiet=False,
         for worker in workers:
             worker.start()
         finished = 0
-        test_index = 1
         try:
             while finished < use_mp:
                 test, stdout, stderr, result = output.get()
@@ -544,29 +540,19 @@ def main(tests=None, testdir=None, verbose=0, quiet=False,
                     print stdout
                 if stderr:
                     print >>sys.stderr, stderr
-                sys.stdout.flush()
-                sys.stderr.flush()
                 if result[0] == INTERRUPTED:
                     assert result[1] == 'KeyboardInterrupt'
                     raise KeyboardInterrupt   # What else?
                 accumulate_result(test, result)
-                if not quiet:
-                    fmt = "[{1:{0}}{2}/{3}] {4}" if bad else "[{1:{0}}{2}] {4}"
-                    print(fmt.format(
-                        test_count_width, test_index, test_count,
-                        len(bad), test))
-                test_index += 1
         except KeyboardInterrupt:
             interrupted = True
             pending.close()
         for worker in workers:
             worker.join()
     else:
-        for test_index, test in enumerate(tests, 1):
+        for test in tests:
             if not quiet:
-                fmt = "[{1:{0}}{2}/{3}] {4}" if bad else "[{1:{0}}{2}] {4}"
-                print(fmt.format(
-                    test_count_width, test_index, test_count, len(bad), test))
+                print test
                 sys.stdout.flush()
             if trace:
                 # If we're tracing code coverage, then we don't exit with status
@@ -772,9 +758,7 @@ class saved_test_environment:
     # the corresponding method names.
 
     resources = ('sys.argv', 'cwd', 'sys.stdin', 'sys.stdout', 'sys.stderr',
-                 'os.environ', 'sys.path', 'asyncore.socket_map',
-                 'files',
-                )
+                 'os.environ', 'sys.path', 'asyncore.socket_map')
 
     def get_sys_argv(self):
         return id(sys.argv), sys.argv, sys.argv[:]
@@ -824,32 +808,6 @@ class saved_test_environment:
         if asyncore is not None:
             asyncore.close_all(ignore_all=True)
             asyncore.socket_map.update(saved_map)
-
-    def get_test_support_TESTFN(self):
-        if os.path.isfile(test_support.TESTFN):
-            result = 'f'
-        elif os.path.isdir(test_support.TESTFN):
-            result = 'd'
-        else:
-            result = None
-        return result
-    def restore_test_support_TESTFN(self, saved_value):
-        if saved_value is None:
-            if os.path.isfile(test_support.TESTFN):
-                os.unlink(test_support.TESTFN)
-            elif os.path.isdir(test_support.TESTFN):
-                shutil.rmtree(test_support.TESTFN)
-
-    def get_files(self):
-        return sorted(fn + ('/' if os.path.isdir(fn) else '')
-                      for fn in os.listdir(os.curdir))
-    def restore_files(self, saved_value):
-        fn = test_support.TESTFN
-        if fn not in saved_value and (fn + '/') not in saved_value:
-            if os.path.isfile(fn):
-                test_support.unlink(fn)
-            elif os.path.isdir(fn):
-                test_support.rmtree(fn)
 
     def resource_info(self):
         for name in self.resources:
@@ -966,6 +924,7 @@ def runtest_inner(test, verbose, quiet, huntrleaks=False):
         return FAILED, test_time
 
 def cleanup_test_droppings(testname, verbose):
+    import shutil
     import stat
     import gc
 
@@ -1202,7 +1161,6 @@ _expectations = {
         test_pwd
         test_resource
         test_signal
-        test_spwd
         test_threadsignals
         test_timing
         test_wait3

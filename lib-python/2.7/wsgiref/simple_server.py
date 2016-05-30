@@ -113,14 +113,7 @@ class WSGIRequestHandler(BaseHTTPRequestHandler):
     def handle(self):
         """Handle a single HTTP request"""
 
-        self.raw_requestline = self.rfile.readline(65537)
-        if len(self.raw_requestline) > 65536:
-            self.requestline = ''
-            self.request_version = ''
-            self.command = ''
-            self.send_error(414)
-            return
-
+        self.raw_requestline = self.rfile.readline()
         if not self.parse_request(): # An error code has been sent, just exit
             return
 
@@ -160,4 +153,3 @@ if __name__ == '__main__':
     import webbrowser
     webbrowser.open('http://localhost:8000/xyz?abc')
     httpd.handle_request()  # serve one request, then exit
-    httpd.server_close()

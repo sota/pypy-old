@@ -1,3 +1,4 @@
+
 """ Interpreter-level implementation of structure, exposing ll-structure
 to app-level with apropriate interface
 """
@@ -5,21 +6,16 @@ to app-level with apropriate interface
 from pypy.interpreter.gateway import interp2app, unwrap_spec
 from pypy.interpreter.typedef import interp_attrproperty
 from pypy.interpreter.typedef import TypeDef, GetSetProperty
-from pypy.interpreter.error import OperationError, oefmt
+from rpython.rtyper.lltypesystem import lltype, rffi
+from pypy.interpreter.error import OperationError, operationerrfmt
 from pypy.module._rawffi.interp_rawffi import segfault_exception, _MS_WINDOWS
 from pypy.module._rawffi.interp_rawffi import W_DataShape, W_DataInstance
 from pypy.module._rawffi.interp_rawffi import wrap_value, unwrap_value
 from pypy.module._rawffi.interp_rawffi import unpack_shape_with_length
-from pypy.module._rawffi.interp_rawffi import LL_TYPEMAP
+from pypy.module._rawffi.interp_rawffi import size_alignment, LL_TYPEMAP
 from pypy.module._rawffi.interp_rawffi import unroll_letters_for_numbers
-from pypy.module._rawffi.interp_rawffi import size_alignment
-from pypy.module._rawffi.interp_rawffi import read_ptr, write_ptr
-from rpython.rlib import clibffi, rgc
-from rpython.rlib.rarithmetic import intmask, signedtype, r_uint, \
-    r_ulonglong
-from rpython.rtyper.lltypesystem import lltype, rffi
-
-
+from rpython.rlib import clibffi
+from rpython.rlib.rarithmetic import intmask, r_uint, signedtype, widen
 
 def unpack_fields(space, w_fields):
     fields_w = space.unpackiterable(w_fields)
@@ -35,8 +31,9 @@ def unpack_fields(space, w_fields):
         try:
             name = space.str_w(l_w[0])
         except OperationError:
-            raise oefmt(space.w_TypeError,
-                        "structure field name must be string not %T", l_w[0])
+            raise OperationError(space.w_TypeError, space.wrap(
+               "structure field name must be string not %s" %
+               space.type(l_w[0]).getname(space)))
         tp = unpack_shape_with_length(space, l_w[1])
 
         if len_l == 3:
@@ -87,20 +84,20 @@ def size_alignment_pos(fields, is_union=False, pack=0):
               (not _MS_WINDOWS or fieldsize * 8 == last_size) and
               fieldsize * 8 <= last_size and
               bitoffset + bitsize <= last_size):
-            # continue bit field
-            field_type = CONT_BITFIELD
+              # continue bit field
+              field_type = CONT_BITFIELD
         elif (not _MS_WINDOWS and
               last_size and # we have a bitfield open
               fieldsize * 8 >= last_size and
               bitoffset + bitsize <= fieldsize * 8):
-            # expand bit field
-            field_type = EXPAND_BITFIELD
+              # expand bit field
+              field_type = EXPAND_BITFIELD
         else:
-            # start new bitfield
-            field_type = NEW_BITFIELD
-            has_bitfield = True
-            bitoffset = 0
-            last_size = fieldsize * 8
+              # start new bitfield
+              field_type = NEW_BITFIELD
+              has_bitfield = True
+              bitoffset = 0
+              last_size = fieldsize * 8
 
         if is_union:
             pos.append(0)
@@ -145,8 +142,8 @@ class W_Structure(W_DataShape):
             for i in range(len(fields)):
                 name, tp, bitsize = fields[i]
                 if name in name_to_index:
-                    raise oefmt(space.w_ValueError,
-                                "duplicate field name %s", name)
+                    raise operationerrfmt(space.w_ValueError,
+                        "duplicate field name %s", name)
                 name_to_index[name] = i
             size, alignment, pos, bitsizes = size_alignment_pos(
                 fields, is_union, pack)
@@ -171,8 +168,8 @@ class W_Structure(W_DataShape):
         try:
             return self.name_to_index[attr]
         except KeyError:
-            raise oefmt(space.w_AttributeError,
-                        "C Structure has no attribute %s", attr)
+            raise operationerrfmt(space.w_AttributeError,
+                "C Structure has no attribute %s", attr)
 
     @unwrap_spec(autofree=bool)
     def descr_call(self, space, autofree=False):
@@ -227,7 +224,6 @@ class W_Structure(W_DataShape):
                                                            fieldtypes)
         return self.ffi_struct.ffistruct
 
-    @rgc.must_be_light_finalizer
     def __del__(self):
         if self.ffi_struct:
             lltype.free(self.ffi_struct, flavor='raw')
@@ -265,62 +261,57 @@ W_Structure.typedef.acceptable_as_base_class = False
 
 def LOW_BIT(x):
     return x & 0xFFFF
-
 def NUM_BITS(x):
     return x >> 16
-
-def BIT_MASK(x, ll_t):
-    if ll_t is lltype.SignedLongLong or ll_t is lltype.UnsignedLongLong:
-        one = r_ulonglong(1)
-    else:
-        one = r_uint(1)
-    # to avoid left shift by x == sizeof(ll_t)
-    return (((one << (x - 1)) - 1) << 1) + 1
-BIT_MASK._annspecialcase_ = 'specialize:arg(1)'
+def BIT_MASK(x):
+    return (1 << x) - 1
 
 def push_field(self, num, value):
     ptr = rffi.ptradd(self.ll_buffer, self.shape.ll_positions[num])
     TP = lltype.typeOf(value)
+    T = lltype.Ptr(rffi.CArray(TP))
+
     # Handle bitfields
     for c in unroll_letters_for_numbers:
         if LL_TYPEMAP[c] is TP and self.shape.ll_bitsizes:
             # Modify the current value with the bitfield changed
             bitsize = self.shape.ll_bitsizes[num]
             numbits = NUM_BITS(bitsize)
+            lowbit = LOW_BIT(bitsize)
             if numbits:
-                lowbit = LOW_BIT(bitsize)
-                bitmask = BIT_MASK(numbits, TP)
-                masktype = lltype.typeOf(bitmask)
-                value = rffi.cast(masktype, value)
-                current = rffi.cast(masktype, read_ptr(ptr, 0, TP))
-                current &= ~(bitmask << lowbit)
+                value = widen(value)
+                current = widen(rffi.cast(T, ptr)[0])
+                bitmask = BIT_MASK(numbits)
+                current &= ~ (bitmask << lowbit)
                 current |= (value & bitmask) << lowbit
                 value = rffi.cast(TP, current)
             break
-    write_ptr(ptr, 0, value)
+
+    rffi.cast(T, ptr)[0] = value
 push_field._annspecialcase_ = 'specialize:argtype(2)'
 
 def cast_pos(self, i, ll_t):
     pos = rffi.ptradd(self.ll_buffer, self.shape.ll_positions[i])
-    value = read_ptr(pos, 0, ll_t)
+    TP = lltype.Ptr(rffi.CArray(ll_t))
+    value = rffi.cast(TP, pos)[0]
+
     # Handle bitfields
     for c in unroll_letters_for_numbers:
         if LL_TYPEMAP[c] is ll_t and self.shape.ll_bitsizes:
             bitsize = self.shape.ll_bitsizes[i]
             numbits = NUM_BITS(bitsize)
+            lowbit = LOW_BIT(bitsize)
             if numbits:
-                lowbit = LOW_BIT(bitsize)
-                bitmask = BIT_MASK(numbits, ll_t)
-                masktype = lltype.typeOf(bitmask)
-                value = rffi.cast(masktype, value)
+                value = widen(value)
                 value >>= lowbit
-                value &= bitmask
+                value &= BIT_MASK(numbits)
                 if ll_t is lltype.Bool or signedtype(ll_t._type):
                     sign = (value >> (numbits - 1)) & 1
                     if sign:
-                        value -= bitmask + 1
+                        value = value - (1 << numbits)
                 value = rffi.cast(ll_t, value)
             break
+
     return value
 cast_pos._annspecialcase_ = 'specialize:arg(2)'
 
@@ -364,6 +355,7 @@ W_StructureInstance.typedef = TypeDef(
     __repr__    = interp2app(W_StructureInstance.descr_repr),
     __getattr__ = interp2app(W_StructureInstance.getattr),
     __setattr__ = interp2app(W_StructureInstance.setattr),
+    __buffer__  = interp2app(W_StructureInstance.descr_buffer),
     buffer      = GetSetProperty(W_StructureInstance.getbuffer),
     free        = interp2app(W_StructureInstance.free),
     shape       = interp_attrproperty('shape', W_StructureInstance),
@@ -376,7 +368,6 @@ class W_StructureInstanceAutoFree(W_StructureInstance):
     def __init__(self, space, shape):
         W_StructureInstance.__init__(self, space, shape, 0)
 
-    @rgc.must_be_light_finalizer
     def __del__(self):
         if self.ll_buffer:
             self._free()
@@ -386,6 +377,7 @@ W_StructureInstanceAutoFree.typedef = TypeDef(
     __repr__    = interp2app(W_StructureInstance.descr_repr),
     __getattr__ = interp2app(W_StructureInstance.getattr),
     __setattr__ = interp2app(W_StructureInstance.setattr),
+    __buffer__  = interp2app(W_StructureInstance.descr_buffer),
     buffer      = GetSetProperty(W_StructureInstance.getbuffer),
     shape       = interp_attrproperty('shape', W_StructureInstance),
     byptr       = interp2app(W_StructureInstance.byptr),

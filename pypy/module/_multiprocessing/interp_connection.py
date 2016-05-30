@@ -1,35 +1,25 @@
-import sys
-from errno import EINTR
-
-from rpython.rlib import rpoll, rsocket
-from rpython.rlib.rarithmetic import intmask
-from rpython.rtyper.lltypesystem import lltype, rffi
-
+from __future__ import with_statement
 from pypy.interpreter.baseobjspace import W_Root
-from pypy.interpreter.error import OperationError, oefmt, wrap_oserror
-from pypy.interpreter.gateway import (
-    WrappedDefault, interp2app, interpindirect2app, unwrap_spec)
-from pypy.interpreter.typedef import GetSetProperty, TypeDef
+from pypy.interpreter.typedef import TypeDef, GetSetProperty
+from pypy.interpreter.gateway import interp2app, unwrap_spec, WrappedDefault
+from pypy.interpreter.error import (
+    OperationError, wrap_oserror, operationerrfmt)
+from rpython.rtyper.lltypesystem import rffi, lltype
+from rpython.rlib.rarithmetic import intmask
+from rpython.rlib import rpoll, rsocket
+import sys
 
-READABLE, WRITABLE = range(1, 3)
+READABLE = 1
+WRITABLE = 2
+
 PY_SSIZE_T_MAX = sys.maxint
 PY_SSIZE_T_MIN = -sys.maxint - 1
 
-class State(object):
-    def __init__(self, space):
-        pass
-
-    def init(self, space):
-        w_builtins = space.getbuiltinmodule('__builtin__')
-        w_module = space.call_method(
-            w_builtins, '__import__', space.wrap("multiprocessing"))
-        self.w_BufferTooShort = space.getattr(w_module, space.wrap("BufferTooShort"))
-
-        self.w_picklemodule = space.call_method(
-            w_builtins, '__import__', space.wrap("pickle"))
-
 def BufferTooShort(space, w_data):
-    w_BufferTooShort = space.fromcache(State).w_BufferTooShort
+    w_builtins = space.getbuiltinmodule('__builtin__')
+    w_module = space.call_method(
+        w_builtins, '__import__', space.wrap("multiprocessing"))
+    w_BufferTooShort = space.getattr(w_module, space.wrap("BufferTooShort"))
     return OperationError(w_BufferTooShort, w_data)
 
 def w_handle(space, handle):
@@ -38,7 +28,6 @@ def w_handle(space, handle):
 
 class W_BaseConnection(W_Root):
     BUFFER_SIZE = 1024
-    buffer = lltype.nullptr(rffi.CCHARP.TO)
 
     def __init__(self, flags):
         self.flags = flags
@@ -46,8 +35,7 @@ class W_BaseConnection(W_Root):
                                     flavor='raw')
 
     def __del__(self):
-        if self.buffer:
-            lltype.free(self.buffer, flavor='raw')
+        lltype.free(self.buffer, flavor='raw')
         try:
             self.do_close()
         except OSError:
@@ -58,11 +46,9 @@ class W_BaseConnection(W_Root):
         raise NotImplementedError
     def is_valid(self):
         return False
-    def do_send_string(self, space, buf, offset, size):
+    def do_send_string(self, space, buffer, offset, size):
         raise NotImplementedError
     def do_recv_string(self, space, buflength, maxlength):
-        raise NotImplementedError
-    def do_poll(self, space, timeout):
         raise NotImplementedError
 
     def close(self):
@@ -75,14 +61,6 @@ class W_BaseConnection(W_Root):
     def writable_get(self, space):
         return space.newbool(bool(self.flags & WRITABLE))
 
-    def _repr(self, space, handle):
-        conn_type = ["read-only", "write-only", "read-write"][self.flags - 1]
-        return space.wrap("<%s %s, handle %d>" % (
-                conn_type, space.type(self).getname(space), handle))
-
-    def descr_repr(self, space):
-        raise NotImplementedError
-
     def _check_readable(self, space):
         if not self.flags & READABLE:
             raise OperationError(space.w_IOError,
@@ -92,10 +70,9 @@ class W_BaseConnection(W_Root):
             raise OperationError(space.w_IOError,
                                  space.wrap("connection is read-only"))
 
-    @unwrap_spec(offset='index', size='index')
-    def send_bytes(self, space, w_buf, offset=0, size=PY_SSIZE_T_MIN):
-        buf = space.getarg_w('s*', w_buf).as_str()
-        length = len(buf)
+    @unwrap_spec(buffer='bufferstr', offset='index', size='index')
+    def send_bytes(self, space, buffer, offset=0, size=PY_SSIZE_T_MIN):
+        length = len(buffer)
         self._check_writable(space)
         if offset < 0:
             raise OperationError(space.w_ValueError,
@@ -113,7 +90,7 @@ class W_BaseConnection(W_Root):
             raise OperationError(space.w_ValueError,
                                  space.wrap("buffer length > offset + size"))
 
-        self.do_send_string(space, buf, offset, size)
+        self.do_send_string(space, buffer, offset, size)
 
     @unwrap_spec(maxlength='index')
     def recv_bytes(self, space, maxlength=PY_SSIZE_T_MAX):
@@ -135,7 +112,7 @@ class W_BaseConnection(W_Root):
 
     @unwrap_spec(offset='index')
     def recv_bytes_into(self, space, w_buffer, offset=0):
-        rwbuffer = space.writebuf_w(w_buffer)
+        rwbuffer = space.rwbuffer_w(w_buffer)
         length = rwbuffer.getlength()
 
         res, newbuf = self.do_recv_string(
@@ -154,14 +131,16 @@ class W_BaseConnection(W_Root):
     def send(self, space, w_obj):
         self._check_writable(space)
 
-        w_picklemodule = space.fromcache(State).w_picklemodule
+        w_builtins = space.getbuiltinmodule('__builtin__')
+        w_picklemodule = space.call_method(
+            w_builtins, '__import__', space.wrap("pickle"))
         w_protocol = space.getattr(
             w_picklemodule, space.wrap("HIGHEST_PROTOCOL"))
         w_pickled = space.call_method(
             w_picklemodule, "dumps", w_obj, w_protocol)
 
-        buf = space.str_w(w_pickled)
-        self.do_send_string(space, buf, 0, len(buf))
+        buffer = space.bufferstr_w(w_pickled)
+        self.do_send_string(space, buffer, 0, len(buffer))
 
     def recv(self, space):
         self._check_readable(space)
@@ -178,7 +157,8 @@ class W_BaseConnection(W_Root):
                 rffi.free_charp(newbuf)
 
         w_builtins = space.getbuiltinmodule('__builtin__')
-        w_picklemodule = space.fromcache(State).w_picklemodule
+        w_picklemodule = space.call_method(
+            w_builtins, '__import__', space.wrap("pickle"))
         w_unpickled = space.call_method(
             w_picklemodule, "loads", w_received)
 
@@ -197,7 +177,6 @@ class W_BaseConnection(W_Root):
 
 W_BaseConnection.typedef = TypeDef(
     'BaseConnection',
-    __repr__ = interpindirect2app(W_BaseConnection.descr_repr),
     closed = GetSetProperty(W_BaseConnection.closed_get),
     readable = GetSetProperty(W_BaseConnection.readable_get),
     writable = GetSetProperty(W_BaseConnection.writable_get),
@@ -213,7 +192,6 @@ W_BaseConnection.typedef = TypeDef(
 
 class W_FileConnection(W_BaseConnection):
     INVALID_HANDLE_VALUE = -1
-    fd = INVALID_HANDLE_VALUE
 
     if sys.platform == 'win32':
         def WRITE(self, data):
@@ -248,8 +226,7 @@ class W_FileConnection(W_BaseConnection):
 
     def __init__(self, space, fd, flags):
         if fd == self.INVALID_HANDLE_VALUE or fd < 0:
-            raise OperationError(space.w_IOError,
-                                 space.wrap("invalid handle %d" % fd))
+            raise OperationError(space.w_IOError, space.wrap("invalid handle %d" % fd))
         W_BaseConnection.__init__(self, flags)
         self.fd = fd
 
@@ -260,9 +237,6 @@ class W_FileConnection(W_BaseConnection):
         self = space.allocate_instance(W_FileConnection, w_subtype)
         W_FileConnection.__init__(self, space, fd, flags)
         return space.wrap(self)
-
-    def descr_repr(self, space):
-        return self._repr(space, self.fd)
 
     def fileno(self, space):
         return space.wrap(self.fd)
@@ -275,8 +249,8 @@ class W_FileConnection(W_BaseConnection):
             self.CLOSE()
             self.fd = self.INVALID_HANDLE_VALUE
 
-    def do_send_string(self, space, buf, offset, size):
-        # Since str2charp copies the buf anyway, always combine the
+    def do_send_string(self, space, buffer, offset, size):
+        # Since str2charp copies the buffer anyway, always combine the
         # "header" and the "body" of the message and send them at once.
         message = lltype.malloc(rffi.CCHARP.TO, size + 4, flavor='raw')
         try:
@@ -285,7 +259,7 @@ class W_FileConnection(W_BaseConnection):
             rffi.cast(rffi.UINTP, message)[0] = length
             i = size - 1
             while i >= 0:
-                message[4 + i] = buf[offset + i]
+                message[4 + i] = buffer[offset + i]
                 i -= 1
             self._sendall(space, message, size + 4)
         finally:
@@ -318,23 +292,17 @@ class W_FileConnection(W_BaseConnection):
             try:
                 count = self.WRITE(data)
             except OSError, e:
-                if e.errno == EINTR:
-                    space.getexecutioncontext().checksignals()
-                    continue
                 raise wrap_oserror(space, e)
             size -= count
             message = rffi.ptradd(message, count)
 
-    def _recvall(self, space, buf, length):
+    def _recvall(self, space, buffer, length):
         length = intmask(length)
         remaining = length
         while remaining > 0:
             try:
                 data = self.READ(remaining)
             except OSError, e:
-                if e.errno == EINTR:
-                    space.getexecutioncontext().checksignals()
-                    continue
                 raise wrap_oserror(space, e)
             count = len(data)
             if count == 0:
@@ -345,9 +313,9 @@ class W_FileConnection(W_BaseConnection):
                         "got end of file during message"))
             # XXX inefficient
             for i in range(count):
-                buf[i] = data[i]
+                buffer[i] = data[i]
             remaining -= count
-            buf = rffi.ptradd(buf, count)
+            buffer = rffi.ptradd(buffer, count)
 
     if sys.platform == 'win32':
         def _check_fd(self):
@@ -358,13 +326,19 @@ class W_FileConnection(W_BaseConnection):
 
     def do_poll(self, space, timeout):
         if not self._check_fd():
-            raise oefmt(space.w_IOError, "handle out of range in select()")
-        r, w, e = rpoll.select([self.fd], [], [], timeout, handle_eintr=True)
-        return bool(r)
+            raise OperationError(space.w_IOError, space.wrap(
+                "handle out of range in select()"))
+
+        r, w, e = rpoll.select([self.fd], [], [], timeout)
+        if r:
+            return True
+        else:
+            return False
 
 W_FileConnection.typedef = TypeDef(
-    '_multiprocessing.Connection', W_BaseConnection.typedef,
+    'Connection', W_BaseConnection.typedef,
     __new__ = interp2app(W_FileConnection.descr_new_file.im_func),
+    __module__ = '_multiprocessing',
     fileno = interp2app(W_FileConnection.fileno),
 )
 
@@ -377,8 +351,7 @@ class W_PipeConnection(W_BaseConnection):
         self.handle = handle
 
     @unwrap_spec(readable=bool, writable=bool)
-    def descr_new_pipe(space, w_subtype, w_handle, readable=True,
-                       writable=True):
+    def descr_new_pipe(space, w_subtype, w_handle, readable=True, writable=True):
         from pypy.module._multiprocessing.interp_win32 import handle_w
         handle = handle_w(space, w_handle)
         flags = (readable and READABLE) | (writable and WRITABLE)
@@ -388,7 +361,10 @@ class W_PipeConnection(W_BaseConnection):
         return space.wrap(self)
 
     def descr_repr(self, space):
-        return self._repr(space, rffi.cast(rffi.INTPTR_T, self.handle))
+        conn_type = ["read-only", "write-only", "read-write"][self.flags]
+
+        return space.wrap("<%s %s, handle %zd>" % (
+            conn_type, space.type(self).getname(space), self.do_fileno()))
 
     def is_valid(self):
         return self.handle != self.INVALID_HANDLE_VALUE
@@ -402,12 +378,12 @@ class W_PipeConnection(W_BaseConnection):
             CloseHandle(self.handle)
             self.handle = self.INVALID_HANDLE_VALUE
 
-    def do_send_string(self, space, buf, offset, size):
+    def do_send_string(self, space, buffer, offset, size):
         from pypy.module._multiprocessing.interp_win32 import (
             _WriteFile, ERROR_NO_SYSTEM_RESOURCES)
         from rpython.rlib import rwin32
 
-        charp = rffi.str2charp(buf)
+        charp = rffi.str2charp(buffer)
         written_ptr = lltype.malloc(rffi.CArrayPtr(rwin32.DWORD).TO, 1,
                                     flavor='raw')
         try:
@@ -416,9 +392,10 @@ class W_PipeConnection(W_BaseConnection):
                 size, written_ptr, rffi.NULL)
 
             if (result == 0 and
-                rwin32.GetLastError_saved() == ERROR_NO_SYSTEM_RESOURCES):
-                raise oefmt(space.w_ValueError,
-                            "Cannot send %d bytes over connection", size)
+                rwin32.GetLastError() == ERROR_NO_SYSTEM_RESOURCES):
+                raise operationerrfmt(
+                    space.w_ValueError,
+                    "Cannot send %d bytes over connection", size)
         finally:
             rffi.free_charp(charp)
             lltype.free(written_ptr, flavor='raw')
@@ -440,7 +417,7 @@ class W_PipeConnection(W_BaseConnection):
             if result:
                 return intmask(read_ptr[0]), lltype.nullptr(rffi.CCHARP.TO)
 
-            err = rwin32.GetLastError_saved()
+            err = rwin32.GetLastError()
             if err == ERROR_BROKEN_PIPE:
                 raise OperationError(space.w_EOFError, space.w_None)
             elif err != ERROR_MORE_DATA:
@@ -451,7 +428,7 @@ class W_PipeConnection(W_BaseConnection):
                                   lltype.nullptr(rwin32.LPDWORD.TO),
                                   lltype.nullptr(rwin32.LPDWORD.TO),
                                   left_ptr):
-                raise wrap_windowserror(space, rwin32.lastSavedWindowsError())
+                raise wrap_windowserror(space, rwin32.lastWindowsError())
 
             length = intmask(read_ptr[0] + left_ptr[0])
             if length > maxlength: # bad message, close connection
@@ -470,7 +447,7 @@ class W_PipeConnection(W_BaseConnection):
                                read_ptr, rffi.NULL)
             if not result:
                 rffi.free_charp(newbuf)
-                raise wrap_windowserror(space, rwin32.lastSavedWindowsError())
+                raise wrap_windowserror(space, rwin32.lastWindowsError())
 
             assert read_ptr[0] == left_ptr[0]
             return length, newbuf
@@ -490,7 +467,7 @@ class W_PipeConnection(W_BaseConnection):
                                   lltype.nullptr(rwin32.LPDWORD.TO),
                                   bytes_ptr,
                                   lltype.nullptr(rwin32.LPDWORD.TO)):
-                raise wrap_windowserror(space, rwin32.lastSavedWindowsError())
+                raise wrap_windowserror(space, rwin32.lastWindowsError())
             bytes = bytes_ptr[0]
         finally:
             lltype.free(bytes_ptr, flavor='raw')
@@ -516,8 +493,7 @@ class W_PipeConnection(W_BaseConnection):
                                       lltype.nullptr(rwin32.LPDWORD.TO),
                                       bytes_ptr,
                                       lltype.nullptr(rwin32.LPDWORD.TO)):
-                    raise wrap_windowserror(space,
-                                            rwin32.lastSavedWindowsError())
+                    raise wrap_windowserror(space, rwin32.lastWindowsError())
                 bytes = bytes_ptr[0]
             finally:
                 lltype.free(bytes_ptr, flavor='raw')
@@ -544,7 +520,8 @@ class W_PipeConnection(W_BaseConnection):
 
 if sys.platform == 'win32':
     W_PipeConnection.typedef = TypeDef(
-        '_multiprocessing.PipeConnection', W_BaseConnection.typedef,
+        'PipeConnection', W_BaseConnection.typedef,
         __new__ = interp2app(W_PipeConnection.descr_new_pipe.im_func),
+        __module__ = '_multiprocessing',
         fileno = interp2app(W_PipeConnection.fileno),
     )

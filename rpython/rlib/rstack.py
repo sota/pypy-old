@@ -1,6 +1,6 @@
 """
 This file defines utilities for manipulating the stack in an
-RPython-compliant way.  It is mainly about the stack_check() function.
+RPython-compliant way, intended mostly for use by the Stackless PyPy.
 """
 
 import py
@@ -10,11 +10,18 @@ from rpython.rlib.rarithmetic import r_uint
 from rpython.rlib import rgc
 from rpython.rtyper.lltypesystem import lltype, rffi
 from rpython.rtyper.lltypesystem.lloperation import llop
+from rpython.conftest import cdir
+from rpython.translator.tool.cbuild import ExternalCompilationInfo
 
 # ____________________________________________________________
 
+srcdir = py.path.local(cdir) / 'src'
+compilation_info = ExternalCompilationInfo(
+        includes=['src/stack.h'],
+        separate_module_files=[srcdir / 'stack.c', srcdir / 'threadlocal.c'])
+
 def llexternal(name, args, res, _callable=None):
-    return rffi.llexternal(name, args, res,
+    return rffi.llexternal(name, args, res, compilation_info=compilation_info,
                            sandboxsafe=True, _nowrapper=True,
                            _callable=_callable)
 
@@ -60,7 +67,6 @@ def stack_check():
     # Else call the slow path
     stack_check_slowpath(current)
 stack_check._always_inline_ = True
-stack_check._dont_insert_stackcheck_ = True
 
 @rgc.no_collect
 def stack_check_slowpath(current):
@@ -68,4 +74,3 @@ def stack_check_slowpath(current):
         from rpython.rlib.rstackovf import _StackOverflow
         raise _StackOverflow
 stack_check_slowpath._dont_inline_ = True
-stack_check_slowpath._dont_insert_stackcheck_ = True

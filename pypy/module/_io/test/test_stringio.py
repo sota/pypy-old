@@ -18,9 +18,9 @@ class AppTestStringIO:
         assert not sio.closed
         assert not sio.line_buffering
         sio.close()
-        raises(ValueError, sio.readable)
-        raises(ValueError, sio.writable)
-        raises(ValueError, sio.seekable)
+        assert sio.readable()
+        assert sio.writable()
+        assert sio.seekable()
         raises(ValueError, sio.isatty)
         assert sio.closed
         assert sio.errors is None
@@ -145,6 +145,11 @@ class AppTestStringIO:
         sio = io.StringIO(u"")
         exc_info = raises(TypeError, sio.write, 3)
         assert "int" in exc_info.value.args[0]
+
+    def test_module(self):
+        import io
+
+        assert io.StringIO.__module__ == "_io"
 
     def test_newline_none(self):
         import io

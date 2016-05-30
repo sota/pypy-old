@@ -2,14 +2,15 @@ import sys
 import py
 
 from pypy.objspace.std.dictmultiobject import (W_DictMultiObject,
-    W_DictObject, BytesDictStrategy, ObjectDictStrategy)
+    setitem__DictMulti_ANY_ANY, getitem__DictMulti_ANY, StringDictStrategy,
+    ObjectDictStrategy)
 
 
 class TestW_DictObject(object):
     def test_empty(self):
         d = self.space.newdict()
         assert not self.space.is_true(d)
-        assert type(d.get_strategy()) is not ObjectDictStrategy
+        assert type(d.strategy) is not ObjectDictStrategy
 
     def test_nonempty(self):
         space = self.space
@@ -134,11 +135,11 @@ class TestW_DictObject(object):
         assert space.eq_w(w_d.getitem_str("a"), space.w_None)
         assert space.eq_w(w_d.getitem_str("b"), space.w_None)
 
-    def test_listview_bytes_dict(self):
+    def test_listview_str_dict(self):
         w = self.space.wrap
         w_d = self.space.newdict()
         w_d.initialize_content([(w("a"), w(1)), (w("b"), w(2))])
-        assert self.space.listview_bytes(w_d) == ["a", "b"]
+        assert self.space.listview_str(w_d) == ["a", "b"]
 
     def test_listview_unicode_dict(self):
         w = self.space.wrap
@@ -160,7 +161,7 @@ class TestW_DictObject(object):
         w_l = self.space.call_method(w_d, "keys")
         assert sorted(self.space.listview_int(w_l)) == [1,2]
         
-        # make sure that .keys() calls newlist_bytes for string dicts
+        # make sure that .keys() calls newlist_str for string dicts
         def not_allowed(*args):
             assert False, 'should not be called'
         monkeypatch.setattr(self.space, 'newlist', not_allowed)
@@ -168,7 +169,7 @@ class TestW_DictObject(object):
         w_d = self.space.newdict()
         w_d.initialize_content([(w("a"), w(1)), (w("b"), w(6))])
         w_l = self.space.call_method(w_d, "keys")
-        assert sorted(self.space.listview_bytes(w_l)) == ["a", "b"]
+        assert sorted(self.space.listview_str(w_l)) == ["a", "b"]
 
         # XXX: it would be nice if the test passed without monkeypatch.undo(),
         # but we need space.newlist_unicode for it
@@ -253,21 +254,6 @@ class AppTest_DictObject:
         for k in d.itervalues():
             values.append(k)
         assert values == d.values()
-
-    def test_reversed_dict(self):
-        import __pypy__
-        for d in [{}, {1: 2, 3: 4, 5: 6}, {"a": 5, "b": 2, "c": 6}]:
-            assert list(__pypy__.reversed_dict(d)) == d.keys()[::-1]
-        raises(TypeError, __pypy__.reversed_dict, 42)
-
-    def test_reversed_dict_runtimeerror(self):
-        import __pypy__
-        d = {1: 2, 3: 4, 5: 6}
-        it = __pypy__.reversed_dict(d)
-        key = it.next()
-        assert key in [1, 3, 5]
-        del d[key]
-        raises(RuntimeError, it.next)
 
     def test_keys(self):
         d = {1: 2, 3: 4}
@@ -382,16 +368,6 @@ class AppTest_DictObject:
         d.update({'foo': 'bar'}, baz=1)
         assert d == {'foo': 'bar', 'baz': 1}
 
-    def test_update_keys_method(self):
-        class Foo(object):
-            def keys(self):
-                return [4, 1]
-            def __getitem__(self, key):
-                return key * 10
-        d = {}
-        d.update(Foo())
-        assert d == {1: 10, 4: 40}
-
     def test_values(self):
         d = {1: 2, 3: 4}
         vals = d.values()
@@ -432,24 +408,6 @@ class AppTest_DictObject:
         assert not {'a': 1, 'b': 0 } < { 'a': 1, 'b': -2 }
         assert {'a': 1 } < { 'b': 1}
         assert {'a': 1, 'x': 2 } < { 'b': 1, 'x': 2}
-
-    def test_other_rich_cmp(self):
-        d1 = {1: 2, 3: 4}
-        d2 = {1: 2, 3: 4}
-        d3 = {1: 2, 3: 5}
-        d4 = {1: 2}
-
-        assert d1 <= d2
-        assert d1 <= d3
-        assert not d1 <= d4
-
-        assert not d1 > d2
-        assert not d1 > d3
-        assert d1 > d4
-
-        assert d1 >= d2
-        assert not d1 >= d3
-        assert d1 >= d4
 
     def test_str_repr(self):
         assert '{}' == str({})
@@ -646,9 +604,6 @@ class AppTest_DictObject:
         assert d.values() == []
         assert d.keys() == []
 
-    def test_cmp_with_noncmp(self):
-        assert not {} > object()
-
 class AppTest_DictMultiObject(AppTest_DictObject):
 
     def test_emptydict_unhashable(self):
@@ -721,7 +676,6 @@ class AppTestDictViews:
         assert d.viewkeys() == e.viewkeys()
         del e["a"]
         assert d.viewkeys() != e.viewkeys()
-        assert not d.viewkeys() == 42
 
     def test_dict_items(self):
         d = {1: 10, "a": "ABC"}
@@ -746,7 +700,6 @@ class AppTestDictViews:
         assert d.viewitems() == e.viewitems()
         e["a"] = "def"
         assert d.viewitems() != e.viewitems()
-        assert not d.viewitems() == 42
 
     def test_dict_mixed_keys_items(self):
         d = {(1, 1): 11, (2, 2): 22}
@@ -759,7 +712,6 @@ class AppTestDictViews:
         values = d.viewvalues()
         assert set(values) == set([10, "ABC"])
         assert len(values) == 2
-        assert not values == 42
 
     def test_dict_repr(self):
         d = {1: 10, "a": "ABC"}
@@ -802,13 +754,6 @@ class AppTestDictViews:
         assert d1.viewkeys() ^ set(d2.viewkeys()) == set('ac')
         assert d1.viewkeys() ^ set(d3.viewkeys()) == set('abde')
 
-        assert d1.viewkeys() - d1.viewkeys() == set()
-        assert d1.viewkeys() - d2.viewkeys() == set('a')
-        assert d1.viewkeys() - d3.viewkeys() == set('ab')
-        assert d1.viewkeys() - set(d1.viewkeys()) == set()
-        assert d1.viewkeys() - set(d2.viewkeys()) == set('a')
-        assert d1.viewkeys() - set(d3.viewkeys()) == set('ab')
-
     def test_items_set_operations(self):
         d1 = {'a': 1, 'b': 2}
         d2 = {'a': 2, 'b': 2}
@@ -837,113 +782,6 @@ class AppTestDictViews:
         assert (d1.viewitems() ^ d3.viewitems() ==
                 set([('a', 1), ('b', 2), ('d', 4), ('e', 5)]))
 
-        assert d1.viewitems() - d1.viewitems() == set()
-        assert d1.viewitems() - d2.viewitems() == set([('a', 1)])
-        assert d1.viewitems() - d3.viewitems() == set([('a', 1), ('b', 2)])
-
-    def test_keys_set_operations_any_type(self):
-        d = {1: u'a', 2: u'b', 3: u'c'}
-        assert d.viewkeys() & set([1]) == set([1])
-        assert d.viewkeys() & {1: u'foo'} == set([1])
-        assert d.viewkeys() & [1, 2] == set([1, 2])
-        #
-        assert set([1]) & d.viewkeys() == set([1])
-        assert {1: u'foo'} & d.viewkeys() == set([1])
-        assert [1, 2] & d.viewkeys() == set([1, 2])
-        #
-        assert d.viewkeys() - set([1]) == set([2, 3])
-        assert set([1, 4]) - d.viewkeys() == set([4])
-        #
-        assert d.viewkeys() == set([1, 2, 3])
-        # XXX: The following 4 commented out are CPython 2.7 bugs
-        #assert set([1, 2, 3]) == d.viewkeys()
-        assert d.viewkeys() == frozenset(set([1, 2, 3]))
-        #assert frozenset(set([1, 2, 3])) == d.viewkeys()
-        assert not d.viewkeys() != set([1, 2, 3])
-        #assert not set([1, 2, 3]) != d.viewkeys()
-        assert not d.viewkeys() != frozenset(set([1, 2, 3]))
-        #assert not frozenset(set([1, 2, 3])) != d.viewkeys()
-
-    def test_items_set_operations_any_type(self):
-        d = {1: u'a', 2: u'b', 3: u'c'}
-        assert d.viewitems() & set([(1, u'a')]) == set([(1, u'a')])
-        assert d.viewitems() & {(1, u'a'): u'foo'} == set([(1, u'a')])
-        assert d.viewitems() & [(1, u'a'), (2, u'b')] == set([(1, u'a'), (2, u'b')])
-        #
-        assert set([(1, u'a')]) & d.viewitems() == set([(1, u'a')])
-        assert {(1, u'a'): u'foo'} & d.viewitems() == set([(1, u'a')])
-        assert [(1, u'a'), (2, u'b')] & d.viewitems() == set([(1, u'a'), (2, u'b')])
-        #
-        assert d.viewitems() - set([(1, u'a')]) == set([(2, u'b'), (3, u'c')])
-        assert set([(1, u'a'), 4]) - d.viewitems() == set([4])
-        #
-        assert d.viewitems() == set([(1, u'a'), (2, u'b'), (3, u'c')])
-        # XXX: The following 4 commented out are CPython 2.7 bugs
-        #assert set([(1, u'a'), (2, u'b'), (3, u'c')]) == d.viewitems()
-        assert d.viewitems() == frozenset(set([(1, u'a'), (2, u'b'), (3, u'c')]))
-        #assert frozenset(set([(1, u'a'), (2, u'b'), (3, u'c')])) == d.viewitems()
-        assert not d.viewitems() != set([(1, u'a'), (2, u'b'), (3, u'c')])
-        #assert not set([(1, u'a'), (2, u'b'), (3, u'c')]) != d.viewitems()
-        assert not d.viewitems() != frozenset(set([(1, u'a'), (2, u'b'), (3, u'c')]))
-        #assert not frozenset(set([(1, u'a'), (2, u'b'), (3, u'c')])) != d.viewitems()
-
-    def test_dictviewset_unhashable_values(self):
-        class C:
-            def __eq__(self, other):
-                return True
-        d = {1: C()}
-        assert d.viewitems() <= d.viewitems()
-
-    def test_compare_keys_and_items(self):
-        d1 = {1: 2}
-        d2 = {(1, 2): 'foo'}
-        assert d1.viewitems() == d2.viewkeys()
-
-    def test_keys_items_contained(self):
-        def helper(fn):
-            empty = fn(dict())
-            empty2 = fn(dict())
-            smaller = fn({1:1, 2:2})
-            larger = fn({1:1, 2:2, 3:3})
-            larger2 = fn({1:1, 2:2, 3:3})
-            larger3 = fn({4:1, 2:2, 3:3})
-
-            assert smaller <  larger
-            assert smaller <= larger
-            assert larger >  smaller
-            assert larger >= smaller
-
-            assert not smaller >= larger
-            assert not smaller >  larger
-            assert not larger  <= smaller
-            assert not larger  <  smaller
-
-            assert not smaller <  larger3
-            assert not smaller <= larger3
-            assert not larger3 >  smaller
-            assert not larger3 >= smaller
-
-            # Inequality strictness
-            assert larger2 >= larger
-            assert larger2 <= larger
-            assert not larger2 > larger
-            assert not larger2 < larger
-
-            assert larger == larger2
-            assert smaller != larger
-
-            # There is an optimization on the zero-element case.
-            assert empty == empty2
-            assert not empty != empty2
-            assert not empty == smaller
-            assert empty != smaller
-
-            # With the same size, an elementwise compare happens
-            assert larger != larger3
-            assert not larger == larger3
-
-        helper(lambda x: x.viewkeys())
-        helper(lambda x: x.viewitems())
 
 class AppTestStrategies(object):
     def setup_class(cls):
@@ -959,7 +797,7 @@ class AppTestStrategies(object):
         d = {}
         assert "EmptyDictStrategy" in self.get_strategy(d)
         d["a"] = 1
-        assert "BytesDictStrategy" in self.get_strategy(d)
+        assert "StringDictStrategy" in self.get_strategy(d)
 
         class O(object):
             pass
@@ -967,7 +805,7 @@ class AppTestStrategies(object):
         d = o.__dict__ = {}
         assert "EmptyDictStrategy" in self.get_strategy(d)
         o.a = 1
-        assert "BytesDictStrategy" in self.get_strategy(d)
+        assert "StringDictStrategy" in self.get_strategy(d)
 
     def test_empty_to_unicode(self):
         d = {}
@@ -1048,9 +886,9 @@ class FakeSpace:
     eq_w = eq
     def newlist(self, l):
         return l
-    def newlist_bytes(self, l):
+    def newlist_str(self, l):
         return l
-    DictObjectCls = W_DictObject
+    DictObjectCls = W_DictMultiObject
     def type(self, w_obj):
         if isinstance(w_obj, FakeString):
             return str
@@ -1061,7 +899,7 @@ class FakeSpace:
         assert isinstance(string, str)
         return string
 
-    def int_w(self, integer, allow_conversion=True):
+    def int_w(self, integer):
         assert isinstance(integer, int)
         return integer
 
@@ -1076,7 +914,7 @@ class FakeSpace:
         return tuple(l)
 
     def newdict(self, module=False, instance=False):
-        return W_DictObject.allocate_and_init_instance(
+        return W_DictMultiObject.allocate_and_init_instance(
                 self, module=module, instance=instance)
 
     def view_as_kwargs(self, w_d):
@@ -1105,7 +943,7 @@ class FakeSpace:
     w_float = float
     StringObjectCls = FakeString
     UnicodeObjectCls = FakeUnicode
-    w_dict = W_DictObject
+    w_dict = W_DictMultiObject
     iter = iter
     fixedview = list
     listview  = list
@@ -1133,10 +971,10 @@ class TestDictImplementation:
         pydict = {}
         for i in range(N):
             x = randint(-N, N)
-            d.descr_setitem(self.space, x, i)
+            setitem__DictMulti_ANY_ANY(self.space, d, x, i)
             pydict[x] = i
         for key, value in pydict.iteritems():
-            assert value == d.descr_getitem(self.space, key)
+            assert value == getitem__DictMulti_ANY(self.space, d, key)
 
 class BaseTestRDictImplementation:
 
@@ -1149,8 +987,8 @@ class BaseTestRDictImplementation:
     def get_impl(self):
         strategy = self.StrategyClass(self.fakespace)
         storage = strategy.get_empty_storage()
-        w_dict = self.fakespace.allocate_instance(W_DictObject, None)
-        W_DictObject.__init__(w_dict, self.fakespace, strategy, storage)
+        w_dict = self.fakespace.allocate_instance(W_DictMultiObject, None)
+        W_DictMultiObject.__init__(w_dict, self.fakespace, strategy, storage)
         return w_dict
 
     def fill_impl(self):
@@ -1159,7 +997,7 @@ class BaseTestRDictImplementation:
 
     def check_not_devolved(self):
         #XXX check if strategy changed!?
-        assert type(self.impl.get_strategy()) is self.StrategyClass
+        assert type(self.impl.strategy) is self.StrategyClass
         #assert self.impl.r_dict_content is None
 
     def test_popitem(self):
@@ -1246,10 +1084,7 @@ class BaseTestRDictImplementation:
         for x in xrange(100):
             impl.setitem(self.fakespace.str_w(str(x)), x)
             impl.setitem(x, x)
-        assert type(impl.get_strategy()) is ObjectDictStrategy
-
-
-    setdefault_hash_count = 1
+        assert type(impl.strategy) is ObjectDictStrategy
 
     def test_setdefault_fast(self):
         on_pypy = "__pypy__" in sys.builtin_module_names
@@ -1258,11 +1093,11 @@ class BaseTestRDictImplementation:
         x = impl.setdefault(key, 1)
         assert x == 1
         if on_pypy:
-            assert key.hash_count == self.setdefault_hash_count
+            assert key.hash_count == 1
         x = impl.setdefault(key, 2)
         assert x == 1
         if on_pypy:
-            assert key.hash_count == self.setdefault_hash_count + 1
+            assert key.hash_count == 2
 
     def test_fallback_evil_key(self):
         class F(object):
@@ -1272,13 +1107,12 @@ class BaseTestRDictImplementation:
                 return other == "s"
 
         d = self.get_impl()
-        w_key = FakeString("s")
-        d.setitem(w_key, 12)
-        assert d.getitem(w_key) == 12
-        assert d.getitem(F()) == d.getitem(w_key)
+        d.setitem("s", 12)
+        assert d.getitem("s") == 12
+        assert d.getitem(F()) == d.getitem("s")
 
         d = self.get_impl()
-        x = d.setdefault(w_key, 12)
+        x = d.setdefault("s", 12)
         assert x == 12
         x = d.setdefault(F(), 12)
         assert x == 12
@@ -1288,14 +1122,15 @@ class BaseTestRDictImplementation:
         assert x == 12
 
         d = self.get_impl()
-        d.setitem(w_key, 12)
+        d.setitem("s", 12)
         d.delitem(F())
 
-        assert w_key not in d.w_keys()
+        assert "s" not in d.w_keys()
         assert F() not in d.w_keys()
 
-class TestBytesDictImplementation(BaseTestRDictImplementation):
-    StrategyClass = BytesDictStrategy
+class TestStrDictImplementation(BaseTestRDictImplementation):
+    StrategyClass = StringDictStrategy
+    #ImplementionClass = StrDictImplementation
 
     def test_str_shortcut(self):
         self.fill_impl()
@@ -1307,21 +1142,24 @@ class TestBytesDictImplementation(BaseTestRDictImplementation):
         self.fill_impl()
         assert self.fakespace.view_as_kwargs(self.impl) == (["fish", "fish2"], [1000, 2000])
 
+## class TestMeasuringDictImplementation(BaseTestRDictImplementation):
+##     ImplementionClass = MeasuringDictImplementation
+##     DevolvedClass = MeasuringDictImplementation
 
 class BaseTestDevolvedDictImplementation(BaseTestRDictImplementation):
     def fill_impl(self):
         BaseTestRDictImplementation.fill_impl(self)
-        self.impl.get_strategy().switch_to_object_strategy(self.impl)
+        self.impl.strategy.switch_to_object_strategy(self.impl)
 
     def check_not_devolved(self):
         pass
 
-class TestDevolvedBytesDictImplementation(BaseTestDevolvedDictImplementation):
-    StrategyClass = BytesDictStrategy
+class TestDevolvedStrDictImplementation(BaseTestDevolvedDictImplementation):
+    StrategyClass = StringDictStrategy
 
 
 def test_module_uses_strdict():
     fakespace = FakeSpace()
     d = fakespace.newdict(module=True)
-    assert type(d.get_strategy()) is BytesDictStrategy
+    assert type(d.strategy) is StringDictStrategy
 

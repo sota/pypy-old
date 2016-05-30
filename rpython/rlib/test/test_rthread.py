@@ -1,10 +1,15 @@
-import gc, time
+import gc
 from rpython.rlib.rthread import *
-from rpython.rlib.rarithmetic import r_longlong
-from rpython.rlib import objectmodel
 from rpython.translator.c.test.test_boehm import AbstractGCTestClass
 from rpython.rtyper.lltypesystem import lltype, rffi
 import py
+
+def setup_module(mod):
+    # Hack to avoid a deadlock if the module is run after other test files :-(
+    # In this module, we assume that rthread.start_new_thread() is not
+    # providing us with a GIL equivalent, except in test_gc_locking
+    # which installs its own aroundstate.
+    rffi.aroundstate._cleanup_()
 
 def test_lock():
     l = allocate_lock()
@@ -23,40 +28,6 @@ def test_thread_error():
         pass
     else:
         py.test.fail("Did not raise")
-
-def test_tlref_untranslated():
-    import thread
-    class FooBar(object):
-        pass
-    t = ThreadLocalReference(FooBar)
-    results = []
-    def subthread():
-        x = FooBar()
-        results.append(t.get() is None)
-        t.set(x)
-        results.append(t.get() is x)
-        time.sleep(0.2)
-        results.append(t.get() is x)
-    for i in range(5):
-        thread.start_new_thread(subthread, ())
-    time.sleep(0.5)
-    assert results == [True] * 15
-
-def test_get_ident():
-    import thread
-    assert get_ident() == thread.get_ident()
-
-
-def test_threadlocalref_on_llinterp():
-    from rpython.rtyper.test.test_llinterp import interpret
-    tlfield = ThreadLocalField(lltype.Signed, "rthread_test_")
-    #
-    def f():
-        x = tlfield.setraw(42)
-        return tlfield.getraw()
-    #
-    res = interpret(f, [])
-    assert res == 42
 
 
 class AbstractThreadTests(AbstractGCTestClass):
@@ -94,6 +65,7 @@ class AbstractThreadTests(AbstractGCTestClass):
 
     def test_gc_locking(self):
         import time
+        from rpython.rlib.objectmodel import invoke_around_extcall
         from rpython.rlib.debug import ll_assert
 
         class State:
@@ -117,6 +89,17 @@ class AbstractThreadTests(AbstractGCTestClass):
                 ll_assert(j == self.j, "2: bad j")
             run._dont_inline_ = True
 
+        def before_extcall():
+            release_NOAUTO(state.gil)
+        before_extcall._gctransformer_hint_cannot_collect_ = True
+        # ^^^ see comments in gil.py about this hint
+
+        def after_extcall():
+            acquire_NOAUTO(state.gil, True)
+            gc_thread_run()
+        after_extcall._gctransformer_hint_cannot_collect_ = True
+        # ^^^ see comments in gil.py about this hint
+
         def bootstrap():
             # after_extcall() is called before we arrive here.
             # We can't just acquire and release the GIL manually here,
@@ -134,12 +117,18 @@ class AbstractThreadTests(AbstractGCTestClass):
         def g(i, j):
             state.bootstrapping.acquire(True)
             state.z = Z(i, j)
+            gc_thread_prepare()
             start_new_thread(bootstrap, ())
 
         def f():
+            state.gil = allocate_ll_lock()
+            acquire_NOAUTO(state.gil, True)
             state.bootstrapping = allocate_lock()
             state.answers = []
             state.finished = 0
+            # the next line installs before_extcall() and after_extcall()
+            # to be called automatically around external function calls.
+            invoke_around_extcall(before_extcall, after_extcall)
 
             g(10, 1)
             done = False
@@ -157,7 +146,10 @@ class AbstractThreadTests(AbstractGCTestClass):
             return len(state.answers)
 
         expected = 89
-        fn = self.getcompiled(f, [])
+        try:
+            fn = self.getcompiled(f, [])
+        finally:
+            rffi.aroundstate._cleanup_()
         answers = fn()
         assert answers == expected
 
@@ -179,15 +171,6 @@ class AbstractThreadTests(AbstractGCTestClass):
         fn = self.getcompiled(f, [])
         res = fn()
         assert res < -1.0
-
-    def test_acquire_timed_huge_timeout(self):
-        t = r_longlong(2 ** 61)
-        def f():
-            l = allocate_lock()
-            return l.acquire_timed(t)
-        fn = self.getcompiled(f, [])
-        res = fn()
-        assert res == 1       # RPY_LOCK_ACQUIRED
 
     def test_acquire_timed_alarm(self):
         import sys
@@ -216,20 +199,6 @@ class AbstractThreadTests(AbstractGCTestClass):
         res = fn()
         assert res >= 0.95
 
-    def test_tlref(self):
-        class FooBar(object):
-            pass
-        t = ThreadLocalReference(FooBar)
-        def f():
-            x1 = FooBar()
-            t.set(x1)
-            import gc; gc.collect()
-            assert t.get() is x1
-            return 42
-        fn = self.getcompiled(f, [])
-        res = fn()
-        assert res == 42
-
 #class TestRunDirectly(AbstractThreadTests):
 #    def getcompiled(self, f, argtypes):
 #        return f
@@ -240,61 +209,4 @@ class TestUsingBoehm(AbstractThreadTests):
     gcpolicy = 'boehm'
 
 class TestUsingFramework(AbstractThreadTests):
-    gcpolicy = 'minimark'
-
-    def test_tlref_keepalive(self, no__thread=True):
-        import weakref
-        from rpython.config.translationoption import SUPPORT__THREAD
-
-        if not (SUPPORT__THREAD or no__thread):
-            py.test.skip("no __thread support here")
-
-        class FooBar(object):
-            pass
-        t = ThreadLocalReference(FooBar)
-
-        def tset():
-            x1 = FooBar()
-            t.set(x1)
-            return weakref.ref(x1)
-        tset._dont_inline_ = True
-
-        class WrFromThread:
-            pass
-        wr_from_thread = WrFromThread()
-
-        def f():
-            config = objectmodel.fetch_translated_config()
-            assert t.automatic_keepalive(config) is True
-            wr = tset()
-            import gc; gc.collect()   # 'x1' should not be collected
-            x2 = t.get()
-            assert x2 is not None
-            assert wr() is not None
-            assert wr() is x2
-            return wr
-
-        def thread_entry_point():
-            wr = f()
-            wr_from_thread.wr = wr
-            wr_from_thread.seen = True
-
-        def main():
-            wr_from_thread.seen = False
-            start_new_thread(thread_entry_point, ())
-            wr1 = f()
-            time.sleep(0.5)
-            assert wr_from_thread.seen is True
-            wr2 = wr_from_thread.wr
-            import gc; gc.collect()      # wr2() should be collected here
-            assert wr1() is not None     # this thread, still running
-            assert wr2() is None         # other thread, not running any more
-            return 42
-
-        extra_options = {'no__thread': no__thread, 'shared': True}
-        fn = self.getcompiled(main, [], extra_options=extra_options)
-        res = fn()
-        assert res == 42
-
-    def test_tlref_keepalive__thread(self):
-        self.test_tlref_keepalive(no__thread=False)
+    gcpolicy = 'generation'

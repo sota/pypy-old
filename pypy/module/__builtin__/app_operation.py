@@ -1,5 +1,4 @@
-import operator
-
 def bin(x):
-    value = operator.index(x)
-    return value.__format__("#b")
+    if not isinstance(x, (int, long)):
+        raise TypeError("must be int or long")
+    return x.__format__("#b")

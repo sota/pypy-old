@@ -15,10 +15,7 @@ class GeneratorIterator(W_Root):
         self.running = False
 
     def descr__repr__(self, space):
-        if self.pycode is None:
-            code_name = '<finished>'
-        else:
-            code_name = self.pycode.co_name
+        code_name = self.pycode.co_name
         addrstring = self.getaddrstring(space)
         return space.wrap("<generator object %s at 0x%s>" %
                           (code_name, addrstring))
@@ -30,7 +27,7 @@ class GeneratorIterator(W_Root):
         new_inst = mod.get('generator_new')
         w        = space.wrap
         if self.frame:
-            w_frame = self.frame._reduce_state(space)
+            w_frame = w(self.frame)
         else:
             w_frame = space.w_None
 
@@ -39,22 +36,7 @@ class GeneratorIterator(W_Root):
             w(self.running),
             ]
 
-        return space.newtuple([new_inst, space.newtuple([]),
-                               space.newtuple(tup)])
-
-    def descr__setstate__(self, space, w_args):
-        from rpython.rlib.objectmodel import instantiate
-        args_w = space.unpackiterable(w_args)
-        w_framestate, w_running = args_w
-        if space.is_w(w_framestate, space.w_None):
-            self.frame = None
-            self.space = space
-            self.pycode = None
-        else:
-            frame = instantiate(space.FrameClass)   # XXX fish
-            frame.descr__setstate__(space, w_framestate)
-            GeneratorIterator.__init__(self, frame)
-        self.running = self.space.is_true(w_running)
+        return space.newtuple([new_inst, space.newtuple(tup)])
 
     def descr__iter__(self):
         """x.__iter__() <==> iter(x)"""
@@ -66,14 +48,6 @@ return next yielded value or raise StopIteration."""
         return self.send_ex(w_arg)
 
     def send_ex(self, w_arg, operr=None):
-        pycode = self.pycode
-        if pycode is not None:
-            if jit.we_are_jitted() and should_not_inline(pycode):
-                generatorentry_driver.jit_merge_point(gen=self, w_arg=w_arg,
-                                                    operr=operr, pycode=pycode)
-        return self._send_ex(w_arg, operr)
-
-    def _send_ex(self, w_arg, operr):
         space = self.space
         if self.running:
             raise OperationError(space.w_ValueError,
@@ -85,7 +59,8 @@ return next yielded value or raise StopIteration."""
             if operr is None:
                 operr = OperationError(space.w_StopIteration, space.w_None)
             raise operr
-
+        # XXX it's not clear that last_instr should be promoted at all
+        # but as long as it is necessary for call_assembler, let's do it early
         last_instr = jit.promote(frame.last_instr)
         if last_instr == -1:
             if w_arg and not space.is_w(w_arg, space.w_None):
@@ -164,11 +139,22 @@ return next yielded value or raise StopIteration."""
         return self.pycode
 
     def descr__name__(self, space):
-        if self.pycode is None:
-            code_name = '<finished>'
-        else:
-            code_name = self.pycode.co_name
+        code_name = self.pycode.co_name
         return space.wrap(code_name)
+
+    def __del__(self):
+        # Only bother enqueuing self to raise an exception if the frame is
+        # still not finished and finally or except blocks are present.
+        self.clear_all_weakrefs()
+        if self.frame is not None:
+            block = self.frame.lastblock
+            while block is not None:
+                if not isinstance(block, LoopBlock):
+                    self.enqueue_for_destruction(self.space,
+                                                 GeneratorIterator.descr_close,
+                                                 "interrupting generator of ")
+                    break
+                block = block.previous
 
     # Results can be either an RPython list of W_Root, or it can be an
     # app-level W_ListObject, which also has an append() method, that's why we
@@ -212,55 +198,3 @@ return next yielded value or raise StopIteration."""
         return unpack_into
     unpack_into = _create_unpack_into()
     unpack_into_w = _create_unpack_into()
-
-
-class GeneratorIteratorWithDel(GeneratorIterator):
-
-    def __del__(self):
-        # Only bother enqueuing self to raise an exception if the frame is
-        # still not finished and finally or except blocks are present.
-        self.clear_all_weakrefs()
-        if self.frame is not None:
-            block = self.frame.lastblock
-            while block is not None:
-                if not isinstance(block, LoopBlock):
-                    self.enqueue_for_destruction(self.space,
-                                                 GeneratorIterator.descr_close,
-                                                 "interrupting generator of ")
-                    break
-                block = block.previous
-
-
-
-def get_printable_location_genentry(bytecode):
-    return '%s <generator>' % (bytecode.get_repr(),)
-generatorentry_driver = jit.JitDriver(greens=['pycode'],
-                                      reds=['gen', 'w_arg', 'operr'],
-                                      get_printable_location =
-                                          get_printable_location_genentry,
-                                      name='generatorentry')
-
-from pypy.tool.stdlib_opcode import HAVE_ARGUMENT, opmap
-YIELD_VALUE = opmap['YIELD_VALUE']
-
-@jit.elidable_promote()
-def should_not_inline(pycode):
-    # Should not inline generators with more than one "yield",
-    # as an approximative fix (see issue #1782).  There are cases
-    # where it slows things down; for example calls to a simple
-    # generator that just produces a few simple values with a few
-    # consecutive "yield" statements.  It fixes the near-infinite
-    # slow-down in issue #1782, though...
-    count_yields = 0
-    code = pycode.co_code
-    n = len(code)
-    i = 0
-    while i < n:
-        c = code[i]
-        op = ord(c)
-        if op == YIELD_VALUE:
-            count_yields += 1
-        i += 1
-        if op >= HAVE_ARGUMENT:
-            i += 2
-    return count_yields >= 2

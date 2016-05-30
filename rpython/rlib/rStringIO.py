@@ -8,6 +8,8 @@ class RStringIO(object):
     The fastest path through this code is for the case of a bunch of write()
     followed by getvalue().
     """
+    _mixin_ = True        # for interp_stringio.py
+
     def __init__(self):
         self.init()
 
@@ -71,7 +73,6 @@ class RStringIO(object):
         self.__strings.append(buffer)
 
     def __slow_write(self, buffer):
-        assert buffer is not None # help annotator
         p = self.__pos
         assert p >= 0
         endp = p + len(buffer)
@@ -100,11 +101,7 @@ class RStringIO(object):
         self.__pos = endp
 
     def seek(self, position, mode=0):
-        if mode == 0:
-            if position == self.getsize():
-                self.__pos = AT_END
-                return
-        elif mode == 1:
+        if mode == 1:
             if self.__pos == AT_END:
                 self.__pos = self.getsize()
             position += self.__pos
@@ -125,19 +122,19 @@ class RStringIO(object):
         assert result >= 0
         return result
 
-    def read(self, size=-1):
+    def read(self, n=-1):
         p = self.__pos
-        if p == 0 and size < 0:
+        if p == 0 and n < 0:
             self.__pos = AT_END
             return self.getvalue()     # reading everything
-        if p == AT_END or size == 0:
+        if p == AT_END or n == 0:
             return ''
         assert p >= 0
         self.__copy_into_bigbuffer()
         mysize = len(self.__bigbuffer)
         count = mysize - p
-        if size >= 0:
-            count = min(size, count)
+        if n >= 0:
+            count = min(n, count)
         if count <= 0:
             return ''
         if p == 0 and count == mysize:
@@ -166,24 +163,14 @@ class RStringIO(object):
         return ''.join(self.__bigbuffer[p:i])
 
     def truncate(self, size):
-        """Warning, this gets us slightly strange behavior from the
-        point of view of a traditional Unix file, but consistent with
-        Python 2.7's cStringIO module: it will not enlarge the file,
-        and it will always seek to the (new) end of the file."""
         assert size >= 0
-        if size == 0:
-            self.__bigbuffer = None
-            self.__strings = None
+        if self.__bigbuffer is None or size > len(self.__bigbuffer):
+            self.__copy_into_bigbuffer()
         else:
-            if self.__bigbuffer is None or size > len(self.__bigbuffer):
-                self.__copy_into_bigbuffer()
-            else:
-                # we can drop all extra strings
-                if self.__strings is not None:
-                    self.__strings = None
-            if size < len(self.__bigbuffer):
-                del self.__bigbuffer[size:]
-            if len(self.__bigbuffer) == 0:
-                self.__bigbuffer = None
-        # it always has the effect of seeking at the new end
-        self.__pos = AT_END
+            # we can drop all extra strings
+            if self.__strings is not None:
+                self.__strings = None
+        if size < len(self.__bigbuffer):
+            del self.__bigbuffer[size:]
+        if len(self.__bigbuffer) == 0:
+            self.__bigbuffer = None

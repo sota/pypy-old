@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+
 import unittest, operator, copy, pickle, random
 from test import test_support
 
@@ -75,11 +77,10 @@ class TestBasicOps(unittest.TestCase):
             self.assertIn(v, self.values)
 
     def test_pickling(self):
-        for proto in range(pickle.HIGHEST_PROTOCOL + 1):
-            p = pickle.dumps(self.set, proto)
-            copy = pickle.loads(p)
-            self.assertEqual(self.set, copy,
-                             "%s != %s" % (self.set, copy))
+        p = pickle.dumps(self.set)
+        copy = pickle.loads(p)
+        self.assertEqual(self.set, copy,
+                         "%s != %s" % (self.set, copy))
 
 #------------------------------------------------------------------------------
 

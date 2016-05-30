@@ -107,12 +107,6 @@ except NameError:
 
 _sysex = (KeyboardInterrupt, SystemExit, MemoryError, GeneratorExit)
 
-try:
-    callable = callable
-except NameError:
-    def callable(obj):
-        return hasattr(obj, "__call__")
-
 if sys.version_info >= (3, 0):
     exec ("print_ = print ; exec_=exec")
     import builtins
@@ -133,10 +127,6 @@ if sys.version_info >= (3, 0):
         return isinstance(x, bytes)
     def _istext(x):
         return isinstance(x, str)
-
-    text = str
-    bytes = bytes
-
 
     def _getimself(function):
         return getattr(function, '__self__', None)
@@ -163,12 +153,13 @@ if sys.version_info >= (3, 0):
         co = compile(source, fn, "exec", dont_inherit=True)
         exec_(co, globs, locs)
 
+    def callable(obj):
+        return hasattr(obj, "__call__")
+
 else:
     import __builtin__ as builtins
     _totext = unicode
     _basestring = basestring
-    text = unicode
-    bytes = str
     execfile = execfile
     callable = callable
     def _isbytes(x):
@@ -240,9 +231,7 @@ def _tryimport(*names):
     assert names
     for name in names:
         try:
-            __import__(name)
+            return __import__(name, None, None, '__doc__')
         except ImportError:
             excinfo = sys.exc_info()
-        else:
-            return sys.modules[name]
     _reraise(*excinfo)

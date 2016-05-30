@@ -9,17 +9,10 @@ import os
 from subprocess import PIPE, Popen
 
 def run_subprocess(executable, args, env=None, cwd=None):
-    if isinstance(args, list):
-        args = [a.encode('latin1') for a in args]
     return _run(executable, args, env, cwd)
 
-shell_default = False
-if sys.platform == 'win32':
-    shell_default = True
 
-def _run(executable, args, env, cwd):
-    # note that this function can be *overridden* below
-    # in some cases!
+def _run(executable, args, env, cwd):   # unless overridden below
     if isinstance(args, str):
         args = str(executable) + ' ' + args
         shell = True
@@ -28,9 +21,7 @@ def _run(executable, args, env, cwd):
             args = [str(executable)]
         else:
             args = [str(executable)] + args
-        # shell=True on unix-like is a known security vulnerability, but
-        # on windows shell=True does not properly propogate the env dict
-        shell = shell_default
+        shell = False
 
     # Just before spawning the subprocess, do a gc.collect().  This
     # should help if we are running on top of PyPy, if the subprocess
@@ -39,10 +30,6 @@ def _run(executable, args, env, cwd):
 
     pipe = Popen(args, stdout=PIPE, stderr=PIPE, shell=shell, env=env, cwd=cwd)
     stdout, stderr = pipe.communicate()
-    if (sys.platform == 'win32' and pipe.returncode == 1 and 
-        'is not recognized' in stderr):
-        # Setting shell=True on windows messes up expected exceptions
-        raise EnvironmentError(stderr)
     return pipe.returncode, stdout, stderr
 
 
@@ -56,13 +43,13 @@ if __name__ == '__main__':
         args = eval(operation)
         try:
             results = _run(*args)
-        except EnvironmentError as e:
+        except EnvironmentError, e:
             results = (None, str(e))
         sys.stdout.write('%r\n' % (results,))
         sys.stdout.flush()
 
 
-if sys.platform != 'win32' and hasattr(os, 'fork') and not os.getenv("PYPY_DONT_RUN_SUBPROCESS", None):
+if sys.platform != 'win32' and hasattr(os, 'fork'):
     # do this at import-time, when the process is still tiny
     _source = os.path.dirname(os.path.abspath(__file__))
     _source = os.path.join(_source, 'runsubprocess.py')   # and not e.g. '.pyc'

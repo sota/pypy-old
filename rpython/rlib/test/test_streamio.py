@@ -3,15 +3,15 @@
 import os
 import time
 import random
-
-import pytest
+from rpython.tool.udir import udir
 
 from rpython.rlib import streamio
-from rpython.rtyper.test.tool import BaseRtypingTest
-from rpython.tool.udir import udir
+
+from rpython.rtyper.test.tool import BaseRtypingTest, LLRtypeMixin, OORtypeMixin
 
 
 class TSource(streamio.Stream):
+
     def __init__(self, packets, tell=True, seek=True):
         for x in packets:
             assert x
@@ -95,7 +95,7 @@ class TWriter(streamio.Stream):
         elif whence == 2:
             offset += len(self.buf)
         else:
-            raise ValueError("whence should be 0, 1 or 2")
+            raise ValueError, "whence should be 0, 1 or 2"
         if offset < 0:
             offset = 0
         self.pos = offset
@@ -113,7 +113,7 @@ class TWriter(streamio.Stream):
 
     def flush(self):
         pass
-
+            
 class TReaderWriter(TWriter):
 
     def read(self, n=-1):
@@ -130,7 +130,7 @@ class TReaderWriter(TWriter):
             result = self.buf[start: stop]
             self.pos += n
         return result
-
+    
 class BaseTestBufferingInputStreamTests(BaseRtypingTest):
 
     packets = ["a", "b", "\n", "def", "\nxy\npq\nuv", "wx"]
@@ -247,7 +247,7 @@ class BaseTestBufferingInputStreamTests(BaseRtypingTest):
             return blocks == ["ab\nd", "ef\nx", "y\npq", "\nuvw", "x"]
         res = self.interpret(f, [])
         assert res
-
+        
     def test_read_4_after_readline(self):
         file = self.makeStream()
         def f():
@@ -360,7 +360,8 @@ class BaseTestBufferingInputStreamTests(BaseRtypingTest):
                                           for seekto in range(0, end+1)
                                           for whence in [0, 1, 2]]
         random.shuffle(cases)
-        cases = cases[:7]      # pick some cases at random - too slow!
+        if isinstance(self, (LLRtypeMixin, OORtypeMixin)):
+            cases = cases[:7]      # pick some cases at random - too slow!
         def f():
             all = file.readall()
             assert end == len(all)
@@ -392,7 +393,8 @@ class BaseTestBufferingInputStreamTests(BaseRtypingTest):
                                           for seekto in range(0, end+1)
                                           for whence in [0, 1, 2]]
         random.shuffle(cases)
-        cases = cases[:7]      # pick some cases at random - too slow!
+        if isinstance(self, (LLRtypeMixin, OORtypeMixin)):
+            cases = cases[:7]      # pick some cases at random - too slow!
         def f():
             for readto, seekto, whence in cases:
                 base = TSource(self.packets, seek=False)
@@ -426,7 +428,12 @@ class TestBufferingInputStreamTests(BaseTestBufferingInputStreamTests):
     def interpret(self, func, args, **kwds):
         return func(*args)
 
-class TestBufferingInputStreamTestsLLinterp(BaseTestBufferingInputStreamTests):
+class TestBufferingInputStreamTestsLLinterp(BaseTestBufferingInputStreamTests,
+                                            LLRtypeMixin):
+    pass
+
+class TestBufferingInputStreamTestsOOinterp(BaseTestBufferingInputStreamTests,
+                                            OORtypeMixin):
     pass
 
 class TestBufferedRead:
@@ -445,6 +452,7 @@ class TestBufferedRead:
         return streamio.BufferingInputStream(base, bufsize)
 
     def test_dont_read_small(self):
+        import sys
         file = self.makeStream(bufsize=4)
         while file.read(1): pass
         for want, got, pos in self.source.chunks:
@@ -519,7 +527,12 @@ class TestBufferingOutputStream(BaseTestBufferingOutputStream):
     def interpret(self, func, args, **kwds):
         return func(*args)
 
-class TestBufferingOutputStreamLLinterp(BaseTestBufferingOutputStream):
+class TestBufferingOutputStreamLLinterp(BaseTestBufferingOutputStream,
+                                        LLRtypeMixin):
+    pass
+
+class TestBufferingOutputStreamOOinterp(BaseTestBufferingOutputStream,
+                                        OORtypeMixin):
     pass
 
 
@@ -559,7 +572,12 @@ class TestLineBufferingOutputStream(BaseTestLineBufferingOutputStream):
     def interpret(self, func, args, **kwds):
         return func(*args)
 
-class TestLineBufferingOutputStreamLLinterp(BaseTestLineBufferingOutputStream):
+class TestLineBufferingOutputStreamLLinterp(BaseTestLineBufferingOutputStream,
+                                            LLRtypeMixin):
+    pass
+
+class TestLineBufferingOutputStreamOOinterp(BaseTestLineBufferingOutputStream,
+                                            OORtypeMixin):
     pass
 
 
@@ -583,7 +601,10 @@ class TestCRLFFilter(BaseTestCRLFFilter):
     def interpret(self, func, args, **kwds):
         return func(*args)
 
-class TestCRLFFilterLLinterp(BaseTestCRLFFilter):
+class TestCRLFFilterLLinterp(BaseTestCRLFFilter, LLRtypeMixin):
+    pass
+
+class TestCRLFFilterOOinterp(BaseTestCRLFFilter, OORtypeMixin):
     pass
 
 class BaseTestTextCRLFFilter(BaseRtypingTest):
@@ -618,7 +639,7 @@ class BaseTestTextCRLFFilter(BaseRtypingTest):
                     break
                 crlf.seek(pos, 0)
                 line2 = crlf.readline()
-                assert line2 == line
+                assert line2 == line                         
                 lines.append(line)
             assert lines == expected
         self.interpret(f, [])
@@ -657,10 +678,12 @@ class BaseTestTextCRLFFilter(BaseRtypingTest):
             assert line == ''
         self.interpret(f, [])
 
-class TestTextCRLFFilterLLInterp(BaseTestTextCRLFFilter):
+class TestTextCRLFFilterLLInterp(BaseTestTextCRLFFilter, LLRtypeMixin):
     pass
-
-
+        
+class TestTextCRLFFilterOOInterp(BaseTestTextCRLFFilter, OORtypeMixin):
+    pass
+        
 class TestMMapFile(BaseTestBufferingInputStreamTests):
     tfn = None
     fd = None
@@ -698,8 +721,8 @@ class TestMMapFile(BaseTestBufferingInputStreamTests):
         return streamio.MMapFile(self.fd, mmapmode)
 
     def test_write(self):
-        if os.name == "posix" or os.name == 'nt':
-            return # write() does't work on Unix nor on win32:-(
+        if os.name == "posix":
+            return # write() does't work on Unix :-(
         file = self.makeStream(mode="w")
         file.write("BooHoo\n")
         file.write("Barf\n")
@@ -760,7 +783,11 @@ class TestBufferingInputOutputStreamTests(
         return func(*args)
 
 class TestBufferingInputOutputStreamTestsLLinterp(
-        BaseTestBufferingInputOutputStreamTests):
+        BaseTestBufferingInputOutputStreamTests, LLRtypeMixin):
+    pass
+
+class TestBufferingInputOutputStreamTestsOOinterp(
+        BaseTestBufferingInputOutputStreamTests, OORtypeMixin):
     pass
 
 
@@ -868,12 +895,15 @@ class BaseTestTextInputFilter(BaseRtypingTest):
                     assert filter.getnewlines() == e
             self.interpret(f, [])
 
-
+    
 class TestTextInputFilter(BaseTestTextInputFilter):
     def interpret(self, func, args):
         return func(*args)
 
-class TestTextInputFilterLLinterp(BaseTestTextInputFilter):
+class TestTextInputFilterLLinterp(BaseTestTextInputFilter, LLRtypeMixin):
+    pass
+
+class TestTextInputFilterOOinterp(BaseTestTextInputFilter, OORtypeMixin):
     pass
 
 
@@ -953,7 +983,10 @@ class TestTextOutputFilter(BaseTestTextOutputFilter):
     def interpret(self, func, args):
         return func(*args)
 
-class TestTextOutputFilterLLinterp(BaseTestTextOutputFilter):
+class TestTextOutputFilterLLinterp(BaseTestTextOutputFilter, LLRtypeMixin):
+    pass
+
+class TestTextOutputFilterOOinterp(BaseTestTextOutputFilter, OORtypeMixin):
     pass
 
 
@@ -974,7 +1007,7 @@ class TestDecodingInputFilter:
                 bufs.append(c)
             assert u"".join(bufs) == chars
 
-class TestEncodingOutputFilterTests:
+class TestEncodingOutputFilterTests: 
 
     def test_write(self):
         chars = u"abc\xff\u1234\u4321\x80xyz"
@@ -1066,8 +1099,8 @@ class TestDiskFile:
     def test_read_interrupted(self):
         try:
             from signal import alarm, signal, SIG_DFL, SIGALRM
-        except ImportError:
-            pytest.skip('no alarm on this platform')
+        except:
+            skip('no alarm on this platform')
         try:
             read_fd, write_fd = os.pipe()
             file = streamio.DiskFile(read_fd)
@@ -1077,14 +1110,13 @@ class TestDiskFile:
             alarm(1)
             assert file.read(10) == "hello"
         finally:
-            alarm(0)
             signal(SIGALRM, SIG_DFL)
 
     def test_write_interrupted(self):
         try:
             from signal import alarm, signal, SIG_DFL, SIGALRM
-        except ImportError:
-            pytest.skip('no alarm on this platform')
+        except:
+            skip('no alarm on this platform')
         try:
             read_fd, write_fd = os.pipe()
             file = streamio.DiskFile(write_fd)
@@ -1103,58 +1135,7 @@ class TestDiskFile:
             # can succeed.
             file.write("hello")
         finally:
-            alarm(0)
             signal(SIGALRM, SIG_DFL)
-
-    def test_append_mode(self):
-        tfn = str(udir.join('streamio-append-mode'))
-        fo = streamio.open_file_as_stream # shorthand
-        x = fo(tfn, 'w')
-        x.write('abc123')
-        x.close()
-
-        x = fo(tfn, 'a')
-        x.seek(0, 0)
-        x.write('456')
-        x.close()
-        x = fo(tfn, 'r')
-        assert x.read() == 'abc123456'
-        x.close()
-
-    def test_seek_changed_underlying_position(self):
-        tfn = str(udir.join('seek_changed_underlying_position'))
-        fo = streamio.open_file_as_stream # shorthand
-        x = fo(tfn, 'w')
-        x.write('abc123')
-        x.close()
-
-        x = fo(tfn, 'r')
-        fd = x.try_to_find_file_descriptor()
-        assert fd >= 0
-        got = x.read(1)
-        assert got == 'a'
-        assert x.tell() == 1
-        os.lseek(fd, 0, 0)
-        assert x.tell() == 0    # detected in this case.  not always.
-        # the point of the test is that we don't crash in an assert.
-
-    def test_ignore_ioerror_in_readall_if_nonempty_result(self):
-        # this is the behavior of regular files in CPython 2.7, as
-        # well as of _io.FileIO at least in CPython 3.3.  This is
-        # *not* the behavior of _io.FileIO in CPython 3.4 or 3.5;
-        # see CPython's issue #21090.
-        try:
-            from os import openpty
-        except ImportError:
-            pytest.skip('no openpty on this platform')
-        read_fd, write_fd = openpty()
-        os.write(write_fd, 'Abc\n')
-        os.close(write_fd)
-        x = streamio.DiskFile(read_fd)
-        s = x.readall()
-        assert s == 'Abc\r\n'
-        pytest.raises(OSError, x.readall)
-        x.close()
 
 
 # Speed test
@@ -1175,14 +1156,15 @@ def timeit(fn=FN, opener=streamio.MMapFile):
 def speed_main():
     def diskopen(fn, mode):
         filemode = 0
+        import mmap
         if "r" in mode:
             filemode = os.O_RDONLY
         if "w" in mode:
             filemode |= os.O_WRONLY
+        
         fd = os.open(fn, filemode)
         base = streamio.DiskFile(fd)
         return streamio.BufferingInputStream(base)
-
     def mmapopen(fn, mode):
         mmapmode = 0
         filemode = 0
@@ -1195,7 +1177,7 @@ def speed_main():
             filemode |= os.O_WRONLY
         fd = os.open(fn, filemode)
         return streamio.MMapFile(fd, mmapmode)
-
     timeit(opener=diskopen)
     timeit(opener=mmapopen)
     timeit(opener=open)
+

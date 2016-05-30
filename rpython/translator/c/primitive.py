@@ -9,14 +9,12 @@ from rpython.rtyper.lltypesystem.llmemory import (Address, AddressOffset,
     ArrayLengthOffset, GCHeaderOffset, GCREF, AddressAsInt)
 from rpython.rtyper.lltypesystem.lltype import (Signed, SignedLongLong, Unsigned,
     UnsignedLongLong, Float, SingleFloat, LongFloat, Char, UniChar, Bool, Void,
-    FixedSizeArray, Ptr, cast_opaque_ptr, typeOf, _uninitialized)
+    FixedSizeArray, Ptr, cast_opaque_ptr, typeOf)
 from rpython.rtyper.lltypesystem.llarena import RoundedUpForAllocation
-from rpython.rtyper.tool.rffi_platform import memory_alignment
 from rpython.translator.c.support import cdecl, barebonearray
 
 
 SUPPORT_INT128 = hasattr(rffi, '__INT128_T')
-MEMORY_ALIGNMENT = memory_alignment()
 
 # ____________________________________________________________
 #
@@ -71,12 +69,9 @@ def name_signed(value, db):
         elif type(value) == GCHeaderOffset:
             return '0'
         elif type(value) == RoundedUpForAllocation:
-            return ('(((%(x)s>=%(minsize)s?%(x)s:%(minsize)s) + %(align_m1)s)'
-                    ' & ~%(align_m1)s)') % {
-                'x': name_signed(value.basesize, db),
-                'minsize': name_signed(value.minsize, db),
-                'align_m1': MEMORY_ALIGNMENT-1
-            }
+            return 'ROUND_UP_FOR_ALLOCATION(%s, %s)' % (
+                name_signed(value.basesize, db),
+                name_signed(value.minsize, db))
         elif isinstance(value, CDefinedIntSymbolic):
             return str(value.expr)
         elif isinstance(value, ComputedIntSymbolic):
@@ -89,7 +84,7 @@ def name_signed(value, db):
             return '((Signed)%s)' % name_address(value.adr, db)
         else:
             raise Exception("unimplemented symbolic %r" % value)
-    if value is None or isinstance(value, _uninitialized):
+    if value is None:
         assert not db.completed
         return None
     if value == -sys.maxint-1:   # blame C

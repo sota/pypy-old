@@ -21,12 +21,11 @@ class AppError(Exception):
     def __init__(self, excinfo):
         self.excinfo = excinfo
 
-marker = py.test.mark.applevel
 
 class AppTestFunction(py.test.collect.Function):
     def __init__(self, *args, **kwargs):
         super(AppTestFunction, self).__init__(*args, **kwargs)
-        self._request.applymarker(marker)
+        self.keywords['applevel'] = True
 
     def _prunetraceback(self, traceback):
         return traceback
@@ -35,8 +34,6 @@ class AppTestFunction(py.test.collect.Function):
         try:
             target(*args)
         except OperationError, e:
-            if self.config.option.raise_operr:
-                raise
             tb = sys.exc_info()[2]
             if e.match(space, space.w_KeyboardInterrupt):
                 raise KeyboardInterrupt, KeyboardInterrupt(), tb
@@ -116,6 +113,13 @@ class AppClassInstance(py.test.collect.Instance):
 
 class AppClassCollector(PyPyClassCollector):
     Instance = AppClassInstance
+
+    def _haskeyword(self, keyword):
+        return keyword == 'applevel' or \
+               super(AppClassCollector, self)._haskeyword(keyword)
+
+    def _keywords(self):
+        return super(AppClassCollector, self)._keywords() + ['applevel']
 
     def setup(self):
         super(AppClassCollector, self).setup()

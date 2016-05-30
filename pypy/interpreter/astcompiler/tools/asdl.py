@@ -302,7 +302,16 @@ class VisitorBase(object):
         meth = self._dispatch(object)
         if meth is None:
             return
-        meth(object, *args)
+        try:
+            meth(object, *args)
+        except Exception, err:
+            print "Error visiting", repr(object)
+            print err
+            traceback.print_exc()
+            # XXX hack
+            if hasattr(self, 'file'):
+                self.file.flush()
+            os._exit(1)
 
     def _dispatch(self, object):
         assert isinstance(object, AST), repr(object)

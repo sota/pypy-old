@@ -4,7 +4,7 @@
 
 # this is stolen from CPython's _randommodule.c
 
-from rpython.rlib.rarithmetic import r_uint, intmask
+from rpython.rlib.rarithmetic import r_uint
 
 N = 624
 M = 397
@@ -72,23 +72,18 @@ class Random(object):
                 i = 1
         mt[0] = UPPER_MASK
 
-    def _conditionally_apply(self, val, y):
-        if y & r_uint(1):
-            return val ^ MATRIX_A
-        return val
-
     def genrand32(self):
+        mag01 = [0, MATRIX_A]
         mt = self.state
         if self.index >= N:
             for kk in range(N - M):
                 y = (mt[kk] & UPPER_MASK) | (mt[kk + 1] & LOWER_MASK)
-                mt[kk] = self._conditionally_apply(mt[kk+M] ^ (y >> 1), y)
+                mt[kk] = mt[kk+M] ^ (y >> 1) ^ mag01[y & r_uint(1)]
             for kk in range(N - M, N - 1):
                 y = (mt[kk] & UPPER_MASK) | (mt[kk + 1] & LOWER_MASK)
-                mt[kk] = self._conditionally_apply(mt[kk + (M - N)] ^ (y >> 1),
-                                                   y)
+                mt[kk] = mt[kk + (M - N)] ^ (y >> 1) ^ mag01[y & r_uint(1)]
             y = (mt[N - 1] & UPPER_MASK) | (mt[0] & LOWER_MASK)
-            mt[N - 1] = self._conditionally_apply(mt[M - 1] ^ (y >> 1), y)
+            mt[N - 1] = mt[M - 1] ^ (y >> 1) ^ mag01[y & r_uint(1)]
             self.index = 0
         y = mt[self.index]
         self.index += 1
@@ -99,8 +94,8 @@ class Random(object):
         return y
 
     def random(self):
-        a = intmask(self.genrand32() >> 5)
-        b = intmask(self.genrand32() >> 6)
+        a = self.genrand32() >> 5
+        b = self.genrand32() >> 6
         return (a * 67108864.0 + b) * (1.0 / 9007199254740992.0)
 
     def jumpahead(self, n):

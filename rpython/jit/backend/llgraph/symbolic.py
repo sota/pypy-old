@@ -1,5 +1,4 @@
-from rpython.rtyper.lltypesystem import lltype, rffi
-from rpython.rtyper import rclass
+from rpython.rtyper.lltypesystem import lltype, rffi, rclass
 
 
 Size2Type = [None] * 100

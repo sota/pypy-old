@@ -318,13 +318,12 @@ class AppTest_Descroperation:
             raises(TypeError, operate, A())
 
     def test_missing_getattribute(self):
-        class X(object):
-            pass
+        class X(object): pass
 
         class Y(X):
-            class __metaclass__(type):
-                def mro(cls):
-                    return [cls, X]
+          class __metaclass__(type):
+            def mro(cls):
+              return [cls, X]
 
         x = X()
         x.__class__ = Y
@@ -332,10 +331,8 @@ class AppTest_Descroperation:
 
     def test_silly_but_consistent_order(self):
         # incomparable objects sort by type name :-/
-        class A(object):
-            pass
-        class zz(object):
-            pass
+        class A(object): pass
+        class zz(object): pass
         assert A() < zz()
         assert zz() > A()
         # if in doubt, CPython sorts numbers before non-numbers
@@ -607,18 +604,6 @@ class AppTest_Descroperation:
 
         raises(AttributeError, lambda: A().a)
 
-    def test_delete_descriptor(self):
-        class Prop(object):
-            def __get__(self, obj, cls):
-                return 42
-            def __delete__(self, obj):
-                obj.deleted = True
-        class C(object):
-            x = Prop()
-        obj = C()
-        del obj.x
-        assert obj.deleted
-
     def test_non_callable(self):
         meth = classmethod(1).__get__(1)
         raises(TypeError, meth)
@@ -639,10 +624,10 @@ class AppTest_Descroperation:
             pass
         a = A()
         b = B()
-        assert isinstance(a, A) # "shortcut" does not go through metaclass
+        assert isinstance(a, A)
         assert not isinstance(a, B)
         assert isinstance(b, A)
-        assert isinstance(b, B) # "shortcut" does not go through metaclass
+        assert not isinstance(b, B)
         assert isinstance(4, A)
         assert not issubclass(A, A)
         assert not issubclass(B, A)
@@ -733,81 +718,8 @@ class AppTest_Descroperation:
                 return CannotConvertToBool()
         x = X()
         raises(MyError, "'foo' in x")
+        
+            
 
-    def test___cmp___fake_int(self):
-        class MyInt(object):
-            def __init__(self, x):
-                self.x = x
-            def __int__(self):
-                return self.x
-        class X(object):
-            def __cmp__(self, other):
-                return MyInt(0)
-
-        assert X() == 'hello'
-
-    def test_sequence_rmul_overrides(self):
-        class oops(object):
-            def __rmul__(self, other):
-                return 42
-            def __index__(self):
-                return 3
-        assert '2' * oops() == 42
-        assert [2] * oops() == 42
-        assert (2,) * oops() == 42
-        assert u'2' * oops() == 42
-        assert bytearray('2') * oops() == 42
-        assert 1000 * oops() == 42
-        assert '2'.__mul__(oops()) == '222'
-        x = '2'
-        x *= oops()
-        assert x == 42
-        x = [2]
-        x *= oops()
-        assert x == 42
-
-    def test_sequence_rmul_overrides_oldstyle(self):
-        class oops:
-            def __rmul__(self, other):
-                return 42
-            def __index__(self):
-                return 3
-        assert '2' * oops() == 42
-        assert [2] * oops() == 42
-        assert (2,) * oops() == 42
-        assert u'2' * oops() == 42
-        assert bytearray('2') * oops() == 42
-        assert 1000 * oops() == 42
-        assert '2'.__mul__(oops()) == '222'
-
-    def test_sequence_radd_overrides(self):
-        class A1(list):
-            pass
-        class A2(list):
-            def __radd__(self, other):
-                return 42
-        assert [2] + A1([3]) == [2, 3]
-        assert type([2] + A1([3])) is list
-        assert [2] + A2([3]) == 42
-        x = "2"
-        x += A2([3])
-        assert x == 42
-        x = [2]
-        x += A2([3])
-        assert x == 42
-
-    def test_data_descriptor_without_delete(self):
-        class D(object):
-            def __set__(self, x, y):
-                pass
-        class A(object):
-            d = D()
-        raises(AttributeError, "del A().d")
-
-    def test_data_descriptor_without_set(self):
-        class D(object):
-            def __delete__(self, x):
-                pass
-        class A(object):
-            d = D()
-        raises(AttributeError, "A().d = 5")
+class AppTestWithBuiltinShortcut(AppTest_Descroperation):
+    spaceconfig = {'objspace.std.builtinshortcut': True}

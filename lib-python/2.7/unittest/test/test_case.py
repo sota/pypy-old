@@ -9,7 +9,7 @@ from test import test_support
 
 import unittest
 
-from unittest.test.support import (
+from .support import (
     TestEquality, TestHashing, LoggingResult, ResultWithNoStartTestRunStopTestRun
 )
 
@@ -293,7 +293,7 @@ class Test_TestCase(unittest.TestCase, TestEquality, TestHashing):
             def test(self):
                 pass
 
-        self.assertIs(Foo('test').failureException, AssertionError)
+        self.assertTrue(Foo('test').failureException is AssertionError)
 
     # "This class attribute gives the exception raised by the test() method.
     # If a test framework needs to use a specialized exception, possibly to
@@ -311,7 +311,7 @@ class Test_TestCase(unittest.TestCase, TestEquality, TestHashing):
 
             failureException = RuntimeError
 
-        self.assertIs(Foo('test').failureException, RuntimeError)
+        self.assertTrue(Foo('test').failureException is RuntimeError)
 
 
         Foo('test').run(result)
@@ -334,7 +334,7 @@ class Test_TestCase(unittest.TestCase, TestEquality, TestHashing):
 
             failureException = RuntimeError
 
-        self.assertIs(Foo('test').failureException, RuntimeError)
+        self.assertTrue(Foo('test').failureException is RuntimeError)
 
 
         Foo('test').run(result)
@@ -607,7 +607,7 @@ class Test_TestCase(unittest.TestCase, TestEquality, TestHashing):
             msg = e.args[0]
         else:
             self.fail('assertSequenceEqual did not fail.')
-        self.assertLess(len(msg), len(diff))
+        self.assertTrue(len(msg) < len(diff))
         self.assertIn(omitted, msg)
 
         self.maxDiff = len(diff) * 2
@@ -617,7 +617,7 @@ class Test_TestCase(unittest.TestCase, TestEquality, TestHashing):
             msg = e.args[0]
         else:
             self.fail('assertSequenceEqual did not fail.')
-        self.assertGreater(len(msg), len(diff))
+        self.assertTrue(len(msg) > len(diff))
         self.assertNotIn(omitted, msg)
 
         self.maxDiff = None
@@ -627,7 +627,7 @@ class Test_TestCase(unittest.TestCase, TestEquality, TestHashing):
             msg = e.args[0]
         else:
             self.fail('assertSequenceEqual did not fail.')
-        self.assertGreater(len(msg), len(diff))
+        self.assertTrue(len(msg) > len(diff))
         self.assertNotIn(omitted, msg)
 
     def testTruncateMessage(self):
@@ -954,50 +954,6 @@ test case
         self.assertRaises(self.failureException, self.assertRegexpMatches,
                           'saaas', r'aaaa')
 
-    def testAssertRaisesCallable(self):
-        class ExceptionMock(Exception):
-            pass
-        def Stub():
-            raise ExceptionMock('We expect')
-        self.assertRaises(ExceptionMock, Stub)
-        # A tuple of exception classes is accepted
-        self.assertRaises((ValueError, ExceptionMock), Stub)
-        # *args and **kwargs also work
-        self.assertRaises(ValueError, int, '19', base=8)
-        # Failure when no exception is raised
-        with self.assertRaises(self.failureException):
-            self.assertRaises(ExceptionMock, lambda: 0)
-        # Failure when the function is None
-        with self.assertRaises(TypeError):
-            self.assertRaises(ExceptionMock, None)
-        # Failure when another exception is raised
-        with self.assertRaises(ExceptionMock):
-            self.assertRaises(ValueError, Stub)
-
-    def testAssertRaisesContext(self):
-        class ExceptionMock(Exception):
-            pass
-        def Stub():
-            raise ExceptionMock('We expect')
-        with self.assertRaises(ExceptionMock):
-            Stub()
-        # A tuple of exception classes is accepted
-        with self.assertRaises((ValueError, ExceptionMock)) as cm:
-            Stub()
-        # The context manager exposes caught exception
-        self.assertIsInstance(cm.exception, ExceptionMock)
-        self.assertEqual(cm.exception.args[0], 'We expect')
-        # *args and **kwargs also work
-        with self.assertRaises(ValueError):
-            int('19', base=8)
-        # Failure when no exception is raised
-        with self.assertRaises(self.failureException):
-            with self.assertRaises(ExceptionMock):
-                pass
-        # Failure when another exception is raised
-        with self.assertRaises(ExceptionMock):
-            self.assertRaises(ValueError, Stub)
-
     def testAssertRaisesRegexp(self):
         class ExceptionMock(Exception):
             pass
@@ -1008,8 +964,6 @@ test case
         self.assertRaisesRegexp(ExceptionMock, re.compile('expect$'), Stub)
         self.assertRaisesRegexp(ExceptionMock, 'expect$', Stub)
         self.assertRaisesRegexp(ExceptionMock, u'expect$', Stub)
-        with self.assertRaises(TypeError):
-            self.assertRaisesRegexp(ExceptionMock, 'expect$', None)
 
     def testAssertNotRaisesRegexp(self):
         self.assertRaisesRegexp(
@@ -1024,12 +978,6 @@ test case
                 self.failureException, '^Exception not raised$',
                 self.assertRaisesRegexp, Exception, u'x',
                 lambda: None)
-
-    def testAssertRaisesRegexpInvalidRegexp(self):
-        # Issue 20145.
-        class MyExc(Exception):
-            pass
-        self.assertRaises(TypeError, self.assertRaisesRegexp, MyExc, lambda: True)
 
     def testAssertRaisesRegexpMismatch(self):
         def Stub():

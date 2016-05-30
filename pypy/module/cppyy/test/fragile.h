@@ -112,9 +112,4 @@ public:
     enum E2 { kTwice=12 };
 };
 
-class O {
-public:
-   virtual int abstract() = 0;
-};
-
 } // namespace fragile

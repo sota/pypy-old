@@ -417,22 +417,6 @@ class AppTestOldstyle(object):
             pass
         raises(TypeError, coerce, B(), [])
 
-    def test_coerce_inf(self):
-        class B:
-            def __coerce__(self, other):
-                return B(), B()
-            def __add__(self, other):
-                return 42
-        assert B() + B() == 42
-
-    def test_coerce_reverse(self):
-        class CoerceNumber:
-            def __coerce__(self, other):
-                assert isinstance(other, int)
-                return (6, other)
-        assert 5 + CoerceNumber() == 11
-        assert 2 ** CoerceNumber() == 64
-
     def test_binaryop(self):
         class A:
             def __add__(self, other):
@@ -451,6 +435,7 @@ class AppTestOldstyle(object):
         a = A()
         assert a + 1 == 2
         assert a + 1.1 == 2
+
 
     def test_binaryop_calls_coerce_always(self):
         l = []
@@ -1075,25 +1060,15 @@ class AppTestOldstyle(object):
         assert (D() >  A()) == 'D:A.gt'
         assert (D() >= A()) == 'D:A.ge'
 
-    def test_override___int__(self):
-        class F(float):
-            def __int__(self):
-                return 666
-        f = F(-12.3)
-        assert int(f) == 666
-        # on cpython, this calls float_trunc() in floatobject.c
-        # which ends up calling PyFloat_AS_DOUBLE((PyFloatObject*) f)
-        assert float.__int__(f) == -12
 
-
-class AppTestOldStyleClassBytesDict(object):
+class AppTestOldStyleClassStrDict(object):
     def setup_class(cls):
         if cls.runappdirect:
             py.test.skip("can only be run on py.py")
         def is_strdict(space, w_class):
-            from pypy.objspace.std.dictmultiobject import BytesDictStrategy
+            from pypy.objspace.std.dictmultiobject import StringDictStrategy
             w_d = w_class.getdict(space)
-            return space.wrap(isinstance(w_d.get_strategy(), BytesDictStrategy))
+            return space.wrap(isinstance(w_d.strategy, StringDictStrategy))
 
         cls.w_is_strdict = cls.space.wrap(gateway.interp2app(is_strdict))
 
@@ -1102,21 +1077,6 @@ class AppTestOldStyleClassBytesDict(object):
             a = 1
             b = 2
         assert self.is_strdict(A)
-
-    def test_attr_slots(self):
-        class C:
-            pass
-        for c in C, C():
-            raises(TypeError, type(c).__getattribute__, c, [])
-            raises(TypeError, type(c).__setattr__, c, [], [])
-
-    def test_attr_unicode(self):
-        class C:
-            pass
-        c = C()
-        setattr(c, u"x", 1)
-        assert getattr(c, u"x") == 1
-
 
 class AppTestOldStyleMapDict(AppTestOldstyle):
     spaceconfig = {"objspace.std.withmapdict": True}

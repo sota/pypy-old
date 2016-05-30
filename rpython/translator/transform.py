@@ -5,8 +5,9 @@ transformation is based on annotations; it runs after the annotator
 completed.
 """
 
-from rpython.flowspace.model import (
-    SpaceOperation, Variable, Constant, Link, checkgraph)
+from rpython.flowspace.model import SpaceOperation
+from rpython.flowspace.model import Variable, Constant, Link
+from rpython.flowspace.model import c_last_exception, checkgraph
 from rpython.annotator import model as annmodel
 from rpython.rtyper.lltypesystem import lltype
 
@@ -29,7 +30,7 @@ def fully_annotated_blocks(self):
 # [a] * b
 # -->
 # c = newlist(a)
-# d = mul(c, b)
+# d = mul(c, int b)
 # -->
 # d = alloc_and_set(b, a)
 
@@ -43,7 +44,8 @@ def transform_allocate(self, block_subset):
                 len(op.args) == 1):
                 length1_lists[op.result] = op.args[0]
             elif (op.opname == 'mul' and
-                  op.args[0] in length1_lists):
+                  op.args[0] in length1_lists and
+                  self.gettype(op.args[1]) is int):
                 new_op = SpaceOperation('alloc_and_set',
                                         (op.args[1], length1_lists[op.args[0]]),
                                         op.result)
@@ -88,8 +90,8 @@ def transform_extend_with_char_count(self, block_subset):
         for i in range(len(block.operations)):
             op = block.operations[i]
             if op.opname == 'mul':
-                s0 = self.annotation(op.args[0])
-                s1 = self.annotation(op.args[1])
+                s0 = self.binding(op.args[0], None)
+                s1 = self.binding(op.args[1], None)
                 if (isinstance(s0, annmodel.SomeChar) and
                     isinstance(s1, annmodel.SomeInteger)):
                     mul_sources[op.result] = op.args[0], op.args[1]
@@ -123,14 +125,14 @@ def transform_list_contains(self, block_subset):
             elif op.opname == 'contains' and op.args[0] in newlist_sources:
                 items = {}
                 for v in newlist_sources[op.args[0]]:
-                    s = self.annotation(v)
+                    s = self.binding(v)
                     if not s.is_immutable_constant():
                         break
                     items[s.const] = None
                 else:
                     # all arguments of the newlist are annotation constants
                     op.args[0] = Constant(items)
-                    s_dict = self.annotation(op.args[0])
+                    s_dict = self.binding(op.args[0])
                     s_dict.dictdef.generalize_key(self.binding(op.args[1]))
 
 
@@ -154,7 +156,7 @@ def transform_dead_code(self, block_subset):
                 if not block.exits:
                     # oups! cannot reach the end of this block
                     cutoff_alwaysraising_block(self, block)
-                elif block.canraise:
+                elif block.exitswitch == c_last_exception:
                     # exceptional exit
                     if block.exits[0].exitcase is not None:
                         # killed the non-exceptional path!
@@ -167,9 +169,9 @@ def cutoff_alwaysraising_block(self, block):
     "Fix a block whose end can never be reached at run-time."
     # search the operation that cannot succeed
     can_succeed    = [op for op in block.operations
-                         if op.result.annotation is not None]
+                         if op.result in self.bindings]
     cannot_succeed = [op for op in block.operations
-                         if op.result.annotation is None]
+                         if op.result not in self.bindings]
     n = len(can_succeed)
     # check consistency
     assert can_succeed == block.operations[:n]
@@ -177,7 +179,8 @@ def cutoff_alwaysraising_block(self, block):
     assert 0 <= n < len(block.operations)
     # chop off the unreachable end of the block
     del block.operations[n+1:]
-    self.setbinding(block.operations[n].result, annmodel.s_ImpossibleValue)
+    s_impossible = annmodel.SomeImpossibleValue()
+    self.bindings[block.operations[n].result] = s_impossible
     # insert the equivalent of 'raise AssertionError'
     graph = self.annotated[block]
     msg = "Call to %r should have raised an exception" % (getattr(graph, 'func', None),)
@@ -189,7 +192,8 @@ def cutoff_alwaysraising_block(self, block):
     self.links_followed[errlink] = True
     # fix the annotation of the exceptblock.inputargs
     etype, evalue = graph.exceptblock.inputargs
-    s_type = annmodel.SomeTypeOf([evalue])
+    s_type = annmodel.SomeType()
+    s_type.is_type_of = [evalue]
     s_value = annmodel.SomeInstance(self.bookkeeper.getuniqueclassdef(Exception))
     self.setbinding(etype, s_type)
     self.setbinding(evalue, s_value)
@@ -209,10 +213,6 @@ def insert_ll_stackcheck(translator):
     insert_in = set()
     block2graph = {}
     for caller in translator.graphs:
-        pyobj = getattr(caller, 'func', None)
-        if pyobj is not None:
-            if getattr(pyobj, '_dont_insert_stackcheck_', False):
-                continue
         for block, callee in find_calls_from(translator, caller):
             if getattr(getattr(callee, 'func', None),
                        'insert_stack_check_here', False):
@@ -269,3 +269,4 @@ def transform_graph(ann, extra_passes=None, block_subset=None):
     transform_dead_op_vars(ann, block_subset)
     if ann.translator:
         checkgraphs(ann, block_subset)
+ 

@@ -139,14 +139,6 @@ class AppTestBufferedReader:
         raw = _io.FileIO(self.tmpfile)
         f = _io.BufferedReader(raw)
         assert f.readinto(a) == 5
-        exc = raises(TypeError, f.readinto, u"hello")
-        assert str(exc.value) == "cannot use unicode as modifiable buffer"
-        exc = raises(TypeError, f.readinto, buffer(b"hello"))
-        assert str(exc.value) == "must be read-write buffer, not buffer"
-        exc = raises(TypeError, f.readinto, buffer(bytearray("hello")))
-        assert str(exc.value) == "must be read-write buffer, not buffer"
-        exc = raises(TypeError, f.readinto, memoryview(b"hello"))
-        assert str(exc.value) == "must be read-write buffer, not memoryview"
         f.close()
         assert a == 'a\nb\ncxxxxx'
 
@@ -179,20 +171,6 @@ class AppTestBufferedReader:
         raises(ValueError, f.flush)
         assert not raw.closed
         raw.close()
-
-    def test_detached(self):
-        import _io
-        class MockRawIO(_io._RawIOBase):
-            def readable(self):
-                return True
-        raw = MockRawIO()
-        buf = _io.BufferedReader(raw)
-        assert buf.detach() is raw
-        raises(ValueError, buf.detach)
-
-        raises(ValueError, getattr, buf, 'mode')
-        raises(ValueError, buf.isatty)
-        repr(buf)  # Should still work
 
     def test_tell(self):
         import _io
@@ -257,8 +235,7 @@ class AppTestBufferedWriter:
         import _io
         raw = _io.FileIO(self.tmpfile, 'w')
         f = _io.BufferedWriter(raw)
-        f.write("ab")
-        f.write(u"cd")
+        f.write("abcd")
         f.close()
         assert self.readfile() == "abcd"
 
@@ -536,35 +513,6 @@ class AppTestBufferedWriter:
         exc = raises(RuntimeError, bufio.flush)
         assert "reentrant" in str(exc.value)  # And not e.g. recursion limit.
 
-    def test_write_error_on_close(self):
-        import _io
-        class MockRawIO(_io._RawIOBase):
-            def writable(self):
-                return True
-            def write(self, data):
-                raise IOError()
-        raw = MockRawIO()
-        b = _io.BufferedWriter(raw)
-        b.write(b'spam')
-        raises(IOError, b.close)  # exception not swallowed
-        assert b.closed
-
-    def test_close_error_on_close(self):
-        import _io
-        class MockRawIO(_io._RawIOBase):
-            def writable(self):
-                return True
-            def close(self):
-                raise IOError('close')
-        def bad_flush():
-            raise IOError('flush')
-        raw = MockRawIO()
-        b = _io.BufferedWriter(raw)
-        b.flush = bad_flush
-        err = raises(IOError, b.close)  # exception not swallowed
-        assert err.value.args == ('close',)
-        assert not b.closed
-
 class AppTestBufferedRWPair:
     def test_pair(self):
         import _io
@@ -591,47 +539,6 @@ class AppTestBufferedRWPair:
                 return False
 
         raises(IOError, _io.BufferedRWPair, _io.BytesIO(), NotWritable())
-
-    def test_writer_close_error_on_close(self):
-        import _io
-        class MockRawIO(_io._IOBase):
-            def readable(self):
-                return True
-            def writable(self):
-                return True
-        def writer_close():
-            writer_non_existing
-        reader = MockRawIO()
-        writer = MockRawIO()
-        writer.close = writer_close
-        pair = _io.BufferedRWPair(reader, writer)
-        err = raises(NameError, pair.close)
-        assert 'writer_non_existing' in str(err.value)
-        assert not pair.closed
-        assert reader.closed
-        assert not writer.closed
-
-    def test_reader_writer_close_error_on_close(self):
-        import _io
-        class MockRawIO(_io._IOBase):
-            def readable(self):
-                return True
-            def writable(self):
-                return True
-        def reader_close():
-            reader_non_existing
-        def writer_close():
-            writer_non_existing
-        reader = MockRawIO()
-        reader.close = reader_close
-        writer = MockRawIO()
-        writer.close = writer_close
-        pair = _io.BufferedRWPair(reader, writer)
-        err = raises(NameError, pair.close)
-        assert 'reader_non_existing' in str(err.value)
-        assert not pair.closed
-        assert not reader.closed
-        assert not writer.closed
 
 class AppTestBufferedRandom:
     spaceconfig = dict(usemodules=['_io'])

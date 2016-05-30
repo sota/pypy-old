@@ -3,9 +3,10 @@ from rpython.rtyper.lltypesystem import rffi, lltype
 from pypy.module.cpyext.api import (cpython_api, Py_ssize_t, CANNOT_FAIL,
                                     build_type_checkers)
 from pypy.module.cpyext.pyobject import (PyObject, PyObjectP, Py_DecRef,
-    make_ref, from_ref)
+    borrow_from, make_ref, from_ref)
 from pypy.module.cpyext.pyerrors import PyErr_BadInternalCall
 from pypy.objspace.std.setobject import W_SetObject, newset
+from pypy.objspace.std.smalltupleobject import W_SmallTupleObject
 
 
 PySet_Check, PySet_CheckExact = build_type_checkers("Set")
@@ -36,7 +37,7 @@ def PySet_Add(space, w_s, w_obj):
     values of brand new frozensets before they are exposed to other code."""
     if not PySet_Check(space, w_s):
         PyErr_BadInternalCall(space)
-    space.call_method(space.w_set, 'add', w_s, w_obj)
+    space.call_method(w_s, 'add', w_obj)
     return 0
 
 @cpython_api([PyObject, PyObject], rffi.INT_real, error=-1)
@@ -49,7 +50,7 @@ def PySet_Discard(space, w_s, w_obj):
     instance of set or its subtype."""
     if not PySet_Check(space, w_s):
         PyErr_BadInternalCall(space)
-    space.call_method(space.w_set, 'discard', w_s, w_obj)
+    space.call_method(w_s, 'discard', w_obj)
     return 0
 
 
@@ -59,12 +60,12 @@ def PySet_Pop(space, w_set):
     object from the set.  Return NULL on failure.  Raise KeyError if the
     set is empty. Raise a SystemError if set is an not an instance of
     set or its subtype."""
-    return space.call_method(space.w_set, "pop", w_set)
+    return space.call_method(w_set, "pop")
 
 @cpython_api([PyObject], rffi.INT_real, error=-1)
 def PySet_Clear(space, w_set):
     """Empty an existing set of all elements."""
-    space.call_method(space.w_set, 'clear', w_set)
+    space.call_method(w_set, 'clear')
     return 0
 
 @cpython_api([PyObject], Py_ssize_t, error=CANNOT_FAIL)

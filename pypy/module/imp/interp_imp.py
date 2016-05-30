@@ -2,7 +2,7 @@ from pypy.module.imp import importing
 from pypy.module._file.interp_file import W_File
 from rpython.rlib import streamio
 from rpython.rlib.streamio import StreamErrors
-from pypy.interpreter.error import OperationError, oefmt
+from pypy.interpreter.error import OperationError, operationerrfmt
 from pypy.interpreter.module import Module
 from pypy.interpreter.gateway import unwrap_spec
 from pypy.interpreter.streamutil import wrap_streamerror
@@ -11,7 +11,7 @@ from pypy.interpreter.streamutil import wrap_streamerror
 def get_suffixes(space):
     w = space.wrap
     suffixes_w = []
-    if importing.has_so_extension(space):
+    if space.config.objspace.usemodules.cpyext:
         suffixes_w.append(
             space.newtuple([w(importing.get_so_extension(space)),
                             w('rb'), w(importing.C_EXTENSION)]))
@@ -52,7 +52,9 @@ def find_module(space, w_name, w_path=None):
     find_info = importing.find_module(
         space, name, w_name, name, w_path, use_loader=False)
     if not find_info:
-        raise oefmt(space.w_ImportError, "No module named %s", name)
+        raise operationerrfmt(
+            space.w_ImportError,
+            "No module named %s", name)
 
     w_filename = space.wrap(find_info.filename)
     stream = find_info.stream
@@ -72,7 +74,7 @@ def find_module(space, w_name, w_path=None):
     return space.newtuple([w_fileobj, w_filename, w_import_info])
 
 def load_module(space, w_name, w_file, w_filename, w_info):
-    w_suffix, w_filemode, w_modtype = space.unpackiterable(w_info, 3)
+    w_suffix, w_filemode, w_modtype = space.unpackiterable(w_info)
 
     filename = space.str0_w(w_filename)
     filemode = space.str_w(w_filemode)
@@ -128,7 +130,7 @@ def load_compiled(space, w_modulename, filename, w_file=None):
 
 @unwrap_spec(filename=str)
 def load_dynamic(space, w_modulename, filename, w_file=None):
-    if not importing.has_so_extension(space):
+    if not space.config.objspace.usemodules.cpyext:
         raise OperationError(space.w_ImportError, space.wrap(
             "Not implemented"))
     importing.load_c_extension(space, filename, space.str_w(w_modulename))
@@ -165,7 +167,7 @@ def is_frozen(space, w_name):
 
 def lock_held(space):
     if space.config.objspace.usemodules.thread:
-        return space.wrap(importing.getimportlock(space).lock_held_by_anyone())
+        return space.wrap(importing.getimportlock(space).lock_held())
     else:
         return space.w_False
 
@@ -175,7 +177,7 @@ def acquire_lock(space):
 
 def release_lock(space):
     if space.config.objspace.usemodules.thread:
-        importing.getimportlock(space).release_lock(silent_after_fork=False)
+        importing.getimportlock(space).release_lock()
 
 def reinit_lock(space):
     if space.config.objspace.usemodules.thread:

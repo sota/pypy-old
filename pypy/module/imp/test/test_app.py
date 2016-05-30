@@ -4,7 +4,7 @@ MARKER = 42
 
 class AppTestImpModule:
     spaceconfig = {
-        'usemodules': ['binascii', 'imp', 'itertools', 'time', 'struct'],
+        "usemodules": ['imp', 'itertools', 'binascii', 'rctime'],
     }
 
     def setup_class(cls):
@@ -200,47 +200,3 @@ class AppTestImpModule:
                 except KeyError:
                     pass
             rmtree(dir_name, True)
-
-    def test_builtin_reimport(self):
-        # from https://bugs.pypy.org/issue1514
-        import sys, marshal
-
-        old = marshal.loads
-        marshal.loads = 42
-
-        # save, re-import, restore.
-        saved = sys.modules.pop('marshal')
-        __import__('marshal')
-        sys.modules['marshal'] = saved
-
-        assert marshal.loads == 42
-        import marshal
-        assert marshal.loads == 42
-        marshal.loads = old
-
-    def test_builtin_reimport_mess(self):
-        # taken from https://bugs.pypy.org/issue1514, with extra cases
-        # that show a difference with CPython: we can get on CPython
-        # several module objects for the same built-in module :-(
-        import sys, marshal
-
-        old = marshal.loads
-        marshal.loads = 42
-
-        # save, re-import, restore.
-        saved = sys.modules.pop('marshal')
-        marshal2 = __import__('marshal')
-        assert marshal2 is not marshal
-        assert marshal2.loads is old
-        assert marshal2 is sys.modules['marshal']
-        assert marshal is saved
-        assert marshal.loads == 42
-
-        import marshal
-        assert marshal.loads is old
-
-        sys.modules['marshal'] = saved
-        import marshal
-        assert marshal.loads == 42
-
-        marshal.loads = old

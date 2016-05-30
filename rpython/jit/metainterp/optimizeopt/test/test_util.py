@@ -1,27 +1,26 @@
-import py, random, string
+import py, random
 
-from rpython.rlib.debug import debug_print
-from rpython.rtyper.lltypesystem import lltype, llmemory, rffi
-from rpython.rtyper import rclass
-from rpython.rtyper.rclass import (
-    OBJECT, OBJECT_VTABLE, FieldListAccessor, IR_QUASIIMMUTABLE)
+from rpython.rtyper.lltypesystem import lltype, llmemory, rclass, rstr
+from rpython.rtyper.ootypesystem import ootype
+from rpython.rtyper.lltypesystem.rclass import OBJECT, OBJECT_VTABLE
+from rpython.rtyper.rclass import FieldListAccessor, IR_QUASIIMMUTABLE
 
 from rpython.jit.backend.llgraph import runner
-from rpython.jit.metainterp.history import (TreeLoop, AbstractDescr,
-                                            JitCellToken, TargetToken)
+from rpython.jit.metainterp.history import (BoxInt, BoxPtr, ConstInt, ConstPtr,
+                                         Const, TreeLoop, BoxObj,
+                                         ConstObj, AbstractDescr,
+                                         JitCellToken, TargetToken)
 from rpython.jit.metainterp.optimizeopt.util import sort_descrs, equaloplists
+from rpython.jit.metainterp.optimize import InvalidLoop
 from rpython.jit.codewriter.effectinfo import EffectInfo
-from rpython.jit.metainterp.logger import LogOperations
-from rpython.jit.tool.oparser import OpParser, pure_parse
+from rpython.jit.codewriter.heaptracker import register_known_gctype, adr2int
+from rpython.jit.tool.oparser import parse, pure_parse
 from rpython.jit.metainterp.quasiimmut import QuasiImmutDescr
 from rpython.jit.metainterp import compile, resume, history
 from rpython.jit.metainterp.jitprof import EmptyProfiler
-from rpython.jit.metainterp.counter import DeterministicJitCounter
 from rpython.config.translationoption import get_combined_translation_config
-from rpython.jit.metainterp.resoperation import (rop, ResOperation,
-        InputArgRef, AbstractValue)
-from rpython.jit.metainterp.optimizeopt.util import args_dict
-
+from rpython.jit.metainterp.resoperation import rop, opname, ResOperation
+from rpython.jit.metainterp.optimizeopt.unroll import Inliner
 
 def test_sort_descrs():
     class PseudoDescr(AbstractDescr):
@@ -36,12 +35,6 @@ def test_sort_descrs():
         sort_descrs(lst2)
         assert lst2 == lst
 
-def make_remap(inp1, inp2):
-    remap = {}
-    for a, b in zip(inp1, inp2):
-        remap[b] = a
-    return remap
-
 def test_equaloplists():
     ops = """
     [i0]
@@ -55,12 +48,9 @@ def test_equaloplists():
     loop2 = pure_parse(ops, namespace=namespace)
     loop3 = pure_parse(ops.replace("i2 = int_add", "i2 = int_sub"),
                        namespace=namespace)
-    assert equaloplists(loop1.operations, loop2.operations,
-                        remap=make_remap(loop1.inputargs,
-                                         loop2.inputargs))
+    assert equaloplists(loop1.operations, loop2.operations)
     py.test.raises(AssertionError,
-                   "equaloplists(loop1.operations, loop3.operations,"
-                   "remap=make_remap(loop1.inputargs, loop3.inputargs))")
+                   "equaloplists(loop1.operations, loop3.operations)")
 
 def test_equaloplists_fail_args():
     ops = """
@@ -75,23 +65,21 @@ def test_equaloplists_fail_args():
     loop2 = pure_parse(ops.replace("[i2, i1]", "[i1, i2]"),
                        namespace=namespace)
     py.test.raises(AssertionError,
-                   "equaloplists(loop1.operations, loop2.operations,"
-                   "remap=make_remap(loop1.inputargs, loop2.inputargs))")
+                   "equaloplists(loop1.operations, loop2.operations)")
     assert equaloplists(loop1.operations, loop2.operations,
-                        remap=make_remap(loop1.inputargs, loop2.inputargs),
                         strict_fail_args=False)
     loop3 = pure_parse(ops.replace("[i2, i1]", "[i2, i0]"),
                        namespace=namespace)
     py.test.raises(AssertionError,
-                   "equaloplists(loop1.operations, loop3.operations,"
-                   " remap=make_remap(loop1.inputargs, loop3.inputargs))")
+                   "equaloplists(loop1.operations, loop3.operations)")
 
 # ____________________________________________________________
 
 class LLtypeMixin(object):
+    type_system = 'lltype'
+
     def get_class_of_box(self, box):
-        base = box.getref_base()
-        return lltype.cast_opaque_ptr(rclass.OBJECTPTR, base).typeptr
+        return box.getref(rclass.OBJECTPTR).typeptr
 
     node_vtable = lltype.malloc(OBJECT_VTABLE, immortal=True)
     node_vtable.name = rclass.alloc_array_name('node')
@@ -99,94 +87,44 @@ class LLtypeMixin(object):
     node_vtable2 = lltype.malloc(OBJECT_VTABLE, immortal=True)
     node_vtable2.name = rclass.alloc_array_name('node2')
     node_vtable_adr2 = llmemory.cast_ptr_to_adr(node_vtable2)
-    node_vtable3 = lltype.malloc(OBJECT_VTABLE, immortal=True)
-    node_vtable3.name = rclass.alloc_array_name('node3')
-    node_vtable_adr3 = llmemory.cast_ptr_to_adr(node_vtable3)
     cpu = runner.LLGraphCPU(None)
 
     NODE = lltype.GcForwardReference()
-    S = lltype.GcForwardReference()
     NODE.become(lltype.GcStruct('NODE', ('parent', OBJECT),
                                         ('value', lltype.Signed),
                                         ('floatval', lltype.Float),
-                                        ('charval', lltype.Char),
-                                        ('nexttuple', lltype.Ptr(S)),
                                         ('next', lltype.Ptr(NODE))))
-    S.become(lltype.GcStruct('TUPLE', ('a', lltype.Signed), ('abis', lltype.Signed),
-                        ('b', lltype.Ptr(NODE))))
     NODE2 = lltype.GcStruct('NODE2', ('parent', NODE),
                                      ('other', lltype.Ptr(NODE)))
-
-    NODE3 = lltype.GcForwardReference()
-    NODE3.become(lltype.GcStruct('NODE3', ('parent', OBJECT),
-                            ('value', lltype.Signed),
-                            ('next', lltype.Ptr(NODE3)),
-                            hints={'immutable': True}))
-
-    big_fields = [('big' + i, lltype.Signed) for i in string.ascii_lowercase]
-    BIG = lltype.GcForwardReference()
-    BIG.become(lltype.GcStruct('BIG', *big_fields, hints={'immutable': True}))
-
-    for field, _ in big_fields:
-        locals()[field + 'descr'] = cpu.fielddescrof(BIG, field)
-
     node = lltype.malloc(NODE)
-    node.value = 5
-    node.next = node
     node.parent.typeptr = node_vtable
-    nodeaddr = lltype.cast_opaque_ptr(llmemory.GCREF, node)
-    #nodebox = InputArgRef(lltype.cast_opaque_ptr(llmemory.GCREF, node))
     node2 = lltype.malloc(NODE2)
     node2.parent.parent.typeptr = node_vtable2
-    node2addr = lltype.cast_opaque_ptr(llmemory.GCREF, node2)
-    myptr = lltype.cast_opaque_ptr(llmemory.GCREF, node)
-    mynodeb = lltype.malloc(NODE)
-    myarray = lltype.cast_opaque_ptr(llmemory.GCREF, lltype.malloc(lltype.GcArray(lltype.Signed), 13, zero=True))
-    mynodeb.parent.typeptr = node_vtable
-    myptrb = lltype.cast_opaque_ptr(llmemory.GCREF, mynodeb)
-    myptr2 = lltype.malloc(NODE2)
-    myptr2.parent.parent.typeptr = node_vtable2
-    myptr2 = lltype.cast_opaque_ptr(llmemory.GCREF, myptr2)
+    nodebox = BoxPtr(lltype.cast_opaque_ptr(llmemory.GCREF, node))
+    myptr = nodebox.value
+    myptr2 = lltype.cast_opaque_ptr(llmemory.GCREF, lltype.malloc(NODE))
     nullptr = lltype.nullptr(llmemory.GCREF.TO)
-
-    mynode3 = lltype.malloc(NODE3)
-    mynode3.parent.typeptr = node_vtable3
-    mynode3.value = 7
-    mynode3.next = mynode3
-    myptr3 = lltype.cast_opaque_ptr(llmemory.GCREF, mynode3)   # a NODE2
-    mynode4 = lltype.malloc(NODE3)
-    mynode4.parent.typeptr = node_vtable3
-    myptr4 = lltype.cast_opaque_ptr(llmemory.GCREF, mynode4)   # a NODE3
-
-
-    nullptr = lltype.nullptr(llmemory.GCREF.TO)
-    #nodebox2 = InputArgRef(lltype.cast_opaque_ptr(llmemory.GCREF, node2))
-    nodesize = cpu.sizeof(NODE, node_vtable)
-    node_tid = nodesize.get_type_id()
-    nodesize2 = cpu.sizeof(NODE2, node_vtable2)
-    nodesize3 = cpu.sizeof(NODE3, node_vtable3)
+    nodebox2 = BoxPtr(lltype.cast_opaque_ptr(llmemory.GCREF, node2))
+    nodesize = cpu.sizeof(NODE)
+    nodesize2 = cpu.sizeof(NODE2)
     valuedescr = cpu.fielddescrof(NODE, 'value')
     floatdescr = cpu.fielddescrof(NODE, 'floatval')
-    chardescr = cpu.fielddescrof(NODE, 'charval')
     nextdescr = cpu.fielddescrof(NODE, 'next')
-    nexttupledescr = cpu.fielddescrof(NODE, 'nexttuple')
     otherdescr = cpu.fielddescrof(NODE2, 'other')
-    valuedescr3 = cpu.fielddescrof(NODE3, 'value')
-    nextdescr3 = cpu.fielddescrof(NODE3, 'next')
-    assert valuedescr3.is_always_pure()
-    assert nextdescr3.is_always_pure()
 
     accessor = FieldListAccessor()
     accessor.initialize(None, {'inst_field': IR_QUASIIMMUTABLE})
     QUASI = lltype.GcStruct('QUASIIMMUT', ('inst_field', lltype.Signed),
                             ('mutate_field', rclass.OBJECTPTR),
                             hints={'immutable_fields': accessor})
-    quasisize = cpu.sizeof(QUASI, None)
+    quasisize = cpu.sizeof(QUASI)
     quasi = lltype.malloc(QUASI, immortal=True)
     quasi.inst_field = -4247
     quasifielddescr = cpu.fielddescrof(QUASI, 'inst_field')
-    quasiptr = lltype.cast_opaque_ptr(llmemory.GCREF, quasi)
-    quasiimmutdescr = QuasiImmutDescr(cpu, quasiptr, quasifielddescr,
+    quasibox = BoxPtr(lltype.cast_opaque_ptr(llmemory.GCREF, quasi))
+    quasiptr = quasibox.value
+    quasiimmutdescr = QuasiImmutDescr(cpu, quasibox,
+                                      quasifielddescr,
                                       cpu.fielddescrof(QUASI, 'mutate_field'))
 
     NODEOBJ = lltype.GcStruct('NODEOBJ', ('parent', OBJECT),
@@ -204,138 +142,69 @@ class LLtypeMixin(object):
     intobj_immut_vtable = lltype.malloc(OBJECT_VTABLE, immortal=True)
     noimmut_intval = cpu.fielddescrof(INTOBJ_NOIMMUT, 'intval')
     immut_intval = cpu.fielddescrof(INTOBJ_IMMUT, 'intval')
-    immut = lltype.malloc(INTOBJ_IMMUT, zero=True)
-    immutaddr = lltype.cast_opaque_ptr(llmemory.GCREF, immut)
-    noimmut_descr = cpu.sizeof(INTOBJ_NOIMMUT, intobj_noimmut_vtable)
-    immut_descr = cpu.sizeof(INTOBJ_IMMUT, intobj_immut_vtable)
 
     PTROBJ_IMMUT = lltype.GcStruct('PTROBJ_IMMUT', ('parent', OBJECT),
                                             ('ptrval', lltype.Ptr(OBJECT)),
                                             hints={'immutable': True})
     ptrobj_immut_vtable = lltype.malloc(OBJECT_VTABLE, immortal=True)
-    ptrobj_immut_descr = cpu.sizeof(PTROBJ_IMMUT, ptrobj_immut_vtable)
     immut_ptrval = cpu.fielddescrof(PTROBJ_IMMUT, 'ptrval')
 
     arraydescr = cpu.arraydescrof(lltype.GcArray(lltype.Signed))
-    int32arraydescr = cpu.arraydescrof(lltype.GcArray(rffi.INT))
-    int16arraydescr = cpu.arraydescrof(lltype.GcArray(rffi.SHORT))
-    float32arraydescr = cpu.arraydescrof(lltype.GcArray(lltype.SingleFloat))
-    arraydescr_tid = arraydescr.get_type_id()
-    array = lltype.malloc(lltype.GcArray(lltype.Signed), 15, zero=True)
-    arrayref = lltype.cast_opaque_ptr(llmemory.GCREF, array)
-    array2 = lltype.malloc(lltype.GcArray(lltype.Ptr(S)), 15, zero=True)
-    array2ref = lltype.cast_opaque_ptr(llmemory.GCREF, array2)
-    gcarraydescr = cpu.arraydescrof(lltype.GcArray(llmemory.GCREF))
-    gcarraydescr_tid = gcarraydescr.get_type_id()
     floatarraydescr = cpu.arraydescrof(lltype.GcArray(lltype.Float))
 
-    arrayimmutdescr = cpu.arraydescrof(lltype.GcArray(lltype.Signed, hints={"immutable": True}))
-    immutarray = lltype.cast_opaque_ptr(llmemory.GCREF, lltype.malloc(arrayimmutdescr.A, 13, zero=True))
-    gcarrayimmutdescr = cpu.arraydescrof(lltype.GcArray(llmemory.GCREF, hints={"immutable": True}))
-    floatarrayimmutdescr = cpu.arraydescrof(lltype.GcArray(lltype.Float, hints={"immutable": True}))
-
     # a GcStruct not inheriting from OBJECT
-    tpl = lltype.malloc(S, zero=True)
-    tupleaddr = lltype.cast_opaque_ptr(llmemory.GCREF, tpl)
-    nodefull2 = lltype.malloc(NODE, zero=True)
-    nodefull2addr = lltype.cast_opaque_ptr(llmemory.GCREF, nodefull2)
-    ssize = cpu.sizeof(S, None)
+    S = lltype.GcStruct('TUPLE', ('a', lltype.Signed), ('b', lltype.Ptr(NODE)))
+    ssize = cpu.sizeof(S)
     adescr = cpu.fielddescrof(S, 'a')
-    abisdescr = cpu.fielddescrof(S, 'abis')
     bdescr = cpu.fielddescrof(S, 'b')
-    #sbox = BoxPtr(lltype.cast_opaque_ptr(llmemory.GCREF, lltype.malloc(S)))
+    sbox = BoxPtr(lltype.cast_opaque_ptr(llmemory.GCREF, lltype.malloc(S)))
     arraydescr2 = cpu.arraydescrof(lltype.GcArray(lltype.Ptr(S)))
 
     T = lltype.GcStruct('TUPLE',
                         ('c', lltype.Signed),
                         ('d', lltype.Ptr(lltype.GcArray(lltype.Ptr(NODE)))))
-
-    W_ROOT = lltype.GcStruct('W_ROOT', ('parent', OBJECT),
-        ('inst_w_seq', llmemory.GCREF), ('inst_index', lltype.Signed),
-        ('inst_w_list', llmemory.GCREF), ('inst_length', lltype.Signed),
-        ('inst_start', lltype.Signed), ('inst_step', lltype.Signed))
-    inst_w_seq = cpu.fielddescrof(W_ROOT, 'inst_w_seq')
-    inst_index = cpu.fielddescrof(W_ROOT, 'inst_index')
-    inst_length = cpu.fielddescrof(W_ROOT, 'inst_length')
-    inst_start = cpu.fielddescrof(W_ROOT, 'inst_start')
-    inst_step = cpu.fielddescrof(W_ROOT, 'inst_step')
-    inst_w_list = cpu.fielddescrof(W_ROOT, 'inst_w_list')
-    w_root_vtable = lltype.malloc(OBJECT_VTABLE, immortal=True)
-    
-    tsize = cpu.sizeof(T, None)
+    tsize = cpu.sizeof(T)
     cdescr = cpu.fielddescrof(T, 'c')
     ddescr = cpu.fielddescrof(T, 'd')
-    arraydescr3 = cpu.arraydescrof(lltype.GcArray(lltype.Ptr(NODE3)))
+    arraydescr3 = cpu.arraydescrof(lltype.GcArray(lltype.Ptr(NODE)))
 
     U = lltype.GcStruct('U',
                         ('parent', OBJECT),
                         ('one', lltype.Ptr(lltype.GcArray(lltype.Ptr(NODE)))))
     u_vtable = lltype.malloc(OBJECT_VTABLE, immortal=True)
     u_vtable_adr = llmemory.cast_ptr_to_adr(u_vtable)
-    SIMPLE = lltype.GcStruct('simple',
-        ('parent', OBJECT),
-        ('value', lltype.Signed))
-    simplevalue = cpu.fielddescrof(SIMPLE, 'value')
-    simple_vtable = lltype.malloc(OBJECT_VTABLE, immortal=True)
-    simpledescr = cpu.sizeof(SIMPLE, simple_vtable)
-    simple = lltype.malloc(SIMPLE, zero=True)
-    simpleaddr = lltype.cast_opaque_ptr(llmemory.GCREF, simple)
-    #usize = cpu.sizeof(U, ...)
+    usize = cpu.sizeof(U)
     onedescr = cpu.fielddescrof(U, 'one')
 
     FUNC = lltype.FuncType([lltype.Signed], lltype.Signed)
     plaincalldescr = cpu.calldescrof(FUNC, FUNC.ARGS, FUNC.RESULT,
                                      EffectInfo.MOST_GENERAL)
-    elidablecalldescr = cpu.calldescrof(FUNC, FUNC.ARGS, FUNC.RESULT,
-                                    EffectInfo([valuedescr], [], [],
-                                               [valuedescr], [], [],
-                                         EffectInfo.EF_ELIDABLE_CANNOT_RAISE))
-    elidable2calldescr = cpu.calldescrof(FUNC, FUNC.ARGS, FUNC.RESULT,
-                                    EffectInfo([valuedescr], [], [],
-                                               [valuedescr], [], [],
-                                         EffectInfo.EF_ELIDABLE_OR_MEMORYERROR))
-    elidable3calldescr = cpu.calldescrof(FUNC, FUNC.ARGS, FUNC.RESULT,
-                                    EffectInfo([valuedescr], [], [],
-                                               [valuedescr], [], [],
-                                         EffectInfo.EF_ELIDABLE_CAN_RAISE))
     nonwritedescr = cpu.calldescrof(FUNC, FUNC.ARGS, FUNC.RESULT,
-                                    EffectInfo([], [], [], [], [], []))
+                                    EffectInfo([], [], [], []))
     writeadescr = cpu.calldescrof(FUNC, FUNC.ARGS, FUNC.RESULT,
-                                  EffectInfo([], [], [], [adescr], [], []))
+                                  EffectInfo([], [], [adescr], []))
     writearraydescr = cpu.calldescrof(FUNC, FUNC.ARGS, FUNC.RESULT,
-                                  EffectInfo([], [], [], [adescr], [arraydescr],
-                                             []))
-    writevalue3descr = cpu.calldescrof(FUNC, FUNC.ARGS, FUNC.RESULT,
-                                       EffectInfo([], [], [], [valuedescr3], [], []))
+                                  EffectInfo([], [], [adescr], [arraydescr]))
     readadescr = cpu.calldescrof(FUNC, FUNC.ARGS, FUNC.RESULT,
-                                 EffectInfo([adescr], [], [], [], [], []))
+                                 EffectInfo([adescr], [], [], []))
     mayforcevirtdescr = cpu.calldescrof(FUNC, FUNC.ARGS, FUNC.RESULT,
-                 EffectInfo([nextdescr], [], [], [], [], [],
+                 EffectInfo([nextdescr], [], [], [],
                             EffectInfo.EF_FORCES_VIRTUAL_OR_VIRTUALIZABLE,
                             can_invalidate=True))
     arraycopydescr = cpu.calldescrof(FUNC, FUNC.ARGS, FUNC.RESULT,
-             EffectInfo([], [arraydescr], [], [], [arraydescr], [],
+             EffectInfo([], [arraydescr], [], [arraydescr],
                         EffectInfo.EF_CANNOT_RAISE,
                         oopspecindex=EffectInfo.OS_ARRAYCOPY))
 
     raw_malloc_descr = cpu.calldescrof(FUNC, FUNC.ARGS, FUNC.RESULT,
-             EffectInfo([], [], [], [], [], [],
+             EffectInfo([], [], [], [],
                         EffectInfo.EF_CAN_RAISE,
                         oopspecindex=EffectInfo.OS_RAW_MALLOC_VARSIZE_CHAR))
     raw_free_descr = cpu.calldescrof(FUNC, FUNC.ARGS, FUNC.RESULT,
-             EffectInfo([], [], [], [], [], [],
+             EffectInfo([], [], [], [],
                         EffectInfo.EF_CANNOT_RAISE,
                         oopspecindex=EffectInfo.OS_RAW_FREE))
 
-    chararray = lltype.GcArray(lltype.Char)
-    chararraydescr = cpu.arraydescrof(chararray)
-    u2array = lltype.GcArray(rffi.USHORT)
-    u2arraydescr = cpu.arraydescrof(u2array)
-
-    nodefull = lltype.malloc(NODE2, zero=True)
-    nodefull.parent.next = lltype.cast_pointer(lltype.Ptr(NODE), nodefull)
-    nodefull.parent.nexttuple = tpl
-    nodefulladdr = lltype.cast_opaque_ptr(llmemory.GCREF, nodefull)
 
     # array of structs (complex data)
     complexarray = lltype.GcArray(
@@ -347,24 +216,12 @@ class LLtypeMixin(object):
     complexarraydescr = cpu.arraydescrof(complexarray)
     complexrealdescr = cpu.interiorfielddescrof(complexarray, "real")
     compleximagdescr = cpu.interiorfielddescrof(complexarray, "imag")
-    complexarraycopydescr = cpu.calldescrof(FUNC, FUNC.ARGS, FUNC.RESULT,
-            EffectInfo([], [complexarraydescr], [], [], [complexarraydescr], [],
-                       EffectInfo.EF_CANNOT_RAISE,
-                       oopspecindex=EffectInfo.OS_ARRAYCOPY))
 
     rawarraydescr = cpu.arraydescrof(lltype.Array(lltype.Signed,
                                                   hints={'nolength': True}))
     rawarraydescr_char = cpu.arraydescrof(lltype.Array(lltype.Char,
                                                        hints={'nolength': True}))
-    rawarraydescr_float = cpu.arraydescrof(lltype.Array(lltype.Float,
-                                                        hints={'nolength': True}))
 
-    fc_array = lltype.GcArray(
-        lltype.Struct(
-            "floatchar", ("float", lltype.Float), ("char", lltype.Char)))
-    fc_array_descr = cpu.arraydescrof(fc_array)
-    fc_array_floatdescr = cpu.interiorfielddescrof(fc_array, "float")
-    fc_array_chardescr = cpu.interiorfielddescrof(fc_array, "char")
 
     for _name, _os in [
         ('strconcatdescr',               'OS_STR_CONCAT'),
@@ -378,25 +235,20 @@ class LLtypeMixin(object):
         ('streq_checknull_char_descr',   'OS_STREQ_CHECKNULL_CHAR'),
         ('streq_lengthok_descr',         'OS_STREQ_LENGTHOK'),
         ]:
-        if _name in ('strconcatdescr', 'strslicedescr'):
-            _extra = EffectInfo.EF_ELIDABLE_OR_MEMORYERROR
-        else:
-            _extra = EffectInfo.EF_ELIDABLE_CANNOT_RAISE
         _oopspecindex = getattr(EffectInfo, _os)
         locals()[_name] = \
             cpu.calldescrof(FUNC, FUNC.ARGS, FUNC.RESULT,
-                EffectInfo([], [], [], [], [], [], _extra,
+                EffectInfo([], [], [], [], EffectInfo.EF_CANNOT_RAISE,
                            oopspecindex=_oopspecindex))
         #
         _oopspecindex = getattr(EffectInfo, _os.replace('STR', 'UNI'))
         locals()[_name.replace('str', 'unicode')] = \
             cpu.calldescrof(FUNC, FUNC.ARGS, FUNC.RESULT,
-                EffectInfo([], [], [], [], [], [], _extra,
+                EffectInfo([], [], [], [], EffectInfo.EF_CANNOT_RAISE,
                            oopspecindex=_oopspecindex))
 
     s2u_descr = cpu.calldescrof(FUNC, FUNC.ARGS, FUNC.RESULT,
-            EffectInfo([], [], [], [], [], [], EffectInfo.EF_ELIDABLE_CAN_RAISE,
-                       oopspecindex=EffectInfo.OS_STR2UNICODE))
+            EffectInfo([], [], [], [], oopspecindex=EffectInfo.OS_STR2UNICODE))
     #
 
     class LoopToken(AbstractDescr):
@@ -404,41 +256,102 @@ class LLtypeMixin(object):
     asmdescr = LoopToken() # it can be whatever, it's not a descr though
 
     from rpython.jit.metainterp.virtualref import VirtualRefInfo
-
     class FakeWarmRunnerDesc:
         pass
     FakeWarmRunnerDesc.cpu = cpu
     vrefinfo = VirtualRefInfo(FakeWarmRunnerDesc)
     virtualtokendescr = vrefinfo.descr_virtual_token
     virtualforceddescr = vrefinfo.descr_forced
-    FUNC = lltype.FuncType([], lltype.Void)
-    ei = EffectInfo([], [], [], [], [], [], EffectInfo.EF_CANNOT_RAISE,
-                    can_invalidate=False,
-                    oopspecindex=EffectInfo.OS_JIT_FORCE_VIRTUALIZABLE)
-    clear_vable = cpu.calldescrof(FUNC, FUNC.ARGS, FUNC.RESULT, ei)
-
     jit_virtual_ref_vtable = vrefinfo.jit_virtual_ref_vtable
     jvr_vtable_adr = llmemory.cast_ptr_to_adr(jit_virtual_ref_vtable)
-    vref_descr = cpu.sizeof(vrefinfo.JIT_VIRTUAL_REF, jit_virtual_ref_vtable)
+
+    register_known_gctype(cpu, node_vtable,  NODE)
+    register_known_gctype(cpu, node_vtable2, NODE2)
+    register_known_gctype(cpu, u_vtable,     U)
+    register_known_gctype(cpu, jit_virtual_ref_vtable,vrefinfo.JIT_VIRTUAL_REF)
+    register_known_gctype(cpu, intobj_noimmut_vtable, INTOBJ_NOIMMUT)
+    register_known_gctype(cpu, intobj_immut_vtable,   INTOBJ_IMMUT)
+    register_known_gctype(cpu, ptrobj_immut_vtable,   PTROBJ_IMMUT)
 
     namespace = locals()
 
+class OOtypeMixin_xxx_disabled(object):
+    type_system = 'ootype'
+
+##    def get_class_of_box(self, box):
+##        root = box.getref(ootype.ROOT)
+##        return ootype.classof(root)
+
+##    cpu = runner.OOtypeCPU(None)
+##    NODE = ootype.Instance('NODE', ootype.ROOT, {})
+##    NODE._add_fields({'value': ootype.Signed,
+##                      'floatval' : ootype.Float,
+##                      'next': NODE})
+##    NODE2 = ootype.Instance('NODE2', NODE, {'other': NODE})
+
+##    node_vtable = ootype.runtimeClass(NODE)
+##    node_vtable_adr = ootype.cast_to_object(node_vtable)
+##    node_vtable2 = ootype.runtimeClass(NODE2)
+##    node_vtable_adr2 = ootype.cast_to_object(node_vtable2)
+
+##    node = ootype.new(NODE)
+##    nodebox = BoxObj(ootype.cast_to_object(node))
+##    myptr = nodebox.value
+##    myptr2 = ootype.cast_to_object(ootype.new(NODE))
+##    nodebox2 = BoxObj(ootype.cast_to_object(node))
+##    valuedescr = cpu.fielddescrof(NODE, 'value')
+##    floatdescr = cpu.fielddescrof(NODE, 'floatval')
+##    nextdescr = cpu.fielddescrof(NODE, 'next')
+##    otherdescr = cpu.fielddescrof(NODE2, 'other')
+##    nodesize = cpu.typedescrof(NODE)
+##    nodesize2 = cpu.typedescrof(NODE2)
+
+##    arraydescr = cpu.arraydescrof(ootype.Array(ootype.Signed))
+##    floatarraydescr = cpu.arraydescrof(ootype.Array(ootype.Float))
+
+##    # a plain Record
+##    S = ootype.Record({'a': ootype.Signed, 'b': NODE})
+##    ssize = cpu.typedescrof(S)
+##    adescr = cpu.fielddescrof(S, 'a')
+##    bdescr = cpu.fielddescrof(S, 'b')
+##    sbox = BoxObj(ootype.cast_to_object(ootype.new(S)))
+##    arraydescr2 = cpu.arraydescrof(ootype.Array(S))
+
+##    T = ootype.Record({'c': ootype.Signed,
+##                       'd': ootype.Array(NODE)})
+##    tsize = cpu.typedescrof(T)
+##    cdescr = cpu.fielddescrof(T, 'c')
+##    ddescr = cpu.fielddescrof(T, 'd')
+##    arraydescr3 = cpu.arraydescrof(ootype.Array(NODE))
+
+##    U = ootype.Instance('U', ootype.ROOT, {'one': ootype.Array(NODE)})
+##    usize = cpu.typedescrof(U)
+##    onedescr = cpu.fielddescrof(U, 'one')
+##    u_vtable = ootype.runtimeClass(U)
+##    u_vtable_adr = ootype.cast_to_object(u_vtable)
+
+##    # force a consistent order
+##    valuedescr.sort_key()
+##    nextdescr.sort_key()
+##    adescr.sort_key()
+##    bdescr.sort_key()
+
+##    FUNC = lltype.FuncType([lltype.Signed], lltype.Signed)
+##    nonwritedescr = cpu.calldescrof(FUNC, FUNC.ARGS, FUNC.RESULT) # XXX fix ootype
+
+##    cpu.class_sizes = {node_vtable_adr: cpu.typedescrof(NODE),
+##                       node_vtable_adr2: cpu.typedescrof(NODE2),
+##                       u_vtable_adr: cpu.typedescrof(U)}
+##    namespace = locals()
+
 # ____________________________________________________________
+
 
 
 class Fake(object):
     failargs_limit = 1000
     storedebug = None
 
-class FakeWarmState(object):
-    vec = True # default is on
-    vec_all = False
-    vec_cost = 0
-    def __init__(self, enable_opts):
-        self.enable_opts = enable_opts
-
-class FakeJitDriverStaticData(object):
-    vec = False
 
 class FakeMetaInterpStaticData(object):
 
@@ -451,149 +364,122 @@ class FakeMetaInterpStaticData(object):
 
     class logger_noopt:
         @classmethod
-        def log_loop(*args, **kwds):
+        def log_loop(*args):
             pass
-
-    class logger_ops:
-        repr_of_resop = repr
 
     class warmrunnerdesc:
         class memory_manager:
             retrace_limit = 5
             max_retrace_guards = 15
-        jitcounter = DeterministicJitCounter()
-
-    def get_name_from_address(self, addr):
-        # hack
-        try:
-            return "".join(addr.ptr.name.chars)
-        except AttributeError:
-            return ""
-
-class Info(object):
-    def __init__(self, preamble, short_preamble=None, virtual_state=None):
-        self.preamble = preamble
-        self.short_preamble = short_preamble
-        self.virtual_state = virtual_state
 
 class Storage(compile.ResumeGuardDescr):
     "for tests."
     def __init__(self, metainterp_sd=None, original_greenkey=None):
         self.metainterp_sd = metainterp_sd
         self.original_greenkey = original_greenkey
-    def store_final_boxes(self, op, boxes, metainterp_sd):
+    def store_final_boxes(self, op, boxes):
         op.setfailargs(boxes)
     def __eq__(self, other):
-        return True # screw this
-        #return type(self) is type(other)      # xxx obscure
+        return type(self) is type(other)      # xxx obscure
+    def clone_if_mutable(self):
+        res = Storage(self.metainterp_sd, self.original_greenkey)
+        self.copy_all_attributes_into(res)
+        return res
 
 def _sortboxes(boxes):
     _kind2count = {history.INT: 1, history.REF: 2, history.FLOAT: 3}
     return sorted(boxes, key=lambda box: _kind2count[box.type])
 
-final_descr = history.BasicFinalDescr()
-
 class BaseTest(object):
 
-    def parse(self, s, boxkinds=None, want_fail_descr=True, postprocess=None):
-        AbstractValue._repr_memo.counter = 0
-        self.oparse = OpParser(s, self.cpu, self.namespace, boxkinds,
-                               None, False, postprocess)
-        return self.oparse.parse()
+    def parse(self, s, boxkinds=None):
+        return parse(s, self.cpu, self.namespace,
+                     type_system=self.type_system,
+                     boxkinds=boxkinds,
+                     invent_fail_descr=self.invent_fail_descr)
 
-    def postprocess(self, op):
-        class FakeJitCode(object):
-            index = 0
-
-        if op.is_guard():
-            op.rd_snapshot = resume.TopSnapshot(
-                resume.Snapshot(None, op.getfailargs()), [], [])
-            op.rd_frame_info_list = resume.FrameInfo(None, FakeJitCode(), 11)
-
-    def add_guard_future_condition(self, res):
-        # invent a GUARD_FUTURE_CONDITION to not have to change all tests
-        if res.operations[-1].getopnum() == rop.JUMP:
-            guard = ResOperation(rop.GUARD_FUTURE_CONDITION, [], None)
-            guard.rd_snapshot = resume.TopSnapshot(None, [], [])
-            res.operations.insert(-1, guard)
+    def invent_fail_descr(self, model, opnum, fail_args):
+        if fail_args is None:
+            return None
+        descr = Storage()
+        descr.rd_frame_info_list = resume.FrameInfo(None, "code", 11)
+        descr.rd_snapshot = resume.Snapshot(None, _sortboxes(fail_args))
+        return descr
 
     def assert_equal(self, optimized, expected, text_right=None):
         from rpython.jit.metainterp.optimizeopt.util import equaloplists
         assert len(optimized.inputargs) == len(expected.inputargs)
         remap = {}
         for box1, box2 in zip(optimized.inputargs, expected.inputargs):
-            assert box1.type == box2.type
+            assert box1.__class__ == box2.__class__
             remap[box2] = box1
         assert equaloplists(optimized.operations,
                             expected.operations, False, remap, text_right)
 
-    def _do_optimize_loop(self, compile_data):
+    def _do_optimize_loop(self, loop, call_pure_results):
         from rpython.jit.metainterp.optimizeopt import optimize_trace
+        from rpython.jit.metainterp.optimizeopt.util import args_dict
+
+        self.loop = loop
+        loop.call_pure_results = args_dict()
+        if call_pure_results is not None:
+            for k, v in call_pure_results.items():
+                loop.call_pure_results[list(k)] = v
         metainterp_sd = FakeMetaInterpStaticData(self.cpu)
         if hasattr(self, 'vrefinfo'):
             metainterp_sd.virtualref_info = self.vrefinfo
         if hasattr(self, 'callinfocollection'):
             metainterp_sd.callinfocollection = self.callinfocollection
         #
-        compile_data.enable_opts = self.enable_opts
-        state = optimize_trace(metainterp_sd, None, compile_data)
-        return state
-
-    def _convert_call_pure_results(self, d):
-        from rpython.jit.metainterp.optimizeopt.util import args_dict
-
-        if d is None:
-            return
-        call_pure_results = args_dict()
-        for k, v in d.items():
-            call_pure_results[list(k)] = v
-        return call_pure_results
+        optimize_trace(metainterp_sd, loop, self.enable_opts)
 
     def unroll_and_optimize(self, loop, call_pure_results=None):
-        self.add_guard_future_condition(loop)
-        jump_op = loop.operations[-1]
-        assert jump_op.getopnum() == rop.JUMP
-        ops = loop.operations[:-1]
-        jump_op.setdescr(JitCellToken())
-        start_label = ResOperation(rop.LABEL, loop.inputargs,
-                                   jump_op.getdescr())
-        end_label = jump_op.copy_and_change(opnum=rop.LABEL)
-        call_pure_results = self._convert_call_pure_results(call_pure_results)
-        preamble_data = compile.LoopCompileData(start_label, end_label, ops,
-                                                call_pure_results)
-        start_state, preamble_ops = self._do_optimize_loop(preamble_data)
-        preamble_data.forget_optimization_info()
-        loop_data = compile.UnrolledLoopData(start_label, jump_op,
-                                             ops, start_state,
-                                             call_pure_results)
-        loop_info, ops = self._do_optimize_loop(loop_data)
+        operations =  loop.operations
+        jumpop = operations[-1]
+        assert jumpop.getopnum() == rop.JUMP
+        inputargs = loop.inputargs
+
+        jump_args = jumpop.getarglist()[:]
+        operations = operations[:-1]
+        cloned_operations = [op.clone() for op in operations]
+
         preamble = TreeLoop('preamble')
-        preamble.inputargs = start_state.renamed_inputargs
-        start_label = ResOperation(rop.LABEL, start_state.renamed_inputargs)
-        preamble.operations = ([start_label] + preamble_ops +
-                               loop_info.extra_same_as + [loop_info.label_op])
-        loop.inputargs = loop_info.label_op.getarglist()[:]
-        loop.operations = [loop_info.label_op] + ops
-        return Info(preamble, loop_info.target_token.short_preamble,
-                    start_state.virtual_state)
+        preamble.inputargs = inputargs
+        preamble.resume_at_jump_descr = FakeDescrWithSnapshot()
 
-    def set_values(self, ops, jump_values=None):
-        jump_op = ops[-1]
-        assert jump_op.getopnum() == rop.JUMP
-        if jump_values is not None:
-            for i, v in enumerate(jump_values):
-                if v is not None:
-                    jump_op.getarg(i).setref_base(v)
-        else:
-            for i, box in enumerate(jump_op.getarglist()):
-                if box.type == 'r' and not box.is_constant():
-                    # NOTE: we arbitrarily set the box contents to a NODE2
-                    # object here.  If you need something different, you
-                    # need to pass a 'jump_values' argument to e.g.
-                    # optimize_loop()
-                    box.setref_base(self.nodefulladdr)
+        token = JitCellToken() 
+        preamble.operations = [ResOperation(rop.LABEL, inputargs, None, descr=TargetToken(token))] + \
+                              operations +  \
+                              [ResOperation(rop.LABEL, jump_args, None, descr=token)]
+        self._do_optimize_loop(preamble, call_pure_results)
 
+        assert preamble.operations[-1].getopnum() == rop.LABEL
 
+        inliner = Inliner(inputargs, jump_args)
+        loop.resume_at_jump_descr = preamble.resume_at_jump_descr
+        loop.operations = [preamble.operations[-1]] + \
+                          [inliner.inline_op(op, clone=False) for op in cloned_operations] + \
+                          [ResOperation(rop.JUMP, [inliner.inline_arg(a) for a in jump_args],
+                                        None, descr=token)] 
+                          #[inliner.inline_op(jumpop)]
+        assert loop.operations[-1].getopnum() == rop.JUMP
+        assert loop.operations[0].getopnum() == rop.LABEL
+        loop.inputargs = loop.operations[0].getarglist()
+
+        self._do_optimize_loop(loop, call_pure_results)
+        extra_same_as = []
+        while loop.operations[0].getopnum() != rop.LABEL:
+            extra_same_as.append(loop.operations[0])
+            del loop.operations[0]
+
+        # Hack to prevent random order of same_as ops
+        extra_same_as.sort(key=lambda op: str(preamble.operations).find(str(op.getarg(0))))
+
+        for op in extra_same_as:
+            preamble.operations.insert(-1, op)
+
+        return preamble
+        
 
 class FakeDescr(compile.ResumeGuardDescr):
     def clone_if_mutable(self):
@@ -601,15 +487,27 @@ class FakeDescr(compile.ResumeGuardDescr):
     def __eq__(self, other):
         return isinstance(other, FakeDescr)
 
+class FakeDescrWithSnapshot(compile.ResumeGuardDescr):
+    class rd_snapshot:
+        class prev:
+            prev = None
+            boxes = []
+        boxes = []
+    def clone_if_mutable(self):
+        return FakeDescrWithSnapshot()
+    def __eq__(self, other):
+        return isinstance(other, Storage) or isinstance(other, FakeDescrWithSnapshot)
+
+
 def convert_old_style_to_targets(loop, jump):
     newloop = TreeLoop(loop.name)
     newloop.inputargs = loop.inputargs
-    newloop.operations = [ResOperation(rop.LABEL, loop.inputargs, descr=FakeDescr())] + \
+    newloop.operations = [ResOperation(rop.LABEL, loop.inputargs, None, descr=FakeDescr())] + \
                       loop.operations
     if not jump:
         assert newloop.operations[-1].getopnum() == rop.JUMP
-        newloop.operations[-1] = newloop.operations[-1].copy_and_change(
-            rop.LABEL)
+        newloop.operations[-1] = ResOperation(rop.LABEL, newloop.operations[-1].getarglist(), None, descr=FakeDescr())
     return newloop
 
 # ____________________________________________________________
+

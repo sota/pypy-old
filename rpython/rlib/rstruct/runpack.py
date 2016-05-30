@@ -7,6 +7,7 @@ import py
 from struct import unpack
 from rpython.rlib.rstruct.formatiterator import FormatIterator
 from rpython.rlib.rstruct.error import StructError
+from rpython.rlib.rstruct.nativefmttable import native_is_bigendian
 
 class MasterReader(object):
     def __init__(self, s):
@@ -29,21 +30,15 @@ class AbstractReader(object):
 
 def reader_for_pos(pos):
     class ReaderForPos(AbstractReader):
-        def __init__(self, mr, bigendian):
+        def __init__(self, mr):
             self.mr = mr
-            self.bigendian = bigendian
+            self.bigendian = native_is_bigendian
 
         def read(self, count):
             return self.mr.read(count)
 
         def appendobj(self, value):
             self.value = value
-
-        def get_buffer_as_string_maybe(self):
-            return self.mr.input, self.mr.inputpos
-
-        def skip(self, size):
-            self.read(size) # XXX, could avoid taking the slice
     ReaderForPos.__name__ = 'ReaderForPos%d' % pos
     return ReaderForPos
 
@@ -69,7 +64,6 @@ class FrozenUnpackIterator(FormatIterator):
         perform_lst = []
         miniglobals = {}
         miniglobals.update(globals())
-        miniglobals['bigendian'] = self.bigendian
         for i in rg:
             fmtdesc, rep, mask = self.formats[i]
             miniglobals['unpacker%d' % i] = fmtdesc.unpack
@@ -80,8 +74,8 @@ class FrozenUnpackIterator(FormatIterator):
             else:
                 perform_lst.append('unpacker%d(reader%d, %d)' % (i, i, rep))
             miniglobals['reader_cls%d' % i] = reader_for_pos(i)
-        readers = ";".join(["reader%d = reader_cls%d(master_reader, bigendian)"
-                            % (i, i) for i in rg])
+        readers = ";".join(["reader%d = reader_cls%d(master_reader)" % (i, i)
+                             for i in rg])
         perform = ";".join(perform_lst)
         unpackers = ','.join(['reader%d.value' % i for i in rg])
         source = py.code.Source("""
@@ -94,6 +88,13 @@ class FrozenUnpackIterator(FormatIterator):
         exec source.compile() in miniglobals
         self.unpack = miniglobals['unpack'] # override not-rpython version
 
+    def unpack(self, s):
+        # NOT_RPYTHON
+        res = unpack(self.fmt, s)
+        if len(res) == 1:
+            return res[0]
+        return res
+
     def _freeze_(self):
         assert self.formats
         self._create_unpacking_func()
@@ -102,7 +103,6 @@ class FrozenUnpackIterator(FormatIterator):
 def create_unpacker(unpack_str):
     fmtiter = FrozenUnpackIterator(unpack_str)
     fmtiter.interpret(unpack_str)
-    assert fmtiter._freeze_()
     return fmtiter
 create_unpacker._annspecialcase_ = 'specialize:memo'
 

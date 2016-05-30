@@ -1,13 +1,19 @@
 """
 pytest PluginManager, basic initialization and tracing.
+(c) Holger Krekel 2004-2010
 """
-import sys
+import sys, os
 import inspect
 import py
-# don't import pytest to avoid circular imports
+from _pytest import hookspec # the extension point definitions
 
 assert py.__version__.split(".")[:2] >= ['1', '4'], ("installation problem: "
     "%s is too old, remove or upgrade 'py'" % (py.__version__))
+
+default_plugins = (
+ "config mark main terminal runner python pdb unittest capture skipping "
+ "tmpdir monkeypatch recwarn pastebin helpconfig nose assertion genscript "
+ "junitxml resultlog doctest").split()
 
 class TagTracer:
     def __init__(self):
@@ -18,28 +24,12 @@ class TagTracer:
     def get(self, name):
         return TagTracerSub(self, (name,))
 
-    def format_message(self, tags, args):
-        if isinstance(args[-1], dict):
-            extra = args[-1]
-            args = args[:-1]
-        else:
-            extra = {}
-
-        content = " ".join(map(str, args))
-        indent = "  " * self.indent
-
-        lines = [
-            "%s%s [%s]\n" %(indent, content, ":".join(tags))
-        ]
-
-        for name, value in extra.items():
-            lines.append("%s    %s: %s\n" % (indent, name, value))
-        return lines
-
     def processmessage(self, tags, args):
-        if self.writer is not None and args:
-            lines = self.format_message(tags, args)
-            self.writer(''.join(lines))
+        if self.writer is not None:
+            if args:
+                indent = "  " * self.indent
+                content = " ".join(map(str, args))
+                self.writer("%s%s [%s]\n" %(indent, content, ":".join(tags)))
         try:
             self._tag2proc[tags](tags, args)
         except KeyError:
@@ -67,36 +57,36 @@ class TagTracerSub:
         return self.__class__(self.root, self.tags + (name,))
 
 class PluginManager(object):
-    def __init__(self, hookspecs=None):
+    def __init__(self, load=False):
         self._name2plugin = {}
         self._listattrcache = {}
         self._plugins = []
         self._hints = []
         self.trace = TagTracer().get("pluginmanage")
         self._plugin_distinfo = []
-        self._shutdown = []
-        self.hook = HookRelay(hookspecs or [], pm=self)
-
-    def do_configure(self, config):
-        # backward compatibility
-        config.do_configure()
-
-    def set_register_callback(self, callback):
-        assert not hasattr(self, "_registercallback")
-        self._registercallback = callback
+        if os.environ.get('PYTEST_DEBUG'):
+            err = sys.stderr
+            encoding = getattr(err, 'encoding', 'utf8')
+            try:
+                err = py.io.dupfile(err, encoding=encoding)
+            except Exception:
+                pass
+            self.trace.root.setwriter(err.write)
+        self.hook = HookRelay([hookspec], pm=self)
+        self.register(self)
+        if load:
+            for spec in default_plugins:
+                self.import_plugin(spec)
 
     def register(self, plugin, name=None, prepend=False):
-        if self._name2plugin.get(name, None) == -1:
-            return
+        assert not self.isregistered(plugin), plugin
         name = name or getattr(plugin, '__name__', str(id(plugin)))
-        if self.isregistered(plugin, name):
-            raise ValueError("Plugin already registered: %s=%s\n%s" %(
-                              name, plugin, self._name2plugin))
+        if name in self._name2plugin:
+            return False
         #self.trace("registering", name, plugin)
         self._name2plugin[name] = plugin
-        reg = getattr(self, "_registercallback", None)
-        if reg is not None:
-            reg(plugin, name)
+        self.call_plugin(plugin, "pytest_addhooks", {'pluginmanager': self})
+        self.hook.pytest_plugin_registered(manager=self, plugin=plugin)
         if not prepend:
             self._plugins.append(plugin)
         else:
@@ -107,20 +97,10 @@ class PluginManager(object):
         if plugin is None:
             plugin = self.getplugin(name=name)
         self._plugins.remove(plugin)
+        self.hook.pytest_plugin_unregistered(plugin=plugin)
         for name, value in list(self._name2plugin.items()):
             if value == plugin:
                 del self._name2plugin[name]
-
-    def add_shutdown(self, func):
-        self._shutdown.append(func)
-
-    def ensure_shutdown(self):
-        while self._shutdown:
-            func = self._shutdown.pop()
-            func()
-        self._plugins = []
-        self._name2plugin.clear()
-        self._listattrcache.clear()
 
     def isregistered(self, plugin, name=None):
         if self.getplugin(name) is not None:
@@ -129,8 +109,8 @@ class PluginManager(object):
             if plugin == val:
                 return True
 
-    def addhooks(self, spec, prefix="pytest_"):
-        self.hook._addhooks(spec, prefix=prefix)
+    def addhooks(self, spec):
+        self.hook._addhooks(spec, prefix="pytest_")
 
     def getplugins(self):
         return list(self._plugins)
@@ -212,6 +192,7 @@ class PluginManager(object):
         if self.getplugin(modname) is not None:
             return
         try:
+            #self.trace("importing", modname)
             mod = importplugin(modname)
         except KeyboardInterrupt:
             raise
@@ -229,6 +210,82 @@ class PluginManager(object):
         else:
             self.register(mod, modname)
             self.consider_module(mod)
+
+    def pytest_configure(self, config):
+        config.addinivalue_line("markers",
+            "tryfirst: mark a hook implementation function such that the "
+            "plugin machinery will try to call it first/as early as possible.")
+        config.addinivalue_line("markers",
+            "trylast: mark a hook implementation function such that the "
+            "plugin machinery will try to call it last/as late as possible.")
+
+    def pytest_plugin_registered(self, plugin):
+        import pytest
+        dic = self.call_plugin(plugin, "pytest_namespace", {}) or {}
+        if dic:
+            self._setns(pytest, dic)
+        if hasattr(self, '_config'):
+            self.call_plugin(plugin, "pytest_addoption",
+                {'parser': self._config._parser})
+            self.call_plugin(plugin, "pytest_configure",
+                {'config': self._config})
+
+    def _setns(self, obj, dic):
+        import pytest
+        for name, value in dic.items():
+            if isinstance(value, dict):
+                mod = getattr(obj, name, None)
+                if mod is None:
+                    modname = "pytest.%s" % name
+                    mod = py.std.types.ModuleType(modname)
+                    sys.modules[modname] = mod
+                    mod.__all__ = []
+                    setattr(obj, name, mod)
+                obj.__all__.append(name)
+                self._setns(mod, value)
+            else:
+                setattr(obj, name, value)
+                obj.__all__.append(name)
+                #if obj != pytest:
+                #    pytest.__all__.append(name)
+                setattr(pytest, name, value)
+
+    def pytest_terminal_summary(self, terminalreporter):
+        tw = terminalreporter._tw
+        if terminalreporter.config.option.traceconfig:
+            for hint in self._hints:
+                tw.line("hint: %s" % hint)
+
+    def do_addoption(self, parser):
+        mname = "pytest_addoption"
+        methods = reversed(self.listattr(mname))
+        MultiCall(methods, {'parser': parser}).execute()
+
+    def do_configure(self, config):
+        assert not hasattr(self, '_config')
+        self._config = config
+        config.hook.pytest_configure(config=self._config)
+
+    def do_unconfigure(self, config):
+        config = self._config
+        del self._config
+        config.hook.pytest_unconfigure(config=config)
+        config.pluginmanager.unregister(self)
+
+    def notify_exception(self, excinfo, option=None):
+        if option and option.fulltrace:
+            style = "long"
+        else:
+            style = "native"
+        excrepr = excinfo.getrepr(funcargs=True,
+            showlocals=getattr(option, 'showlocals', False),
+            style=style,
+        )
+        res = self.hook.pytest_internalerror(excrepr=excrepr)
+        if not py.builtin.any(res):
+            for line in str(excrepr).split("\n"):
+                sys.stderr.write("INTERNALERROR> %s\n" %line)
+                sys.stderr.flush()
 
     def listattr(self, attrname, plugins=None):
         if plugins is None:
@@ -264,11 +321,13 @@ def importplugin(importspec):
     name = importspec
     try:
         mod = "_pytest." + name
-        __import__(mod)
-        return sys.modules[mod]
+        return __import__(mod, None, None, '__doc__')
     except ImportError:
-        __import__(importspec)
-        return sys.modules[importspec]
+        #e = py.std.sys.exc_info()[1]
+        #if str(e).find(name) == -1:
+        #    raise
+        pass #
+    return __import__(importspec, None, None, '__doc__')
 
 class MultiCall:
     """ execute a call into multiple python functions/methods. """
@@ -305,36 +364,19 @@ class MultiCall:
         return kwargs
 
 def varnames(func):
-    """ return argument name tuple for a function, method, class or callable.
-
-    In case of a class, its "__init__" method is considered.
-    For methods the "self" parameter is not included unless you are passing
-    an unbound method with Python3 (which has no supports for unbound methods)
-    """
-    cache = getattr(func, "__dict__", {})
     try:
-        return cache["_varnames"]
-    except KeyError:
+        return func._varnames
+    except AttributeError:
         pass
-    if inspect.isclass(func):
-        try:
-            func = func.__init__
-        except AttributeError:
-            return ()
-        ismethod = True
-    else:
-        if not inspect.isfunction(func) and not inspect.ismethod(func):
-            func = getattr(func, '__call__', func)
-        ismethod = inspect.ismethod(func)
+    if not inspect.isfunction(func) and not inspect.ismethod(func):
+        func = getattr(func, '__call__', func)
+    ismethod = inspect.ismethod(func)
     rawcode = py.code.getrawcode(func)
     try:
         x = rawcode.co_varnames[ismethod:rawcode.co_argcount]
     except AttributeError:
         x = ()
-    try:
-        cache["_varnames"] = x
-    except TypeError:
-        pass
+    py.builtin._getfuncdict(func)['_varnames'] = x
     return x
 
 class HookRelay:
@@ -391,4 +433,45 @@ class HookCaller:
         finally:
             self.trace.root.indent -= 1
         return res
+
+_preinit = []
+
+def _preloadplugins():
+    _preinit.append(PluginManager(load=True))
+
+def _prepareconfig(args=None, plugins=None):
+    if args is None:
+        args = sys.argv[1:]
+    elif isinstance(args, py.path.local):
+        args = [str(args)]
+    elif not isinstance(args, (tuple, list)):
+        if not isinstance(args, str):
+            raise ValueError("not a string or argument list: %r" % (args,))
+        args = py.std.shlex.split(args)
+    if _preinit:
+       _pluginmanager = _preinit.pop(0)
+    else: # subsequent calls to main will create a fresh instance
+        _pluginmanager = PluginManager(load=True)
+    hook = _pluginmanager.hook
+    if plugins:
+        for plugin in plugins:
+            _pluginmanager.register(plugin)
+    return hook.pytest_cmdline_parse(
+            pluginmanager=_pluginmanager, args=args)
+
+def main(args=None, plugins=None):
+    """ returned exit code integer, after an in-process testing run
+    with the given command line arguments, preloading an optional list
+    of passed in plugin objects. """
+    try:
+        config = _prepareconfig(args, plugins)
+        exitstatus = config.hook.pytest_cmdline_main(config=config)
+    except UsageError:
+        e = sys.exc_info()[1]
+        sys.stderr.write("ERROR: %s\n" %(e.args[0],))
+        exitstatus = 3
+    return exitstatus
+
+class UsageError(Exception):
+    """ error in py.test usage or invocation"""
 

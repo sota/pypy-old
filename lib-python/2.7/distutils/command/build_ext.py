@@ -8,7 +8,7 @@ extensions ASAP)."""
 
 __revision__ = "$Id$"
 
-import sys, os, string, re, imp
+import sys, os, string, re
 from types import *
 from site import USER_BASE, USER_SITE
 from distutils.core import Command
@@ -32,11 +32,6 @@ extension_name_re = re.compile \
 def show_compilers ():
     from distutils.ccompiler import show_compilers
     show_compilers()
-
-def _get_c_extension_suffix():
-    for ext, mod, typ in imp.get_suffixes():
-        if typ == imp.C_EXTENSION:
-            return ext
 
 
 class build_ext (Command):
@@ -188,7 +183,7 @@ class build_ext (Command):
             # the 'libs' directory is for binary installs - we assume that
             # must be the *native* platform.  But we don't really support
             # cross-compiling via a binary install anyway, so we let it go.
-            self.library_dirs.append(os.path.join(sys.exec_prefix, 'libs'))
+            self.library_dirs.append(os.path.join(sys.exec_prefix, 'include'))
             if self.debug:
                 self.build_temp = os.path.join(self.build_temp, "Debug")
             else:
@@ -241,11 +236,13 @@ class build_ext (Command):
                 # building python standard extensions
                 self.library_dirs.append('.')
 
-        # For building extensions with a shared Python library,
+        # for extensions under Linux or Solaris with a shared Python library,
         # Python's library directory must be appended to library_dirs
-        # See Issues: #1600860, #4366
-        if (sysconfig.get_config_var('Py_ENABLE_SHARED')):
-            if not sysconfig.python_build:
+        sysconfig.get_config_var('Py_ENABLE_SHARED')
+        if ((sys.platform.startswith('linux') or sys.platform.startswith('gnu')
+             or sys.platform.startswith('sunos'))
+            and sysconfig.get_config_var('Py_ENABLE_SHARED')):
+            if sys.executable.startswith(os.path.join(sys.exec_prefix, "bin")):
                 # building third party extensions
                 self.library_dirs.append(sysconfig.get_config_var('LIBDIR'))
             else:
@@ -680,22 +677,10 @@ class build_ext (Command):
         # OS/2 has an 8 character module (extension) limit :-(
         if os.name == "os2":
             ext_path[len(ext_path) - 1] = ext_path[len(ext_path) - 1][:8]
-        # PyPy tweak: first try to get the C extension suffix from
-        # 'imp'.  If it fails we fall back to the 'SO' config var, like
-        # the previous version of this code did.  This should work for
-        # CPython too.  The point is that on PyPy with cpyext, the
-        # config var 'SO' is just ".so" but we want to return
-        # ".pypy-VERSION.so" instead.  Note a further tweak for cffi's
-        # embedding mode: if EXT_SUFFIX is also defined, use that
-        # directly.
-        so_ext = get_config_var('EXT_SUFFIX')
-        if so_ext is None:
-            so_ext = _get_c_extension_suffix()
-            if so_ext is None:
-                so_ext = get_config_var('SO')     # fall-back
-            # extensions in debug_mode are named 'module_d.pyd' under windows
-            if os.name == 'nt' and self.debug:
-                so_ext = '_d.pyd'
+        # extensions in debug_mode are named 'module_d.pyd' under windows
+        so_ext = get_config_var('SO')
+        if os.name == 'nt' and self.debug:
+            return os.path.join(*ext_path) + '_d' + so_ext
         return os.path.join(*ext_path) + so_ext
 
     def get_export_symbols (self, ext):

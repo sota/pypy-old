@@ -1,13 +1,11 @@
 import gc, sys
 import py
-import platform
 from rpython.rtyper.tool.rffi_platform import CompilationError
 try:
     from rpython.rlib import rstacklet
 except CompilationError, e:
     py.test.skip("cannot import rstacklet: %s" % e)
 
-from rpython.config.translationoption import DEFL_ROOTFINDER_WITHJIT
 from rpython.rlib import rrandom, rgc
 from rpython.rlib.rarithmetic import intmask
 from rpython.rtyper.lltypesystem import lltype, llmemory, rffi
@@ -17,9 +15,10 @@ from rpython.translator.c.test.test_standalone import StandaloneTests
 
 class Runner:
     STATUSMAX = 5000
+    config = None
 
     def init(self, seed):
-        self.sthread = rstacklet.StackletThread()
+        self.sthread = rstacklet.StackletThread(self.config)
         self.random = rrandom.Random(seed)
 
     def done(self):
@@ -74,37 +73,14 @@ class Runner:
             h = self.sthread.new(switchbackonce_callback,
                                  rffi.cast(llmemory.Address, 321))
             # 'h' ignored
-            if (i % 2000) == 1000:
-                rgc.collect()  # This should run in < 1.5GB virtual memory
+            if (i % 5000) == 2500:
+                rgc.collect()
 
     def any_alive(self):
         for task in self.tasks:
             if task.h:
                 return True
         return False
-
-    @here_is_a_test
-    def test_c_callback(self):
-        #
-        self.steps = [0]
-        self.main_h = self.sthread.new(cb_stacklet_callback, llmemory.NULL)
-        self.steps.append(2)
-        call_qsort_rec(10)
-        self.steps.append(9)
-        assert not self.sthread.is_empty_handle(self.main_h)
-        self.main_h = self.sthread.switch(self.main_h)
-        assert self.sthread.is_empty_handle(self.main_h)
-        #
-        # check that self.steps == [0,1,2, 3,4,5,6, 3,4,5,6, 3,4,5,6,..., 9]
-        print self.steps
-        expected = 0
-        assert self.steps[-1] == 9
-        for i in range(len(self.steps)-1):
-            if expected == 7:
-                expected = 3
-            assert self.steps[i] == expected
-            expected += 1
-        assert expected == 7
 
 
 class FooObj:
@@ -235,43 +211,6 @@ def variousstackdepths_callback(h, arg):
     print "LEAVING %d to go to %d" % (self.n, n)
     return h
 
-QSORT_CALLBACK_PTR = lltype.Ptr(lltype.FuncType(
-    [llmemory.Address, llmemory.Address], rffi.INT))
-qsort = rffi.llexternal('qsort',
-                        [llmemory.Address, rffi.SIZE_T, rffi.SIZE_T,
-                         QSORT_CALLBACK_PTR],
-                        lltype.Void)
-def cb_compare_callback(a, b):
-    runner.steps.append(3)
-    assert not runner.sthread.is_empty_handle(runner.main_h)
-    runner.main_h = runner.sthread.switch(runner.main_h)
-    assert not runner.sthread.is_empty_handle(runner.main_h)
-    runner.steps.append(6)
-    return rffi.cast(rffi.INT, 1)
-def cb_stacklet_callback(h, arg):
-    runner.steps.append(1)
-    while True:
-        assert not runner.sthread.is_empty_handle(h)
-        h = runner.sthread.switch(h)
-        assert not runner.sthread.is_empty_handle(h)
-        if runner.steps[-1] == 9:
-            return h
-        runner.steps.append(4)
-        rgc.collect()
-        runner.steps.append(5)
-class GcObject(object):
-    num = 1234
-def call_qsort_rec(r):
-    if r > 0:
-        g = GcObject()
-        g.num += r
-        call_qsort_rec(r - 1)
-        assert g.num == 1234 + r
-    else:
-        raw = llmemory.raw_malloc(5)
-        qsort(raw, 5, 1, cb_compare_callback)
-        llmemory.raw_free(raw)
-
 
 def entry_point(argv):
     seed = 0
@@ -289,9 +228,6 @@ def entry_point(argv):
 class BaseTestStacklet(StandaloneTests):
 
     def setup_class(cls):
-        if cls.gcrootfinder == "asmgcc" and DEFL_ROOTFINDER_WITHJIT != "asmgcc":
-            py.test.skip("asmgcc is disabled on the current platform")
-
         from rpython.config.translationoption import get_combined_translation_config
         config = get_combined_translation_config(translating=True)
         config.translation.gc = cls.gc
@@ -300,11 +236,14 @@ class BaseTestStacklet(StandaloneTests):
             config.translation.gcrootfinder = cls.gcrootfinder
             GCROOTFINDER = cls.gcrootfinder
         cls.config = config
-        cls.old_status_max = Runner.STATUSMAX
+        cls.old_values = Runner.config, Runner.STATUSMAX
+        Runner.config = config
         Runner.STATUSMAX = 25000
+        if cls.gcrootfinder == "asmgcc" and sys.platform == "win32":
+            py.test.skip("fails with asmgcc on win32")
 
     def teardown_class(cls):
-        Runner.STATUSMAX = cls.old_status_max
+        Runner.config, Runner.STATUSMAX = cls.old_values
 
     def test_demo1(self):
         t, cbuilder = self.compile(entry_point)
@@ -332,10 +271,6 @@ class DONTTestStackletBoehm(BaseTestStacklet):
 class TestStackletAsmGcc(BaseTestStacklet):
     gc = 'minimark'
     gcrootfinder = 'asmgcc'
-
-    @py.test.mark.skipif("sys.platform != 'linux2' or platform.machine().startswith('arm')")
-    def test_demo1(self):
-        BaseTestStacklet.test_demo1(self)
 
 class TestStackletShadowStack(BaseTestStacklet):
     gc = 'minimark'

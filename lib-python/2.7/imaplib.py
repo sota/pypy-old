@@ -35,16 +35,6 @@ IMAP4_PORT = 143
 IMAP4_SSL_PORT = 993
 AllowedVersions = ('IMAP4REV1', 'IMAP4')        # Most recent first
 
-# Maximal line length when calling readline(). This is to prevent
-# reading arbitrary length lines. RFC 3501 and 2060 (IMAP 4rev1)
-# don't specify a line length. RFC 2683 suggests limiting client
-# command lines to 1000 octets and that servers should be prepared
-# to accept command lines up to 8000 octets, so we used to use 10K here.
-# In the modern world (eg: gmail) the response to, for example, a
-# search command can be quite large, so we now use 1M.
-_MAXLINE = 1000000
-
-
 #       Commands
 
 Commands = {
@@ -247,10 +237,7 @@ class IMAP4:
 
     def readline(self):
         """Read line from remote."""
-        line = self.file.readline(_MAXLINE + 1)
-        if len(line) > _MAXLINE:
-            raise self.error("got more than %d bytes" % _MAXLINE)
-        return line
+        return self.file.readline()
 
 
     def send(self, data):
@@ -1002,11 +989,6 @@ class IMAP4:
             if result is not None:
                 del self.tagged_commands[tag]
                 return result
-
-            # If we've seen a BYE at this point, the socket will be
-            # closed, so report the BYE now.
-
-            self._check_bye()
 
             # Some have reported "unexpected response" exceptions.
             # Note that ignoring them here causes loops.

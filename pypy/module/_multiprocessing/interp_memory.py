@@ -1,6 +1,5 @@
-from rpython.rtyper.lltypesystem import rffi
-
 from pypy.interpreter.error import OperationError
+from rpython.rtyper.lltypesystem import rffi
 from pypy.module.mmap.interp_mmap import W_MMap
 
 def address_of_buffer(space, w_obj):

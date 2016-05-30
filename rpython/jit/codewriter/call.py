@@ -8,12 +8,10 @@ from rpython.jit.codewriter.jitcode import JitCode
 from rpython.jit.codewriter.effectinfo import (VirtualizableAnalyzer,
     QuasiImmutAnalyzer, RandomEffectsAnalyzer, effectinfo_from_writeanalyze,
     EffectInfo, CallInfoCollection)
+from rpython.translator.simplify import get_funcobj, get_functype
 from rpython.rtyper.lltypesystem import lltype, llmemory
-from rpython.rtyper.lltypesystem.lltype import getfunctionptr
-from rpython.rlib import rposix
 from rpython.translator.backendopt.canraise import RaiseAnalyzer
 from rpython.translator.backendopt.writeanalyze import ReadWriteAnalyzer
-from rpython.translator.backendopt.graphanalyze import DependencyTracker
 
 
 class CallControl(object):
@@ -31,15 +29,10 @@ class CallControl(object):
             self.rtyper = cpu.rtyper
             translator = self.rtyper.annotator.translator
             self.raise_analyzer = RaiseAnalyzer(translator)
-            self.raise_analyzer_ignore_memoryerror = RaiseAnalyzer(translator)
-            self.raise_analyzer_ignore_memoryerror.do_ignore_memory_error()
             self.readwrite_analyzer = ReadWriteAnalyzer(translator)
             self.virtualizable_analyzer = VirtualizableAnalyzer(translator)
             self.quasiimmut_analyzer = QuasiImmutAnalyzer(translator)
             self.randomeffects_analyzer = RandomEffectsAnalyzer(translator)
-            self.seen = DependencyTracker(self.readwrite_analyzer)
-        else:
-            self.seen = None
         #
         for index, jd in enumerate(jitdrivers_sd):
             jd.index = index
@@ -73,7 +66,7 @@ class CallControl(object):
         while todo:
             top_graph = todo.pop()
             for _, op in top_graph.iterblockops():
-                if op.opname not in ("direct_call", "indirect_call"):
+                if op.opname not in ("direct_call", "indirect_call", "oosend"):
                     continue
                 kind = self.guess_call_kind(op, is_candidate)
                 # use callers() to view the calling chain in pdb
@@ -93,13 +86,29 @@ class CallControl(object):
         if is_candidate is None:
             is_candidate = self.is_candidate
         if op.opname == 'direct_call':
-            funcobj = op.args[0].value._obj
+            funcobj = get_funcobj(op.args[0].value)
             graph = funcobj.graph
             if is_candidate(graph):
                 return [graph]     # common case: look inside this graph
         else:
-            assert op.opname == 'indirect_call'
-            graphs = op.args[-1].value
+            assert op.opname in ('indirect_call', 'oosend')
+            if op.opname == 'indirect_call':
+                graphs = op.args[-1].value
+            else:
+                v_obj = op.args[1].concretetype
+                graphs = v_obj._lookup_graphs(op.args[0].value)
+            #
+            if graphs is None:
+                # special case: handle the indirect call that goes to
+                # the 'instantiate' methods.  This check is a bit imprecise
+                # but it's not too bad if we mistake a random indirect call
+                # for the one to 'instantiate'.
+                from rpython.rtyper.lltypesystem import rclass
+                CALLTYPE = op.args[0].concretetype
+                if (op.opname == 'indirect_call' and len(op.args) == 2 and
+                    CALLTYPE == rclass.OBJECT_VTABLE.instantiate):
+                    graphs = list(self._graphs_of_all_instantiate())
+            #
             if graphs is not None:
                 result = []
                 for graph in graphs:
@@ -111,16 +120,17 @@ class CallControl(object):
         # residual call case: we don't need to look into any graph
         return None
 
+    def _graphs_of_all_instantiate(self):
+        for vtable in self.rtyper.lltype2vtable.values():
+            if vtable.instantiate:
+                yield vtable.instantiate._obj.graph
+
     def guess_call_kind(self, op, is_candidate=None):
         if op.opname == 'direct_call':
             funcptr = op.args[0].value
             if self.jitdriver_sd_from_portal_runner_ptr(funcptr) is not None:
                 return 'recursive'
-            funcobj = funcptr._obj
-            assert (funcobj is not rposix._get_errno and
-                    funcobj is not rposix._set_errno), (
-                "the JIT must never come close to _get_errno() or _set_errno();"
-                " it should all be done at a lower level")
+            funcobj = get_funcobj(funcptr)
             if getattr(funcobj, 'graph', None) is None:
                 return 'residual'
             targetgraph = funcobj.graph
@@ -132,6 +142,10 @@ class CallControl(object):
                     return 'residual'
                 if hasattr(targetgraph.func, 'oopspec'):
                     return 'builtin'
+        elif op.opname == 'oosend':
+            SELFTYPE, methname, opargs = support.decompose_oosend(op)
+            if SELFTYPE.oopspec_name is not None:
+                return 'builtin'
         if self.graphs_from(op, is_candidate) is None:
             return 'residual'
         return 'regular'
@@ -143,7 +157,7 @@ class CallControl(object):
     def grab_initial_jitcodes(self):
         for jd in self.jitdrivers_sd:
             jd.mainjitcode = self.get_jitcode(jd.portal_graph)
-            jd.mainjitcode.jitdriver_sd = jd
+            jd.mainjitcode.is_portal = True
 
     def enum_pending_graphs(self):
         while self.unfinished_graphs:
@@ -176,8 +190,9 @@ class CallControl(object):
         because it is not needed there; it is only used by the blackhole
         interp to really do the call corresponding to 'inline_call' ops.
         """
-        fnptr = getfunctionptr(graph)
-        FUNC = lltype.typeOf(fnptr).TO
+        fnptr = self.rtyper.type_system.getcallable(graph)
+        FUNC = get_functype(lltype.typeOf(fnptr))
+        assert self.rtyper.type_system.name == "lltypesystem"
         fnaddr = llmemory.cast_ptr_to_adr(fnptr)
         NON_VOID_ARGS = [ARG for ARG in FUNC.ARGS if ARG is not lltype.Void]
         calldescr = self.cpu.calldescrof(FUNC, tuple(NON_VOID_ARGS),
@@ -185,7 +200,7 @@ class CallControl(object):
         return (fnaddr, calldescr)
 
     def getcalldescr(self, op, oopspecindex=EffectInfo.OS_NONE,
-                     extraeffect=None, extradescr=None):
+                     extraeffect=None):
         """Return the calldescr that describes all calls done by 'op'.
         This returns a calldescr that we can put in the corresponding
         call operation in the calling jitcode.  It gets an effectinfo
@@ -197,24 +212,17 @@ class CallControl(object):
                                         if x.concretetype is not lltype.Void]
         RESULT = op.result.concretetype
         # check the number and type of arguments
-        FUNC = op.args[0].concretetype.TO
+        FUNC = get_functype(op.args[0].concretetype)
         ARGS = FUNC.ARGS
-        if NON_VOID_ARGS != [T for T in ARGS if T is not lltype.Void]:
-            raise Exception(
-                "in operation %r: caling a function with signature %r, "
-                "but passing actual arguments (ignoring voids) of types %r"
-                % (op, FUNC, NON_VOID_ARGS))
-        if RESULT != FUNC.RESULT:
-            raise Exception(
-                "in operation %r: caling a function with signature %r, "
-                "but the actual return type is %r" % (op, FUNC, RESULT))
+        assert NON_VOID_ARGS == [T for T in ARGS if T is not lltype.Void]
+        assert RESULT == FUNC.RESULT
         # ok
         # get the 'elidable' and 'loopinvariant' flags from the function object
         elidable = False
         loopinvariant = False
-        call_release_gil_target = EffectInfo._NO_CALL_RELEASE_GIL_TARGET
+        call_release_gil_target = llmemory.NULL
         if op.opname == "direct_call":
-            funcobj = op.args[0].value._obj
+            funcobj = get_funcobj(op.args[0].value)
             assert getattr(funcobj, 'calling_conv', 'c') == 'c', (
                 "%r: getcalldescr() with a non-default call ABI" % (op,))
             func = getattr(funcobj, '_callable', None)
@@ -224,31 +232,9 @@ class CallControl(object):
                 assert not NON_VOID_ARGS, ("arguments not supported for "
                                            "loop-invariant function!")
             if getattr(func, "_call_aroundstate_target_", None):
-                tgt_func, tgt_saveerr = func._call_aroundstate_target_
-                tgt_func = llmemory.cast_ptr_to_adr(tgt_func)
-                call_release_gil_target = (tgt_func, tgt_saveerr)
-        elif op.opname == 'indirect_call':
-            # check that we're not trying to call indirectly some
-            # function with the special flags
-            graphs = op.args[-1].value
-            for graph in (graphs or ()):
-                if not hasattr(graph, 'func'):
-                    continue
-                error = None
-                if hasattr(graph.func, '_elidable_function_'):
-                    error = '@jit.elidable'
-                if hasattr(graph.func, '_jit_loop_invariant_'):
-                    error = '@jit.loop_invariant'
-                if hasattr(graph.func, '_call_aroundstate_target_'):
-                    error = '_call_aroundstate_target_'
-                if not error:
-                    continue
-                raise Exception(
-                    "%r is an indirect call to a family of functions "
-                    "(or methods) that includes %r. However, the latter "
-                    "is marked %r. You need to use an indirection: replace "
-                    "it with a non-marked function/method which calls the "
-                    "marked function." % (op, graph, error))
+                call_release_gil_target = func._call_aroundstate_target_
+                call_release_gil_target = llmemory.cast_ptr_to_adr(
+                    call_release_gil_target)
         # build the extraeffect
         random_effects = self.randomeffects_analyzer.analyze(op)
         if random_effects:
@@ -261,43 +247,18 @@ class CallControl(object):
             elif loopinvariant:
                 extraeffect = EffectInfo.EF_LOOPINVARIANT
             elif elidable:
-                cr = self._canraise(op)
-                if cr == "mem":
-                    extraeffect = EffectInfo.EF_ELIDABLE_OR_MEMORYERROR
-                elif cr:
+                if self._canraise(op):
                     extraeffect = EffectInfo.EF_ELIDABLE_CAN_RAISE
                 else:
                     extraeffect = EffectInfo.EF_ELIDABLE_CANNOT_RAISE
-            elif self._canraise(op):   # True or "mem"
+            elif self._canraise(op):
                 extraeffect = EffectInfo.EF_CAN_RAISE
             else:
                 extraeffect = EffectInfo.EF_CANNOT_RAISE
         #
-        # check that the result is really as expected
-        if loopinvariant:
-            if extraeffect != EffectInfo.EF_LOOPINVARIANT:
-                raise Exception(
-                "in operation %r: this calls a _jit_loop_invariant_ function,"
-                " but this contradicts other sources (e.g. it can have random"
-                " effects): EF=%s" % (op, extraeffect))
-        if elidable:
-            if extraeffect not in (EffectInfo.EF_ELIDABLE_CANNOT_RAISE,
-                                   EffectInfo.EF_ELIDABLE_OR_MEMORYERROR,
-                                   EffectInfo.EF_ELIDABLE_CAN_RAISE):
-                raise Exception(
-                "in operation %r: this calls an elidable function,"
-                " but this contradicts other sources (e.g. it can have random"
-                " effects): EF=%s" % (op, extraeffect))
-            elif RESULT is lltype.Void:
-                raise Exception(
-                    "in operation %r: this calls an elidable function "
-                    "but the function has no result" % (op, ))
-        #
         effectinfo = effectinfo_from_writeanalyze(
-            self.readwrite_analyzer.analyze(op, self.seen), self.cpu,
-            extraeffect, oopspecindex, can_invalidate, call_release_gil_target,
-            extradescr,
-        )
+            self.readwrite_analyzer.analyze(op), self.cpu, extraeffect,
+            oopspecindex, can_invalidate, call_release_gil_target)
         #
         assert effectinfo is not None
         if elidable or loopinvariant:
@@ -310,17 +271,10 @@ class CallControl(object):
                                     effectinfo)
 
     def _canraise(self, op):
-        """Returns True, False, or "mem" to mean 'only MemoryError'."""
         if op.opname == 'pseudo_call_cannot_raise':
             return False
         try:
-            if self.raise_analyzer.can_raise(op):
-                if self.raise_analyzer_ignore_memoryerror.can_raise(op):
-                    return True
-                else:
-                    return "mem"
-            else:
-                return False
+            return self.raise_analyzer.can_raise(op)
         except lltype.DelayedPointer:
             return True  # if we need to look into the delayed ptr that is
                          # the portal, then it's certainly going to raise

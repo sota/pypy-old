@@ -16,7 +16,7 @@ class GroupDatabaseTestCase(unittest.TestCase):
         self.assertEqual(value[1], value.gr_passwd)
         self.assertIsInstance(value.gr_passwd, basestring)
         self.assertEqual(value[2], value.gr_gid)
-        self.assertIsInstance(value.gr_gid, (long, int))
+        self.assertIsInstance(value.gr_gid, int)
         self.assertEqual(value[3], value.gr_mem)
         self.assertIsInstance(value.gr_mem, list)
 
@@ -26,10 +26,8 @@ class GroupDatabaseTestCase(unittest.TestCase):
         for e in entries:
             self.check_value(e)
 
-    def test_values_extended(self):
-        entries = grp.getgrall()
         if len(entries) > 1000:  # Huge group file (NIS?) -- skip the rest
-            self.skipTest('huge group file, extended test skipped')
+            return
 
         for e in entries:
             e2 = grp.getgrgid(e.gr_gid)

@@ -1,26 +1,25 @@
 import py
-from rpython.rlib.jit import JitDriver, hint, set_param, dont_look_inside,\
-     elidable
+from rpython.rlib.jit import JitDriver, hint, set_param
 from rpython.rlib.objectmodel import compute_hash
 from rpython.jit.metainterp.warmspot import ll_meta_interp, get_stats
-from rpython.jit.metainterp.test.support import LLJitMixin
+from rpython.jit.metainterp.test.support import LLJitMixin, OOJitMixin
 from rpython.jit.codewriter.policy import StopAtXPolicy
 from rpython.jit.metainterp.resoperation import rop
 from rpython.jit.metainterp import history
 
 class LoopTest(object):
     enable_opts = ''
-
+    
     automatic_promotion_result = {
-        'int_add' : 6, 'int_gt' : 1, 'guard_false' : 1, 'jump' : 1,
+        'int_add' : 6, 'int_gt' : 1, 'guard_false' : 1, 'jump' : 1, 
         'guard_value' : 3
     }
 
-    def meta_interp(self, f, args, policy=None, backendopt=False):
+    def meta_interp(self, f, args, policy=None):
         return ll_meta_interp(f, args, enable_opts=self.enable_opts,
                               policy=policy,
                               CPUClass=self.CPUClass,
-                              backendopt=backendopt)
+                              type_system=self.type_system)
 
     def run_directly(self, f, args):
         return f(*args)
@@ -44,7 +43,7 @@ class LoopTest(object):
         class A(object):
             def __init__(self):
                 self.x = 3
-
+        
         def f(x, y):
             res = 0
             a = A()
@@ -61,7 +60,7 @@ class LoopTest(object):
         assert res == f(6, 13)
         self.check_trace_count(1)
         if self.enable_opts:
-            self.check_resops(setfield_gc=2, getfield_gc_i=0)
+            self.check_resops(setfield_gc=2, getfield_gc=0)
 
 
     def test_loop_with_two_paths(self):
@@ -71,7 +70,7 @@ class LoopTest(object):
 
         def l(y, x, t):
             llop.debug_print(lltype.Void, y, x, t)
-
+        
         def g(y, x, r):
             if y <= 12:
                 res = x - 2
@@ -192,8 +191,8 @@ class LoopTest(object):
                 if op.getopname() == 'guard_true':
                     liveboxes = op.getfailargs()
                     assert len(liveboxes) == 2     # x, y (in some order)
-                    assert liveboxes[0].type == 'i'
-                    assert liveboxes[1].type == 'i'
+                    assert isinstance(liveboxes[0], history.BoxInt)
+                    assert isinstance(liveboxes[1], history.BoxInt)
                     found += 1
             if 'unroll' in self.enable_opts:
                 assert found == 2
@@ -242,7 +241,7 @@ class LoopTest(object):
 
         def can_enter_jit(i, x, node):
             myjitdriver.can_enter_jit(i=i, x=x, node=node)
-
+        
         def f(node):
             x = 0
             i = 0
@@ -363,16 +362,16 @@ class LoopTest(object):
         #
         #   i = j = x = 0
         #   while i < n:
-        #       j = 0
+        #       j = 0   
         #       while j <= i:
         #           j = j + 1
         #           x = x + (i&j)
         #       i = i + 1
-
+        
         myjitdriver = JitDriver(greens = ['pos'], reds = ['i', 'j', 'n', 'x'])
         bytecode = "IzJxji"
         def f(n, threshold):
-            set_param(myjitdriver, 'threshold', threshold)
+            set_param(myjitdriver, 'threshold', threshold)        
             i = j = x = 0
             pos = 0
             op = '-'
@@ -419,7 +418,7 @@ class LoopTest(object):
         myjitdriver = JitDriver(greens = ['pos'], reds = ['i', 'j', 'n', 'x'])
         bytecode = "IzJxji"
         def f(nval, threshold):
-            set_param(myjitdriver, 'threshold', threshold)
+            set_param(myjitdriver, 'threshold', threshold)        
             i, j, x = A(0), A(0), A(0)
             n = A(nval)
             pos = 0
@@ -478,75 +477,30 @@ class LoopTest(object):
                     if not (i < n):
                         pos += 2
                 elif op == '7':
-                    if s==1:
+                    if s==1: 
                         x = x + 7
                     else:
                         x = x + 2
                 elif op == '8':
-                    if s==1:
+                    if s==1: 
                         x = x + 8
                     else:
                         x = x + 3
 
                 pos += 1
             return x
-
+        
         def g(n, s):
             sa = 0
             for i in range(7):
                 sa += f(n, s)
             return sa
-        assert self.meta_interp(g, [25, 1]) == g(25, 1)
+        assert self.meta_interp(g, [25, 1]) == 7 * 25 * (7 + 8) 
 
         def h(n):
             return g(n, 1) + g(n, 2)
-        assert self.meta_interp(h, [25]) == h(25)
-
-
-    def test_two_bridged_loops_classes(self):
-        myjitdriver = JitDriver(greens = ['pos'], reds = ['i', 'n', 'x', 's'])
-        class A(object):
-            pass
-        bytecode = "I7i"
-        def f(n, s):
-            i = x = 0
-            pos = 0
-            op = '-'
-            while pos < len(bytecode):
-                myjitdriver.jit_merge_point(pos=pos, i=i, n=n, s=s, x=x)
-                op = bytecode[pos]
-                if op == 'i':
-                    i += 1
-                    pos -= 2
-                    myjitdriver.can_enter_jit(pos=pos, i=i, n=n, s=s, x=x)
-                    continue
-                elif op == 'I':
-                    if not (i < n):
-                        pos += 2
-                elif op == '7':
-                    if s is not None:
-                        x = x + 7
-                    else:
-                        x = x + 2
-                pos += 1
-            return x
-
-        def g(n, s):
-            if s == 2:
-                s = None
-            else:
-                s = A()
-            sa = 0
-            for i in range(7):
-                sa += f(n, s)
-            return sa
-        #assert self.meta_interp(g, [25, 1]) == g(25, 1)
-
-        def h(n):
-            return g(n, 1) + g(n, 2)
-        assert self.meta_interp(h, [25]) == h(25)
-
-
+        assert self.meta_interp(h, [25]) == 7 * 25 * (7 + 8 + 2 + 3) 
+        
     def test_three_nested_loops(self):
         myjitdriver = JitDriver(greens = ['i'], reds = ['x'])
         bytecode = ".+357"
@@ -645,7 +599,7 @@ class LoopTest(object):
                 z = Z(z.elem + 1)
                 x -= 1
             return z.elem
-
+                
         expected = f(100, 5)
         res = self.meta_interp(f, [100, 5], policy=StopAtXPolicy(externfn))
         assert res == expected
@@ -663,16 +617,16 @@ class LoopTest(object):
         CO_INCREASE = 0
         CO_JUMP_BACK_3 = 1
         CO_DECREASE = 2
-
+        
         code = [CO_INCREASE, CO_INCREASE, CO_INCREASE,
                 CO_JUMP_BACK_3, CO_INCREASE, CO_DECREASE]
-
+        
         def add(res, a):
             return res + a
 
         def sub(res, a):
             return res - a
-
+        
         def main_interpreter_loop(a):
             i = 0
             res = 0
@@ -709,16 +663,16 @@ class LoopTest(object):
                                 reds = ['res', 'a'])
         CO_INCREASE = 0
         CO_JUMP_BACK_3 = 1
-
+        
         code = [CO_INCREASE, CO_INCREASE, CO_INCREASE,
                 CO_JUMP_BACK_3, CO_INCREASE]
-
+        
         def add(res, a):
             return res + a
 
         def sub(res, a):
             return res - a
-
+        
         def main_interpreter_loop(a):
             i = 0
             res = 0
@@ -775,7 +729,7 @@ class LoopTest(object):
             def __init__(self, lst):
                 self.lst = lst
         codes = [Code([]), Code([0, 0, 1, 1])]
-
+        
         def interpret(num):
             code = codes[num]
             p = 0
@@ -856,7 +810,7 @@ class LoopTest(object):
                 some_fn(Stuff(n), k, z)
             return 0
 
-        res = self.meta_interp(f, [200])
+        res = self.meta_interp(f, [200])        
 
     def test_regular_pointers_in_short_preamble(self):
         from rpython.rtyper.lltypesystem import lltype
@@ -954,159 +908,8 @@ class LoopTest(object):
         res = self.meta_interp(f, [20, 10])
         assert res == f(20, 10)
 
-    def test_unroll_issue_1(self):
-        class A(object):
-            _attrs_ = []
-            def checkcls(self):
-                raise NotImplementedError
-
-        class B(A):
-            def __init__(self, b_value):
-                self.b_value = b_value
-            def get_value(self):
-                return self.b_value
-            def checkcls(self):
-                return self.b_value
-
-        @dont_look_inside
-        def check(a):
-            return isinstance(a, B)
-
-        jitdriver = JitDriver(greens=[], reds='auto')
-
-        def f(a, xx):
-            i = 0
-            total = 0
-            while i < 10:
-                jitdriver.jit_merge_point()
-                if check(a):
-                    if xx & 1:
-                        total *= a.checkcls()
-                    total += a.get_value()
-                i += 1
-            return total
-
-        def run(n):
-            bt = f(B(n), 1)
-            bt = f(B(n), 2)
-            at = f(A(), 3)
-            return at * 100000 + bt
-
-        assert run(42) == 420
-        res = self.meta_interp(run, [42], backendopt=True)
-        assert res == 420
-
-    def test_unroll_issue_2(self):
-        py.test.skip("decide")
-
-        class B(object):
-            def __init__(self, b_value):
-                self.b_value = b_value
-        class C(object):
-            pass
-
-        from rpython.rlib.rerased import new_erasing_pair
-        b_erase, b_unerase = new_erasing_pair("B")
-        c_erase, c_unerase = new_erasing_pair("C")
-
-        @elidable
-        def unpack_b(a):
-            return b_unerase(a)
-
-        jitdriver = JitDriver(greens=[], reds='auto')
-
-        def f(a, flag):
-            i = 0
-            total = 0
-            while i < 10:
-                jitdriver.jit_merge_point()
-                if flag:
-                    total += unpack_b(a).b_value
-                    flag += 1
-                i += 1
-            return total
-
-        def run(n):
-            res = f(b_erase(B(n)), 1)
-            f(c_erase(C()), 0)
-            return res
-
-        assert run(42) == 420
-        res = self.meta_interp(run, [42], backendopt=True)
-        assert res == 420
-
-    def test_unroll_issue_3(self):
-        py.test.skip("decide")
-
-        from rpython.rlib.rerased import new_erasing_pair
-        b_erase, b_unerase = new_erasing_pair("B")    # list of ints
-        c_erase, c_unerase = new_erasing_pair("C")    # list of Nones
-
-        @elidable
-        def unpack_b(a):
-            return b_unerase(a)
-
-        jitdriver = JitDriver(greens=[], reds='auto')
-
-        def f(a, flag):
-            i = 0
-            total = 0
-            while i < 10:
-                jitdriver.jit_merge_point()
-                if flag:
-                    total += unpack_b(a)[0]
-                    flag += 1
-                i += 1
-            return total
-
-        def run(n):
-            res = f(b_erase([n]), 1)
-            f(c_erase([None]), 0)
-            return res
-
-        assert run(42) == 420
-        res = self.meta_interp(run, [42], backendopt=True)
-        assert res == 420
-
-    def test_not_too_many_bridges(self):
-        jitdriver = JitDriver(greens = [], reds = 'auto')
-
-        def f(i):
-            s = 0
-            while i > 0:
-                jitdriver.jit_merge_point()
-                if i % 2 == 0:
-                    s += 1
-                elif i % 3 == 0:
-                    s += 1
-                elif i % 5 == 0:
-                    s += 1
-                elif i % 7 == 0:
-                    s += 1
-                i -= 1
-            return s
-
-        self.meta_interp(f, [30])
-        self.check_trace_count(3)
-
-    def test_sharing_guards(self):
-        py.test.skip("unimplemented")
-        driver = JitDriver(greens = [], reds = 'auto')
-
-        def f(i):
-            s = 0
-            while i > 0:
-                driver.jit_merge_point()
-                if s > 100:
-                    raise Exception
-                if s > 9:
-                    s += 1 # bridge
-                s += 1
-                i -= 1
-
-        self.meta_interp(f, [15])
-        # one guard_false got removed
-        self.check_resops(guard_false=4, guard_true=5)
+class TestOOtype(LoopTest, OOJitMixin):
+    pass
 
 class TestLLtype(LoopTest, LLJitMixin):
     pass

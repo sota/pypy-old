@@ -35,7 +35,6 @@
 import os
 import sys
 import signal
-import errno
 
 from multiprocessing import util, process
 
@@ -127,17 +126,12 @@ if sys.platform != 'win32':
 
         def poll(self, flag=os.WNOHANG):
             if self.returncode is None:
-                while True:
-                    try:
-                        pid, sts = os.waitpid(self.pid, flag)
-                    except os.error as e:
-                        if e.errno == errno.EINTR:
-                            continue
-                        # Child process not yet created. See #1731717
-                        # e.errno == errno.ECHILD == 10
-                        return None
-                    else:
-                        break
+                try:
+                    pid, sts = os.waitpid(self.pid, flag)
+                except os.error:
+                    # Child process not yet created. See #1731717
+                    # e.errno == errno.ECHILD == 10
+                    return None
                 if pid == self.pid:
                     if os.WIFSIGNALED(sts):
                         self.returncode = -os.WTERMSIG(sts)
@@ -339,7 +333,7 @@ else:
         '''
         Returns prefix of command line used for spawning a child process
         '''
-        if getattr(process.current_process(), '_inheriting', False):
+        if process.current_process()._identity==() and is_forking(sys.argv):
             raise RuntimeError('''
             Attempt to start a new process before the current process
             has finished its bootstrapping phase.
@@ -358,13 +352,12 @@ else:
             return [sys.executable, '--multiprocessing-fork']
         else:
             prog = 'from multiprocessing.forking import main; main()'
-            opts = util._args_from_interpreter_flags()
-            return [_python_exe] + opts + ['-c', prog, '--multiprocessing-fork']
+            return [_python_exe, '-c', prog, '--multiprocessing-fork']
 
 
     def main():
         '''
-        Run code specified by data received over pipe
+        Run code specifed by data received over pipe
         '''
         assert is_forking(sys.argv)
 

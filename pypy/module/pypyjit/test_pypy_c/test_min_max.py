@@ -1,7 +1,8 @@
+import py
 from pypy.module.pypyjit.test_pypy_c.test_00_model import BaseTestPyPyC
 
-
 class TestMinMax(BaseTestPyPyC):
+
     def test_min_max(self):
         def main():
             i=0
@@ -23,6 +24,7 @@ class TestMinMax(BaseTestPyPyC):
             --TICK--
             jump(..., descr=...)
         """)
+        
 
     def test_silly_max(self):
         def main():
@@ -38,7 +40,7 @@ class TestMinMax(BaseTestPyPyC):
         loop, = log.loops_by_filename(self.filepath)
         assert loop.match("""
             ...
-            p76 = call_assembler_r(_, _, _, _, descr=...)
+            p76 = call_assembler(_, _, _, _, descr=...)
             ...
         """)
         loop2 = log.loops[0]
@@ -47,20 +49,17 @@ class TestMinMax(BaseTestPyPyC):
         label(..., descr=...)
         ...
         label(..., descr=...)
-        guard_not_invalidated?
         i17 = int_ge(i11, i7)
         guard_false(i17, descr=...)
-        p18 = getarrayitem_gc_r(p5, i11, descr=...)
+        p18 = getarrayitem_gc(p5, i11, descr=...)
         i19 = int_add(i11, 1)
         setfield_gc(p2, i19, descr=...)
-        guard_nonnull_class(p18, ConstClass(W_IntObject), descr=...)
-        i20 = getfield_gc_i(p18, descr=...)
+        guard_class(p18, ConstClass(W_IntObject), descr=...)
+        i20 = getfield_gc_pure(p18, descr=...)
         i21 = int_gt(i20, i14)
         guard_true(i21, descr=...)
         jump(..., descr=...)
         ''')
-        # XXX could be "guard_class(p18)" instead; we lost somewhere
-        # the information that it cannot be null.
 
     def test_iter_max(self):
         def main():
@@ -79,6 +78,6 @@ class TestMinMax(BaseTestPyPyC):
         assert len(guards) < 20
         assert loop.match("""
             ...
-            p76 = call_assembler_r(_, _, _, _, descr=...)
+            p76 = call_assembler(_, _, _, _, descr=...)
             ...
         """)

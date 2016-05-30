@@ -1,6 +1,6 @@
 
 from rpython.translator.c.genc import CBuilder
-from rpython.rtyper.lltypesystem.lltype import getfunctionptr
+from rpython.rtyper.typesystem import getfunctionptr
 from rpython.translator.tool.cbuild import ExternalCompilationInfo
 
 
@@ -21,16 +21,15 @@ class CLibraryBuilder(CBuilder):
             entrypoints.append(getfunctionptr(graph))
         return entrypoints
 
-    def gen_makefile(self, targetdir, exe_name=None,
-                    headers_to_precompile=[]):
+    def gen_makefile(self, targetdir, exe_name=None):
         pass # XXX finish
 
     def compile(self):
-        extsymeci = ExternalCompilationInfo()  # empty
+        export_symbols = ([self.db.get(ep) for ep in self.getentrypointptr()] +
+                          ['RPython_StartupCode'])
+        extsymeci = ExternalCompilationInfo(export_symbols=export_symbols)
         self.eci = self.eci.merge(extsymeci)
         files = [self.c_source_filename] + self.extrafiles
-        files += self.eventually_copy(self.eci.separate_module_files)
-        self.eci.separate_module_files = ()
         oname = self.name
         self.so_name = self.translator.platform.compile(files, self.eci,
                                                         standalone=False,

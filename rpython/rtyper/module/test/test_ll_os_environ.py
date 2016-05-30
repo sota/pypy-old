@@ -20,7 +20,7 @@ def test_unset_error():
             del os.environ['TEST']
             try:
                 del os.environ['key=']
-            except (KeyError, OSError):
+            except OSError:
                 return 1
             return 2
         else:

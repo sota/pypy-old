@@ -70,41 +70,16 @@ class TestKQueue(unittest.TestCase):
         self.assertEqual(ev, ev)
         self.assertNotEqual(ev, other)
 
-        bignum = 0x7fff
-        ev = select.kevent(bignum, 1, 2, 3, bignum - 1, bignum)
+        bignum = sys.maxsize * 2 + 1
+        ev = select.kevent(bignum, 1, 2, 3, sys.maxsize, bignum)
         self.assertEqual(ev.ident, bignum)
         self.assertEqual(ev.filter, 1)
         self.assertEqual(ev.flags, 2)
         self.assertEqual(ev.fflags, 3)
-        self.assertEqual(ev.data, bignum - 1)
+        self.assertEqual(ev.data, sys.maxsize)
         self.assertEqual(ev.udata, bignum)
         self.assertEqual(ev, ev)
         self.assertNotEqual(ev, other)
-
-        # Issue 11973
-        bignum = 0xffff
-        ev = select.kevent(0, 1, bignum)
-        self.assertEqual(ev.ident, 0)
-        self.assertEqual(ev.filter, 1)
-        self.assertEqual(ev.flags, bignum)
-        self.assertEqual(ev.fflags, 0)
-        self.assertEqual(ev.data, 0)
-        self.assertEqual(ev.udata, 0)
-        self.assertEqual(ev, ev)
-        self.assertNotEqual(ev, other)
-
-        # Issue 11973
-        bignum = 0xffffffff
-        ev = select.kevent(0, 1, 2, bignum)
-        self.assertEqual(ev.ident, 0)
-        self.assertEqual(ev.filter, 1)
-        self.assertEqual(ev.flags, 2)
-        self.assertEqual(ev.fflags, bignum)
-        self.assertEqual(ev.data, 0)
-        self.assertEqual(ev.udata, 0)
-        self.assertEqual(ev, ev)
-        self.assertNotEqual(ev, other)
-
 
     def test_queue_event(self):
         serverSocket = socket.socket()
@@ -120,6 +95,11 @@ class TestKQueue(unittest.TestCase):
             #raise AssertionError("Connect should have raised EINPROGRESS")
             pass # FreeBSD doesn't raise an exception here
         server, addr = serverSocket.accept()
+
+        if sys.platform.startswith("darwin"):
+            flags = select.KQ_EV_ADD | select.KQ_EV_ENABLE
+        else:
+            flags = 0
 
         kq = select.kqueue()
         kq2 = select.kqueue.fromfd(kq.fileno())
@@ -142,10 +122,11 @@ class TestKQueue(unittest.TestCase):
         kq2.control([ev], 0)
 
         events = kq.control(None, 4, 1)
-        events = set((e.ident, e.filter) for e in events)
-        self.assertEqual(events, set([
-            (client.fileno(), select.KQ_FILTER_WRITE),
-            (server.fileno(), select.KQ_FILTER_WRITE)]))
+        events = [(e.ident, e.filter, e.flags) for e in events]
+        events.sort()
+        self.assertEqual(events, [
+            (client.fileno(), select.KQ_FILTER_WRITE, flags),
+            (server.fileno(), select.KQ_FILTER_WRITE, flags)])
 
         client.send("Hello!")
         server.send("world!!!")
@@ -159,12 +140,14 @@ class TestKQueue(unittest.TestCase):
         else:
             self.fail('timeout waiting for event notifications')
 
-        events = set((e.ident, e.filter) for e in events)
-        self.assertEqual(events, set([
-            (client.fileno(), select.KQ_FILTER_WRITE),
-            (client.fileno(), select.KQ_FILTER_READ),
-            (server.fileno(), select.KQ_FILTER_WRITE),
-            (server.fileno(), select.KQ_FILTER_READ)]))
+        events = [(e.ident, e.filter, e.flags) for e in events]
+        events.sort()
+
+        self.assertEqual(events, [
+            (client.fileno(), select.KQ_FILTER_WRITE, flags),
+            (client.fileno(), select.KQ_FILTER_READ, flags),
+            (server.fileno(), select.KQ_FILTER_WRITE, flags),
+            (server.fileno(), select.KQ_FILTER_READ, flags)])
 
         # Remove completely client, and server read part
         ev = select.kevent(client.fileno(),
@@ -181,9 +164,10 @@ class TestKQueue(unittest.TestCase):
         kq.control([ev], 0, 0)
 
         events = kq.control([], 4, 0.99)
-        events = set((e.ident, e.filter) for e in events)
-        self.assertEqual(events, set([
-            (server.fileno(), select.KQ_FILTER_WRITE)]))
+        events = [(e.ident, e.filter, e.flags) for e in events]
+        events.sort()
+        self.assertEqual(events, [
+            (server.fileno(), select.KQ_FILTER_WRITE, flags)])
 
         client.close()
         server.close()
@@ -203,17 +187,6 @@ class TestKQueue(unittest.TestCase):
 
         a.close()
         b.close()
-        kq.close()
-
-    def test_control_raises_oserror(self):
-        kq = select.kqueue()
-        event = select.kevent(123456, select.KQ_FILTER_READ, select.KQ_EV_DELETE)
-        with self.assertRaises(OSError) as cm:
-            kq.control([event], 0, 0)
-
-        self.assertEqual(cm.exception.args[0], errno.EBADF)
-        self.assertEqual(cm.exception.errno, errno.EBADF)
-
         kq.close()
 
 def test_main():

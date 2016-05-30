@@ -2,13 +2,13 @@
 
 from rpython.rtyper.lltypesystem.lltype import malloc
 from rpython.rtyper.lltypesystem.rstr import LLHelpers, UNICODE
-from rpython.rtyper.test.tool import BaseRtypingTest
+from rpython.rtyper.test.tool import LLRtypeMixin, OORtypeMixin
 from rpython.rtyper.test.test_rstr import AbstractTestRstr
 import py
 
 # ====> test_rstr.py
 
-class TestRUnicode(AbstractTestRstr, BaseRtypingTest):
+class BaseTestRUnicode(AbstractTestRstr):
     const = unicode
     constchar = unichr
 
@@ -26,7 +26,7 @@ class TestRUnicode(AbstractTestRstr, BaseRtypingTest):
             else:
                 y = const('xx')
             return unicode(y)
-
+        
         const = str
         assert self.ll_to_unicode(self.interpret(f, [1])) == f(1)
 
@@ -167,7 +167,7 @@ class TestRUnicode(AbstractTestRstr, BaseRtypingTest):
         def errorhandler(errors, encoding, msg, s,
                          startingpos, endingpos):
             raise UnicodeDecodeError(encoding, s, startingpos, endingpos, msg)
-
+        
         strings = [u'àèì'.encode('utf-8'), u'ìòéà'.encode('utf-8')]
         def f(n):
             x = strings[n]
@@ -282,7 +282,8 @@ class TestRUnicode(AbstractTestRstr, BaseRtypingTest):
     test_int_valueerror = unsupported
     test_float = unsupported
     test_hlstr = unsupported
-    test_strip_multiple_chars = unsupported
+
+class TestLLtype(BaseTestRUnicode, LLRtypeMixin):
 
     def test_hash_via_type(self):
         from rpython.rlib.objectmodel import compute_hash
@@ -297,20 +298,5 @@ class TestRUnicode(AbstractTestRstr, BaseRtypingTest):
         res = self.interpret(f, [5])
         assert res == 0
 
-    def test_unicode_char_comparison(self):
-        const = u'abcdef'
-        def f(n):
-            return const[n] >= u'c'
-
-        res = self.interpret(f, [1])
-        assert res == False
-        res = self.interpret(f, [2])
-        assert res == True
-
-    def test_strip_no_arg(self):
-
-        def f():
-            return u'abcdef'.strip()
-
-        e = py.test.raises(Exception, self.interpret, f, [])
-        assert "unicode.strip() with no arg is not RPython" in str(e.value)
+class TestOOtype(BaseTestRUnicode, OORtypeMixin):
+    pass

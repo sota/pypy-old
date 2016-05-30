@@ -9,7 +9,7 @@ from rpython.translator.tool.cbuild import ExternalCompilationInfo
 from rpython.translator.platform import platform as compiler
 from rpython.rlib.rarithmetic import is_emulated_long
 from rpython.rtyper.lltypesystem import lltype, rffi
-from rpython.rlib.entrypoint import entrypoint_highlevel, secondary_entrypoints
+from rpython.rlib.entrypoint import entrypoint, secondary_entrypoints
 from rpython.rtyper.lltypesystem.lloperation import llop
 
 _MSVC = compiler.name == "msvc"
@@ -25,8 +25,8 @@ class AbstractTestAsmGCRoot:
 
     @classmethod
     def make_config(cls):
-        if _MSVC:
-            py.test.skip("all asmgcroot tests disabled for MSVC")
+        if _MSVC and _WIN64:
+            py.test.skip("all asmgcroot tests disabled for MSVC X64")
         from rpython.config.translationoption import get_combined_translation_config
         config = get_combined_translation_config(translating=True)
         config.translation.gc = cls.gcpolicy
@@ -65,9 +65,7 @@ class AbstractTestAsmGCRoot:
             t.view()
         exe_name = cbuilder.compile()
 
-        def run(arg0, arg1, runner=None):
-            if runner is not None:
-                py.test.skip("unsupported test: runner=%r" % (runner,))
+        def run(arg0, arg1):
             lines = []
             print >> sys.stderr, 'RUN: starting', exe_name, arg0, arg1
             if sys.platform == 'win32':
@@ -195,10 +193,12 @@ class TestAsmGCRootWithSemiSpaceGC(AbstractTestAsmGCRoot,
         except KeyError:
             pass
         
-        @entrypoint_highlevel("x42", [lltype.Signed, lltype.Signed],
-                              c_name='callback')
+        @entrypoint("x42", [lltype.Signed, lltype.Signed], c_name='callback')
         def mycallback(a, b):
+            rffi.stackcounter.stacks_counter += 1
+            llop.gc_stack_bottom(lltype.Void)
             gc.collect()
+            rffi.stackcounter.stacks_counter -= 1
             return a + b
 
         c_source = py.code.Source("""
@@ -254,17 +254,13 @@ class TestAsmGCRootWithSemiSpaceGC_Mingw32(TestAsmGCRootWithSemiSpaceGC):
     def define_callback_with_collect(cls):
         return lambda: 0
 
-#class TestAsmGCRootWithSemiSpaceGC_Shared(TestAsmGCRootWithSemiSpaceGC):
-#    @classmethod
-#    def make_config(cls):
-#        config = TestAsmGCRootWithSemiSpaceGC.make_config()
-#        config.translation.shared = True
-#        return config
+class TestAsmGCRootWithSemiSpaceGC_Shared(TestAsmGCRootWithSemiSpaceGC):
+    @classmethod
+    def make_config(cls):
+        config = TestAsmGCRootWithSemiSpaceGC.make_config()
+        config.translation.shared = True
+        return config
 
 class TestAsmGCRootWithHybridTagged(AbstractTestAsmGCRoot,
                                     test_newgc.TestHybridTaggedPointers):
-    pass
-
-class TestAsmGCRootWithIncrementalMinimark(AbstractTestAsmGCRoot,
-                                    test_newgc.TestIncrementalMiniMarkGC):
     pass

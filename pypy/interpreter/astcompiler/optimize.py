@@ -83,16 +83,17 @@ class __extend__(ast.UnaryOp):
 
 class __extend__(ast.BoolOp):
 
-    def _accept_jump_if_any_is(self, gen, condition, target, skip_last=0):
-        for i in range(len(self.values) - skip_last):
+    def _accept_jump_if_any_is(self, gen, condition, target):
+        self.values[0].accept_jump_if(gen, condition, target)
+        for i in range(1, len(self.values)):
             self.values[i].accept_jump_if(gen, condition, target)
 
     def accept_jump_if(self, gen, condition, target):
         if condition and self.op == ast.And or \
                 (not condition and self.op == ast.Or):
             end = gen.new_block()
-            self._accept_jump_if_any_is(gen, not condition, end, skip_last=1)
-            self.values[-1].accept_jump_if(gen, condition, target)
+            self._accept_jump_if_any_is(gen, not condition, end)
+            gen.emit_jump(ops.JUMP_FORWARD, target)
             gen.use_next_block(end)
         else:
             self._accept_jump_if_any_is(gen, condition, target)
@@ -254,15 +255,11 @@ class OptimizingVisitor(ast.ASTVisitor):
         return rep
 
     def visit_Name(self, name):
-        # Turn loading None into a constant lookup.  We cannot do this
-        # for True and False, because rebinding them is allowed (2.7).
+        # Turn loading None into a constant lookup.  Eventaully, we can do this
+        # for True and False, too.
         if name.id == "None":
-            # The compiler refuses to parse "None = ...", but "del None"
-            # is allowed (if pointless).  Check anyway: custom asts that
-            # correspond to "None = ..." can be made by hand.
-            if name.ctx == ast.Load:
-                return ast.Const(self.space.w_None, name.lineno,
-                                 name.col_offset)
+            assert name.ctx == ast.Load
+            return ast.Const(self.space.w_None, name.lineno, name.col_offset)
         return name
 
     def visit_Tuple(self, tup):
@@ -275,11 +272,6 @@ class OptimizingVisitor(ast.ASTVisitor):
                 if w_const is None:
                     return tup
                 consts_w[i] = w_const
-            # intern the string constants packed into the tuple here,
-            # because assemble.py will see the result as just a tuple constant
-            for i in range(len(consts_w)):
-                consts_w[i] = misc.intern_if_common_string(
-                    self.space, consts_w[i])
         else:
             consts_w = []
         w_consts = self.space.newtuple(consts_w)

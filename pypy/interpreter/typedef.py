@@ -2,7 +2,7 @@ import py
 
 from pypy.interpreter.argument import Arguments
 from pypy.interpreter.baseobjspace import W_Root, DescrMismatch
-from pypy.interpreter.error import OperationError, oefmt
+from pypy.interpreter.error import OperationError, operationerrfmt
 from pypy.interpreter.gateway import (interp2app, BuiltinCode, unwrap_spec,
      WrappedDefault)
 
@@ -22,7 +22,6 @@ class TypeDef(object):
         else:
             bases = [__base]
         self.bases = bases
-        self.heaptype = False
         self.hasdict = '__dict__' in rawdict
         self.weakrefable = '__weakref__' in rawdict
         self.doc = rawdict.pop('__doc__', None)
@@ -156,6 +155,20 @@ def get_unique_interplevel_subclass(config, cls, hasdict, wants_slots,
 get_unique_interplevel_subclass._annspecialcase_ = "specialize:memo"
 _subclass_cache = {}
 
+def enum_interplevel_subclasses(config, cls):
+    """Return a list of all the extra interp-level subclasses of 'cls' that
+    can be built by get_unique_interplevel_subclass()."""
+    result = []
+    for flag1 in (False, True):
+        for flag2 in (False, True):
+            for flag3 in (False, True):
+                for flag4 in (False, True):
+                    result.append(get_unique_interplevel_subclass(
+                        config, cls, flag1, flag2, flag3, flag4))
+    result = dict.fromkeys(result)
+    assert len(result) <= 6
+    return result.keys()
+
 def _getusercls(config, cls, wants_dict, wants_slots, wants_del, weakrefable):
     typedef = cls.typedef
     if wants_dict and typedef.hasdict:
@@ -248,7 +261,7 @@ def _builduserclswithfeature(config, supercls, *features):
             def user_setup(self, space, w_subtype):
                 self.space = space
                 self.w__class__ = w_subtype
-                self.user_setup_slots(w_subtype.layout.nslots)
+                self.user_setup_slots(w_subtype.nslots)
 
             def user_setup_slots(self, nslots):
                 assert nslots == 0
@@ -315,6 +328,10 @@ def _builduserclswithfeature(config, supercls, *features):
                 self.w__dict__ = space.newdict(
                     instance=True)
                 base_user_setup(self, space, w_subtype)
+
+            def setclass(self, space, w_subtype):
+                # only used by descr_set___class__
+                self.w__class__ = w_subtype
 
         add(Proto)
 
@@ -522,7 +539,7 @@ GetSetProperty.typedef = TypeDef(
     __objclass__ = GetSetProperty(GetSetProperty.descr_get_objclass),
     __doc__ = interp_attrproperty('doc', cls=GetSetProperty),
     )
-assert not GetSetProperty.typedef.acceptable_as_base_class  # no __new__
+GetSetProperty.typedef.acceptable_as_base_class = False
 
 
 class Member(W_Root):
@@ -536,9 +553,12 @@ class Member(W_Root):
 
     def typecheck(self, space, w_obj):
         if not space.isinstance_w(w_obj, self.w_cls):
-            raise oefmt(space.w_TypeError,
-                        "descriptor '%N' for '%N' objects doesn't apply to "
-                        "'%T' object", self, self.w_cls, w_obj)
+            raise operationerrfmt(space.w_TypeError,
+                                  "descriptor '%s' for '%s'"
+                                  " objects doesn't apply to '%s' object",
+                                  self.name,
+                                  self.w_cls.name,
+                                  space.type(w_obj).getname(space))
 
     def descr_member_get(self, space, w_obj, w_cls=None):
         """member.__get__(obj[, type]) -> value
@@ -576,20 +596,7 @@ Member.typedef = TypeDef(
     __name__ = interp_attrproperty('name', cls=Member),
     __objclass__ = interp_attrproperty_w('w_cls', cls=Member),
     )
-assert not Member.typedef.acceptable_as_base_class  # no __new__
-
-# ____________________________________________________________
-
-class ClassAttr(W_Root):
-    """For class-level attributes that need to be initialized
-    with some code.  This code is provided as a callback function
-    invoked with the space.
-    """
-    def __init__(self, function):
-        self.function = function
-
-    def __spacebind__(self, space):
-        return self.function(space)
+Member.typedef.acceptable_as_base_class = False
 
 # ____________________________________________________________
 
@@ -605,7 +612,7 @@ def generic_new_descr(W_Type):
 #
 # Definition of the type's descriptors for all the internal types
 
-from pypy.interpreter.eval import Code
+from pypy.interpreter.eval import Code, Frame
 from pypy.interpreter.pycode import PyCode, CO_VARARGS, CO_VARKEYWORDS
 from pypy.interpreter.pyframe import PyFrame
 from pypy.interpreter.pyopcode import SuspendedUnroller
@@ -617,13 +624,13 @@ from pypy.interpreter.generator import GeneratorIterator
 from pypy.interpreter.nestedscope import Cell
 from pypy.interpreter.special import NotImplemented, Ellipsis
 
-
 def descr_get_dict(space, w_obj):
     w_dict = w_obj.getdict(space)
     if w_dict is None:
-        raise oefmt(space.w_TypeError,
-                    "descriptor '__dict__' doesn't apply to '%T' objects",
-                    w_obj)
+        typename = space.type(w_obj).getname(space)
+        raise operationerrfmt(space.w_TypeError,
+                              "descriptor '__dict__' doesn't apply to"
+                              " '%s' objects", typename)
     return w_dict
 
 def descr_set_dict(space, w_obj, w_dict):
@@ -637,11 +644,6 @@ def descr_get_weakref(space, w_obj):
     if lifeline is None:
         return space.w_None
     return lifeline.get_any_weakref(space)
-
-dict_descr = GetSetProperty(descr_get_dict, descr_set_dict, descr_del_dict,
-                            doc="dictionary for instance variables (if defined)")
-dict_descr.name = '__dict__'
-
 
 def generic_ne(space, w_obj1, w_obj2):
     if space.eq_w(w_obj1, w_obj2):
@@ -705,7 +707,7 @@ Code.typedef = TypeDef('internal-code',
     co_flags = GetSetProperty(fget_co_flags, cls=Code),
     co_consts = GetSetProperty(fget_co_consts, cls=Code),
     )
-assert not Code.typedef.acceptable_as_base_class  # no __new__
+Code.typedef.acceptable_as_base_class = False
 
 BuiltinCode.typedef = TypeDef('builtin-code',
     __reduce__   = interp2app(BuiltinCode.descr__reduce__),
@@ -715,8 +717,15 @@ BuiltinCode.typedef = TypeDef('builtin-code',
     co_flags = GetSetProperty(fget_co_flags, cls=BuiltinCode),
     co_consts = GetSetProperty(fget_co_consts, cls=BuiltinCode),
     )
-assert not BuiltinCode.typedef.acceptable_as_base_class  # no __new__
+BuiltinCode.typedef.acceptable_as_base_class = False
 
+
+Frame.typedef = TypeDef('internal-frame',
+    f_code = GetSetProperty(Frame.fget_code),
+    f_locals = GetSetProperty(Frame.fget_getdictscope),
+    f_globals = interp_attrproperty_w('w_globals', cls=Frame),
+    )
+Frame.typedef.acceptable_as_base_class = False
 
 PyCode.typedef = TypeDef('code',
     __new__ = interp2app(PyCode.descr_code__new__.im_func),
@@ -756,11 +765,8 @@ PyFrame.typedef = TypeDef('frame',
     f_exc_value = GetSetProperty(PyFrame.fget_f_exc_value),
     f_exc_traceback = GetSetProperty(PyFrame.fget_f_exc_traceback),
     f_restricted = GetSetProperty(PyFrame.fget_f_restricted),
-    f_code = GetSetProperty(PyFrame.fget_code),
-    f_locals = GetSetProperty(PyFrame.fget_getdictscope),
-    f_globals = GetSetProperty(PyFrame.fget_w_globals),
-)
-assert not PyFrame.typedef.acceptable_as_base_class  # no __new__
+    **Frame.typedef.rawdict)
+PyFrame.typedef.acceptable_as_base_class = False
 
 Module.typedef = TypeDef("module",
     __new__ = interp2app(Module.descr_module__new__.im_func),
@@ -815,7 +821,6 @@ Function.typedef = TypeDef("function",
     __dict__ = getset_func_dict,
     __defaults__ = getset_func_defaults,
     __globals__ = interp_attrproperty_w('w_func_globals', cls=Function),
-    __closure__ = GetSetProperty(Function.fget_func_closure),
     __module__ = getset___module__,
     __weakref__ = make_weakref_descr(Function),
 )
@@ -823,9 +828,6 @@ Function.typedef.acceptable_as_base_class = False
 
 Method.typedef = TypeDef(
     "method",
-    __doc__ = """instancemethod(function, instance, class)
-
-Create an instance method object.""",
     __new__ = interp2app(Method.descr_method__new__.im_func),
     __call__ = interp2app(Method.descr_method_call),
     __get__ = interp2app(Method.descr_method_get),
@@ -906,12 +908,11 @@ PyTraceback.typedef = TypeDef("traceback",
     tb_lineno = GetSetProperty(PyTraceback.descr_tb_lineno),
     tb_next = interp_attrproperty('next', cls=PyTraceback),
     )
-assert not PyTraceback.typedef.acceptable_as_base_class  # no __new__
+PyTraceback.typedef.acceptable_as_base_class = False
 
 GeneratorIterator.typedef = TypeDef("generator",
     __repr__   = interp2app(GeneratorIterator.descr__repr__),
     __reduce__   = interp2app(GeneratorIterator.descr__reduce__),
-    __setstate__ = interp2app(GeneratorIterator.descr__setstate__),
     next       = interp2app(GeneratorIterator.descr_next,
                             descrmismatch='next'),
     send       = interp2app(GeneratorIterator.descr_send,
@@ -928,27 +929,26 @@ GeneratorIterator.typedef = TypeDef("generator",
     __name__   = GetSetProperty(GeneratorIterator.descr__name__),
     __weakref__ = make_weakref_descr(GeneratorIterator),
 )
-assert not GeneratorIterator.typedef.acceptable_as_base_class  # no __new__
+GeneratorIterator.typedef.acceptable_as_base_class = False
 
 Cell.typedef = TypeDef("cell",
     __cmp__      = interp2app(Cell.descr__cmp__),
     __hash__     = None,
     __reduce__   = interp2app(Cell.descr__reduce__),
-    __repr__     = interp2app(Cell.descr__repr__),
     __setstate__ = interp2app(Cell.descr__setstate__),
     cell_contents= GetSetProperty(Cell.descr__cell_contents, cls=Cell),
 )
-assert not Cell.typedef.acceptable_as_base_class  # no __new__
+Cell.typedef.acceptable_as_base_class = False
 
 Ellipsis.typedef = TypeDef("Ellipsis",
     __repr__ = interp2app(Ellipsis.descr__repr__),
 )
-assert not Ellipsis.typedef.acceptable_as_base_class  # no __new__
+Ellipsis.typedef.acceptable_as_base_class = False
 
 NotImplemented.typedef = TypeDef("NotImplemented",
     __repr__ = interp2app(NotImplemented.descr__repr__),
 )
-assert not NotImplemented.typedef.acceptable_as_base_class  # no __new__
+NotImplemented.typedef.acceptable_as_base_class = False
 
 SuspendedUnroller.typedef = TypeDef("SuspendedUnroller")
-assert not SuspendedUnroller.typedef.acceptable_as_base_class  # no __new__
+SuspendedUnroller.typedef.acceptable_as_base_class = False

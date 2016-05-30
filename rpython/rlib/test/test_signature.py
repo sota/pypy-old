@@ -2,8 +2,6 @@ import py
 from rpython.rlib.signature import signature, finishsigs, FieldSpec, ClassSpec
 from rpython.rlib import types
 from rpython.annotator import model
-from rpython.rtyper.llannotation import SomePtr
-from rpython.annotator.signature import SignatureError
 from rpython.translator.translator import TranslationContext, graphof
 from rpython.rtyper.lltypesystem import rstr
 from rpython.rtyper.annlowlevel import LowLevelAnnotatorPolicy
@@ -19,15 +17,15 @@ def annotate_at(f, policy=None):
 def sigof(a, f):
     # returns [param1, param2, ..., ret]
     g = graphof(a.translator, f)
-    return [a.binding(v) for v in g.startblock.inputargs] + [a.binding(g.getreturnvar())]
+    return [a.bindings[v] for v in g.startblock.inputargs] + [a.bindings[g.getreturnvar()]]
 
 def getsig(f, policy=None):
     a = annotate_at(f, policy=policy)
     return sigof(a, f)
 
 def check_annotator_fails(caller):
-    exc = py.test.raises(model.AnnotatorError, annotate_at, caller).value
-    assert caller.func_name in str(exc)
+    exc = py.test.raises(Exception, annotate_at, caller).value
+    assert caller.func_name in repr(exc.args)
 
 
 def test_bookkeeping():
@@ -128,7 +126,7 @@ def test_ptr():
     def f(buf):
         pass
     argtype = getsig(f, policy=policy)[0]
-    assert isinstance(argtype, SomePtr)
+    assert isinstance(argtype, model.SomePtr)
     assert argtype.ll_ptrtype.TO == rstr.STR
 
     def g():
@@ -247,9 +245,9 @@ def test_self_error():
         def incomplete_sig_meth(self):
             pass
 
-    exc = py.test.raises(SignatureError, annotate_at, C.incomplete_sig_meth).value
-    assert 'incomplete_sig_meth' in str(exc)
-    assert 'finishsigs' in str(exc)
+    exc = py.test.raises(Exception, annotate_at, C.incomplete_sig_meth).value
+    assert 'incomplete_sig_meth' in repr(exc.args)
+    assert 'finishsigs' in repr(exc.args)
 
 def test_any_as_argument():
     @signature(types.any(), types.int(), returns=types.float())
@@ -270,8 +268,8 @@ def test_any_as_argument():
     @signature(types.str(), returns=types.int())
     def cannot_add_string(x):
         return f(x, 2)
-    exc = py.test.raises(model.AnnotatorError, annotate_at, cannot_add_string).value
-    assert 'Blocked block' in str(exc)
+    exc = py.test.raises(Exception, annotate_at, cannot_add_string).value
+    assert 'Blocked block' in repr(exc.args)
 
 def test_return_any():
     @signature(types.int(), returns=types.any())
@@ -283,9 +281,9 @@ def test_return_any():
     @signature(types.str(), returns=types.any())
     def cannot_add_string(x):
         return f(3) + x
-    exc = py.test.raises(model.AnnotatorError, annotate_at, cannot_add_string).value
-    assert 'Blocked block' in str(exc)
-    assert 'cannot_add_string' in str(exc)
+    exc = py.test.raises(Exception, annotate_at, cannot_add_string).value
+    assert 'Blocked block' in repr(exc.args)
+    assert 'cannot_add_string' in repr(exc.args)
 
 
 

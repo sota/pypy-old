@@ -6,21 +6,15 @@ def setup_module(mod):
     if '_cffi_backend' in sys.builtin_module_names:
         py.test.skip("this is embedded version")
 
-#BACKEND_VERSIONS = {
-#    '0.4.2': '0.4',     # did not change
-#    '0.7.1': '0.7',     # did not change
-#    '0.7.2': '0.7',     # did not change
-#    '0.8.1': '0.8',     # did not change (essentially)
-#    '0.8.4': '0.8.3',   # did not change
-#    }
+BACKEND_VERSIONS = {
+    '0.4.2': '0.4',     # did not change
+    }
 
 def test_version():
     v = cffi.__version__
     version_info = '.'.join(str(i) for i in cffi.__version_info__)
-    version_info = version_info.replace('.plus', '+')
     assert v == version_info
-    #v = BACKEND_VERSIONS.get(v, v)
-    assert v == _cffi_backend.__version__
+    assert BACKEND_VERSIONS.get(v, v) == _cffi_backend.__version__
 
 def test_doc_version():
     parent = os.path.dirname(os.path.dirname(__file__))
@@ -28,12 +22,12 @@ def test_doc_version():
     content = open(p).read()
     #
     v = cffi.__version__
-    assert ("version = '%s'\n" % v[:3]) in content
+    assert ("version = '%s'\n" % v) in content
     assert ("release = '%s'\n" % v) in content
 
 def test_doc_version_file():
     parent = os.path.dirname(os.path.dirname(__file__))
-    v = cffi.__version__.replace('+', '')
+    v = cffi.__version__
     p = os.path.join(parent, 'doc', 'source', 'index.rst')
     content = open(p).read()
     assert ("cffi/cffi-%s.tar.gz" % v) in content
@@ -43,7 +37,7 @@ def test_setup_version():
     p = os.path.join(parent, 'setup.py')
     content = open(p).read()
     #
-    v = cffi.__version__.replace('+', '')
+    v = cffi.__version__
     assert ("version='%s'" % v) in content
 
 def test_c_version():
@@ -51,5 +45,4 @@ def test_c_version():
     v = cffi.__version__
     p = os.path.join(parent, 'c', 'test_c.py')
     content = open(p).read()
-    #v = BACKEND_VERSIONS.get(v, v)
-    assert (('assert __version__ == "%s"' % v) in content)
+    assert ('assert __version__ == "%s"' % v) in content

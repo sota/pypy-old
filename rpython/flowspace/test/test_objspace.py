@@ -1,13 +1,12 @@
 from __future__ import with_statement
-import types
-import py
+import new
+import py, sys
 from contextlib import contextmanager
 
-from rpython.flowspace.model import (
-    Constant, mkentrymap, const)
+from rpython.flowspace.model import Constant, mkentrymap, c_last_exception
 from rpython.translator.simplify import simplify_graph
 from rpython.flowspace.objspace import build_flow
-from rpython.flowspace.flowcontext import FlowingError, FlowContext
+from rpython.flowspace.flowcontext import FlowingError, FlowSpaceFrame
 from rpython.conftest import option
 from rpython.tool.stdlib_opcode import host_bytecode_spec
 
@@ -54,7 +53,7 @@ class Base:
 
 def test_all_opcodes_defined():
     opnames = set(host_bytecode_spec.method_names)
-    methods = set([name for name in dir(FlowContext) if name.upper() == name])
+    methods = set([name for name in dir(FlowSpaceFrame) if name.upper() == name])
     handled_elsewhere = set(['EXTENDED_ARG'])
     missing = opnames - methods - handled_elsewhere
     assert not missing
@@ -105,7 +104,7 @@ class TestFlowObjSpace(Base):
     def test_loop(self):
         graph = self.codetest(self.loop)
         assert self.all_operations(graph) == {'abs': 1,
-                                              'bool': 1,
+                                              'is_true': 1,
                                               'sub': 1}
 
     #__________________________________________________________
@@ -204,22 +203,6 @@ class TestFlowObjSpace(Base):
     def test_break_continue(self):
         x = self.codetest(self.break_continue)
 
-    def test_break_from_handler(self):
-        def f(x):
-            while True:
-                try:
-                    x()
-                except TypeError:
-                    if x:
-                        raise
-                    break
-        assert f(0) is None
-        graph = self.codetest(f)
-        simplify_graph(graph)
-        entrymap = mkentrymap(graph)
-        links = entrymap[graph.returnblock]
-        assert len(links) == 1
-
     #__________________________________________________________
     def unpack_tuple(lst):
         a, b, c = lst
@@ -260,19 +243,6 @@ class TestFlowObjSpace(Base):
 
     def test_finallys(self):
         x = self.codetest(self.finallys)
-
-    def test_branching_in_finally(self):
-        def f(x, y):
-            try:
-                return x
-            finally:
-                if x:
-                    x = 0
-                if y > 0:
-                    y -= 1
-                return y
-        self.codetest(f)
-
 
     #__________________________________________________________
     def const_pow():
@@ -416,28 +386,6 @@ class TestFlowObjSpace(Base):
         assert ops[1].args == [ops[0].result]
         assert x.startblock.exits[0].args == [ops[1].result, ops[0].result]
         assert x.startblock.exits[0].target is x.exceptblock
-
-    def test_simple_raise(self):
-        def f():
-            raise ValueError('ouch')
-        x = self.codetest(f)
-        simplify_graph(x)
-        self.show(x)
-        ops = x.startblock.operations
-        assert ops[0].opname == 'simple_call'
-        assert ops[0].args == [Constant(ValueError), Constant('ouch')]
-
-    def test_raise_prebuilt(self):
-        error = ValueError('ouch')
-        def g(x): return x
-        def f():
-            raise g(error)
-        x = self.codetest(f)
-        simplify_graph(x)
-        self.show(x)
-        ops = x.startblock.operations
-        assert ops[0].opname == 'simple_call'
-        assert ops[0].args == [const(g), const(error)]
 
     #__________________________________________________________
     def raise2(msg):
@@ -584,7 +532,7 @@ class TestFlowObjSpace(Base):
         def f(x):
             return not ~-x
         graph = self.codetest(f)
-        assert self.all_operations(graph) == {'bool': 1, 'invert': 1, 'neg': 1}
+        assert self.all_operations(graph) == {'is_true': 1, 'invert': 1, 'neg': 1}
 
     #__________________________________________________________
 
@@ -664,7 +612,6 @@ class TestFlowObjSpace(Base):
 
     def test_highly_branching_example(self):
         x = self.codetest(self.highly_branching_example)
-        simplify_graph(x)
         # roughly 20 blocks + 30 links
         assert len(list(x.iterblocks())) + len(list(x.iterlinks())) < 60
 
@@ -778,7 +725,8 @@ class TestFlowObjSpace(Base):
         for block in graph.iterblocks():
             for op in block.operations:
                 assert op.opname == "call_args"
-                assert op.args == map(Constant, [g, (0, ('x',), False), 2])
+                assert op.args == map(Constant,
+                        [g, (0, ('x',), False, False), 2])
 
     def test_catch_importerror_1(self):
         def f():
@@ -815,12 +763,6 @@ class TestFlowObjSpace(Base):
         def f():
             from rpython import this_does_not_exist
         py.test.raises(ImportError, 'self.codetest(f)')
-
-    def test_importerror_3(self):
-        def f():
-            import rpython.flowspace.test.cant_import
-        e = py.test.raises(ImportError, 'self.codetest(f)')
-        assert "some explanation here" in str(e.value)
 
     def test_relative_import(self):
         def f():
@@ -861,7 +803,7 @@ class TestFlowObjSpace(Base):
                 return None
         graph = self.codetest(myfunc)
         simplify_graph(graph)
-        assert graph.startblock.canraise
+        assert graph.startblock.exitswitch == c_last_exception
         assert graph.startblock.exits[0].target is graph.returnblock
         assert graph.startblock.exits[1].target is graph.returnblock
 
@@ -873,7 +815,7 @@ class TestFlowObjSpace(Base):
                 raise
         graph = self.codetest(f)
         simplify_graph(graph)
-        assert self.all_operations(graph) == {'getitem_idx': 1}
+        assert self.all_operations(graph) == {'getitem_idx_key': 1}
 
         g = lambda: None
         def f(c, x):
@@ -883,7 +825,7 @@ class TestFlowObjSpace(Base):
                 g()
         graph = self.codetest(f)
         simplify_graph(graph)
-        assert self.all_operations(graph) == {'getitem_idx': 1,
+        assert self.all_operations(graph) == {'getitem_idx_key': 1,
                                               'simple_call': 2}
 
         def f(c, x):
@@ -902,7 +844,7 @@ class TestFlowObjSpace(Base):
                 raise
         graph = self.codetest(f)
         simplify_graph(graph)
-        assert self.all_operations(graph) == {'getitem': 1}
+        assert self.all_operations(graph) == {'getitem_key': 1}
 
         def f(c, x):
             try:
@@ -921,7 +863,7 @@ class TestFlowObjSpace(Base):
         graph = self.codetest(f)
         simplify_graph(graph)
         self.show(graph)
-        assert self.all_operations(graph) == {'getitem_idx': 1}
+        assert self.all_operations(graph) == {'getitem_idx_key': 1}
 
         def f(c, x):
             try:
@@ -939,7 +881,7 @@ class TestFlowObjSpace(Base):
                 return -1
         graph = self.codetest(f)
         simplify_graph(graph)
-        assert self.all_operations(graph) == {'getitem': 1}
+        assert self.all_operations(graph) == {'getitem_key': 1}
 
         def f(c, x):
             try:
@@ -949,13 +891,6 @@ class TestFlowObjSpace(Base):
         graph = self.codetest(f)
         simplify_graph(graph)
         assert self.all_operations(graph) == {'getitem': 1}
-
-    def test_delitem(self):
-        def f(c, x):
-            del c[x]
-        graph = self.codetest(f)
-        simplify_graph(graph)
-        assert self.all_operations(graph) == {'delitem': 1}
 
     def test_context_manager(self):
         def f(c, x):
@@ -977,25 +912,9 @@ class TestFlowObjSpace(Base):
             'simple_call': 4, # __enter__, g and 2 possible calls to __exit__
             }
 
-    def test_return_in_with(self):
-        def f(x):
-            with x:
-                return 1
-        graph = self.codetest(f)
-        simplify_graph(graph)
-        assert self.all_operations(graph) == {'getattr': 2, 'simple_call': 2}
-
-    def test_break_in_with(self):
-        def f(n, x):
-            for i in range(n):
-                with x:
-                    break
-            return 1
-        self.codetest(f)
-
     def monkey_patch_code(self, code, stacksize, flags, codestring, names, varnames):
         c = code
-        return types.CodeType(c.co_argcount, c.co_nlocals, stacksize, flags,
+        return new.code(c.co_argcount, c.co_nlocals, stacksize, flags,
                         codestring, c.co_consts, names, varnames,
                         c.co_filename, c.co_name, c.co_firstlineno,
                         c.co_lnotab)
@@ -1016,7 +935,7 @@ class TestFlowObjSpace(Base):
             # this code is generated by pypy-c when compiling above f
             pypy_code = 't\x00\x00\x83\x00\x00}\x00\x00|\x00\x00\xc9\x01\x00\xca\x00\x00S'
             new_c = self.monkey_patch_code(f.func_code, 3, 3, pypy_code, ('X', 'x', 'm'), ('x',))
-            f2 = types.FunctionType(new_c, locals(), 'f')
+            f2 = new.function(new_c, locals(), 'f')
 
             graph = self.codetest(f2)
             all_ops = self.all_operations(graph)
@@ -1036,7 +955,7 @@ class TestFlowObjSpace(Base):
             pypy_code = 'd\x01\x00\xcb\x00\x00D]\x0c\x00}\x00\x00|\x00\x00^\x02\x00q\x07\x00S'
             new_c = self.monkey_patch_code(f.func_code, 3, 67, pypy_code, (),
                                            ('i',))
-            f2 = types.FunctionType(new_c, locals(), 'f')
+            f2 = new.function(new_c, locals(), 'f')
 
             graph = self.codetest(f2)
             all_ops = self.all_operations(graph)
@@ -1144,6 +1063,7 @@ class TestFlowObjSpace(Base):
         assert len(graph.startblock.exits) == 1
         assert graph.startblock.exits[0].target == graph.returnblock
 
+
     def test_global_variable(self):
         def global_var_missing():
             return a
@@ -1248,130 +1168,6 @@ class TestFlowObjSpace(Base):
         assert self.all_operations(graph) == {'getattr': 1,
                                               'iter': 1, 'newlist': 1,
                                               'next': 1, 'simple_call': 1}
-
-    def test_mutate_const_list(self):
-        lst = list('abcdef')
-        def f():
-            lst[0] = 'x'
-            return lst
-        graph = self.codetest(f)
-        assert 'setitem' in self.all_operations(graph)
-
-    def test_sys_getattr(self):
-        def f():
-            import sys
-            return sys.modules
-        graph = self.codetest(f)
-        assert 'getattr' in self.all_operations(graph)
-
-    def test_sys_import_from(self):
-        def f():
-            from sys import modules
-            return modules
-        graph = self.codetest(f)
-        assert 'getattr' in self.all_operations(graph)
-
-    def test_empty_cell_unused(self):
-        def test(flag):
-            if flag:
-                b = 5
-            def g():
-                if flag:
-                    return b
-                else:
-                    return 1
-            return g
-        g1 = test(False)
-        graph = self.codetest(g1)
-        assert not self.all_operations(graph)
-        g2 = test(True)
-        graph = self.codetest(g2)
-        assert not self.all_operations(graph)
-
-    def test_empty_cell_error(self):
-        def test(flag):
-            if not flag:
-                b = 5
-            def g():
-                if flag:
-                    return b
-                else:
-                    return 1
-            return g
-        g = test(True)
-        with py.test.raises(FlowingError) as excinfo:
-            graph = self.codetest(g)
-        assert "Undefined closure variable 'b'" in str(excinfo.value)
-
-    def call_os_remove(msg):
-        os.remove(msg)
-        os.unlink(msg)
-
-    def test_call_os_remove(self):
-        x = self.codetest(self.call_os_remove)
-        simplify_graph(x)
-        self.show(x)
-        ops = x.startblock.operations
-        assert ops[0].opname == 'simple_call'
-        assert ops[0].args[0].value is os.unlink
-        assert ops[1].opname == 'simple_call'
-        assert ops[1].args[0].value is os.unlink
-
-    def test_rabspath(self):
-        import os.path
-        def f(s):
-            return os.path.abspath(s)
-        graph = self.codetest(f)
-        simplify_graph(graph)
-        ops = graph.startblock.operations
-        assert ops[0].opname == 'simple_call'
-        #
-        from rpython.rlib import rpath
-        assert ops[0].args[0].value is rpath.rabspath
-
-    def test_constfold_in(self):
-        def f():
-            if 'x' in "xyz":
-                return 5
-            else:
-                return 6
-        graph = self.codetest(f)
-        assert graph.startblock.operations == []
-        [link] = graph.startblock.exits
-        assert link.target is graph.returnblock
-        assert isinstance(link.args[0], Constant)
-        assert link.args[0].value == 5
-
-    def test_remove_dead_ops(self):
-        def f():
-            a = [1]
-            b = (a, a)
-            c = type(b)
-        graph = self.codetest(f)
-        simplify_graph(graph)
-        assert graph.startblock.operations == []
-        [link] = graph.startblock.exits
-        assert link.target is graph.returnblock
-
-    def test_not_combine(self):
-        def f(n):
-            t = not n
-            if not n:
-                t += 1
-            return t
-        graph = self.codetest(f)
-        simplify_graph(graph)
-        assert self.all_operations(graph) == {'bool': 1, 'inplace_add': 1}
-
-    def test_unexpected_builtin_function(self):
-        import itertools
-        e = py.test.raises(ValueError, build_flow, itertools.permutations)
-        assert ' is not RPython:' in str(e.value)
-        e = py.test.raises(ValueError, build_flow, itertools.tee)
-        assert ' is not RPython:' in str(e.value)
-        e = py.test.raises(ValueError, build_flow, Exception.__init__)
-        assert ' is not RPython:' in str(e.value)
-
 
 DATA = {'x': 5,
         'y': 6}

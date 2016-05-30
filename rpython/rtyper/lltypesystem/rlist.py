@@ -1,7 +1,6 @@
 from rpython.rlib import rgc, jit, types
-from rpython.rtyper.debug import ll_assert
+from rpython.rlib.debug import ll_assert
 from rpython.rlib.signature import signature
-from rpython.rtyper.error import TyperError
 from rpython.rtyper.lltypesystem import rstr
 from rpython.rtyper.lltypesystem.lltype import (GcForwardReference, Ptr, GcArray,
      GcStruct, Void, Signed, malloc, typeOf, nullptr, typeMethod)
@@ -33,7 +32,8 @@ from rpython.tool.pairtype import pairtype, pair
 class BaseListRepr(AbstractBaseListRepr):
     rstr_ll = rstr.LLHelpers
 
-    def __init__(self, rtyper, item_repr, listitem=None):
+    # known_maxlength is ignored by lltype but used by ootype
+    def __init__(self, rtyper, item_repr, listitem=None, known_maxlength=False):
         self.rtyper = rtyper
         self.LIST = GcForwardReference()
         self.lowleveltype = Ptr(self.LIST)
@@ -58,7 +58,7 @@ class BaseListRepr(AbstractBaseListRepr):
         elif variant == ("reversed",):
             return ReversedListIteratorRepr(self)
         else:
-            raise TyperError("unsupported %r iterator over a list" % (variant,))
+            raise NotImplementedError(variant)
 
     def get_itemarray_lowleveltype(self):
         ITEM = self.item_repr.lowleveltype
@@ -176,7 +176,6 @@ class FixedSizeListRepr(AbstractFixedSizeListRepr, BaseListRepr):
 
 # adapted C code
 
-@jit.look_inside_iff(lambda l, newsize, overallocate: jit.isconstant(len(l.items)) and jit.isconstant(newsize))
 @signature(types.any(), types.int(), types.bool(), returns=types.none())
 def _ll_list_resize_hint_really(l, newsize, overallocate):
     """
@@ -219,7 +218,7 @@ def _ll_list_resize_hint_really(l, newsize, overallocate):
         rgc.ll_arraycopy(items, newitems, 0, 0, p)
     l.items = newitems
 
-@jit.look_inside_iff(lambda l, newsize: jit.isconstant(len(l.items)) and jit.isconstant(newsize))
+@jit.dont_look_inside
 def _ll_list_resize_hint(l, newsize):
     """Ensure l.items has room for at least newsize elements without
     setting l.length to newsize.
@@ -230,13 +229,9 @@ def _ll_list_resize_hint(l, newsize):
     """
     assert newsize >= 0, "negative list length"
     allocated = len(l.items)
-    if newsize > allocated:
-        overallocate = True
-    elif newsize < (allocated >> 1) - 5:
-        overallocate = False
-    else:
-        return
-    _ll_list_resize_hint_really(l, newsize, overallocate)
+    if allocated < newsize or newsize < (allocated >> 1) - 5:
+        _ll_list_resize_hint_really(l, newsize, False)
+
 
 @signature(types.any(), types.int(), types.bool(), returns=types.none())
 def _ll_list_resize_really(l, newsize, overallocate):
@@ -258,35 +253,30 @@ def _ll_list_resize(l, newsize):
     _ll_list_resize_really(l, newsize, False)
 
 
+@jit.look_inside_iff(lambda l, newsize: jit.isconstant(len(l.items)) and jit.isconstant(newsize))
+@jit.oopspec("list._resize_ge(l, newsize)")
 def _ll_list_resize_ge(l, newsize):
     """This is called with 'newsize' larger than the current length of the
     list.  If the list storage doesn't have enough space, then really perform
     a realloc().  In the common case where we already overallocated enough,
     then this is a very fast operation.
     """
-    cond = len(l.items) < newsize
-    if jit.isconstant(len(l.items)) and jit.isconstant(newsize):
-        if cond:
-            _ll_list_resize_hint_really(l, newsize, True)
+    if len(l.items) >= newsize:
+        l.length = newsize
     else:
-        jit.conditional_call(cond,
-                             _ll_list_resize_hint_really, l, newsize, True)
-    l.length = newsize
+        _ll_list_resize_really(l, newsize, True)
 
+@jit.look_inside_iff(lambda l, newsize: jit.isconstant(len(l.items)) and jit.isconstant(newsize))
+@jit.oopspec("list._resize_le(l, newsize)")
 def _ll_list_resize_le(l, newsize):
     """This is called with 'newsize' smaller than the current length of the
     list.  If 'newsize' falls lower than half the allocated size, proceed
     with the realloc() to shrink the list.
     """
-    cond = newsize < (len(l.items) >> 1) - 5
-    # note: overallocate=False should be safe here
-    if jit.isconstant(len(l.items)) and jit.isconstant(newsize):
-        if cond:
-            _ll_list_resize_hint_really(l, newsize, False)
+    if newsize >= (len(l.items) >> 1) - 5:
+        l.length = newsize
     else:
-        jit.conditional_call(cond, _ll_list_resize_hint_really, l, newsize,
-                             False)
-    l.length = newsize
+        _ll_list_resize_really(l, newsize, False)
 
 def ll_append_noresize(l, newitem):
     length = l.length

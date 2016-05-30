@@ -54,7 +54,7 @@ IGNORE:
 newline:
     COMMENT
   | `( *\n *)*`;
-
+    
 
 REGEX:
     r = `\`[^\\\`]*(\\.[^\\\`]*)*\``
@@ -109,8 +109,8 @@ productionargs:
     IGNORE*
     return {Nonterminal('productionargs', args + [arg])}
   | return {Nonterminal('productionargs', [])};
-
-
+        
+    
 or_:
     l = (commands ['|' IGNORE*])+
     last = commands
@@ -222,7 +222,7 @@ primary:
     call | REGEX [IGNORE*] | QUOTE [IGNORE*];
 
 call:
-    x = NAME
+    x = NAME 
     args = arguments
     IGNORE*
     return {Nonterminal("call", [x, args])};
@@ -288,7 +288,8 @@ class Status(object):
     INPROGRESS = 2
     LEFTRECURSION = 3
     SOMESOLUTIONS = 4
-
+    
+    _annspecialcase_ = 'specialize:ctr_location' # polymorphic
     def __repr__(self):
         return "Status(%s, %s, %s, %s)" % (self.pos, self.result, self.error,
                                            self.status)
@@ -298,7 +299,6 @@ class Status(object):
         self.error = None
         self.status = self.INPROGRESS
         self.result = None
-
 
 class ParserBuilder(RPythonVisitor, Codebuilder):
     def __init__(self):
@@ -594,7 +594,7 @@ class ParserBuilder(RPythonVisitor, Codebuilder):
         r = t.additional_info[1:-1].replace('\\`', '`')
         matcher = self.get_regex(r)
         self.emit("_result = self._regex%s()" % (abs(hash(r)), ))
-
+        
     def visit_QUOTE(self, t):
         self.emit("_result = self.__chars__(%r)" % (
                     str(t.additional_info[1:-1]), ))
@@ -668,7 +668,7 @@ class MetaPackratParser(type):
                 value = new.function(value.func_code, frame.f_globals)
             if not hasattr(result, key) and key not in forbidden:
                 setattr(result, key, value)
-        if result.__init__ == object.__init__:
+        if result.__init__ is object.__init__:
             result.__init__ = pcls.__dict__['__init__']
         result.init_parser = pcls.__dict__['__init__']
         result._code = visitor.get_code()

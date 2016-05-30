@@ -12,10 +12,7 @@ class AssemblerLocation(object):
     def is_stack(self):
         return False
 
-    def is_raw_sp(self):
-        return False
-
-    def is_core_reg(self):
+    def is_reg(self):
         return False
 
     def is_vfp_reg(self):
@@ -43,10 +40,10 @@ class RegisterLocation(AssemblerLocation):
     def __repr__(self):
         return 'r%d' % self.value
 
-    def is_core_reg(self):
+    def is_reg(self):
         return True
 
-    def as_key(self):       # 0 <= as_key <= 15
+    def as_key(self):
         return self.value
 
 
@@ -55,29 +52,25 @@ class VFPRegisterLocation(RegisterLocation):
     type = FLOAT
     width = 2 * WORD
 
-    def __repr__(self):
-        return 'vfp(d%d)' % self.value
+    def get_single_precision_regs(self):
+        return [VFPRegisterLocation(i) for i in
+                        [self.value * 2, self.value * 2 + 1]]
 
-    def is_core_reg(self):
+    def __repr__(self):
+        return 'vfp%d' % self.value
+
+    def is_reg(self):
         return False
 
     def is_vfp_reg(self):
         return True
 
-    def as_key(self):            # 20 <= as_key <= 35
+    def as_key(self):
         return self.value + 20
 
     def is_float(self):
         return True
 
-class SVFPRegisterLocation(VFPRegisterLocation):
-    """Single Precission VFP Register"""
-    _immutable_ = True
-    width = WORD
-    type = 'S'
-
-    def __repr__(self):
-        return 'vfp(s%d)' % self.value
 
 class ImmLocation(AssemblerLocation):
     _immutable_ = True
@@ -115,8 +108,8 @@ class ConstFloatLoc(AssemblerLocation):
     def is_imm_float(self):
         return True
 
-    def as_key(self):          # a real address + 1
-        return self.value | 1
+    def as_key(self):
+        return self.value
 
     def is_float(self):
         return True
@@ -148,34 +141,11 @@ class StackLocation(AssemblerLocation):
     def is_stack(self):
         return True
 
-    def as_key(self):                # an aligned word + 10000
+    def as_key(self):
         return self.position + 10000
 
     def is_float(self):
-        return self.type == FLOAT
-
-class RawSPStackLocation(AssemblerLocation):
-    _immutable_ = True
-
-    def __init__(self, sp_offset, type=INT):
-        if type == FLOAT:
-            self.width = DOUBLE_WORD
-        else:
-            self.width = WORD
-        self.value = sp_offset
-        self.type = type
-
-    def __repr__(self):
-        return 'SP(%s)+%d' % (self.type, self.value,)
-
-    def is_raw_sp(self):
-        return True
-
-    def is_float(self):
-        return self.type == FLOAT
-
-    def as_key(self):            # a word >= 1000, and < 1000 + size of SP frame
-        return self.value + 1000
+        return type == FLOAT
 
 
 def imm(i):

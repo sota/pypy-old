@@ -1,15 +1,17 @@
+import os
 import sys
 
 from rpython.annotator import model as annmodel
 from rpython.rtyper.lltypesystem import lltype, rffi
+from rpython.rtyper.ootypesystem import ootype
 
 _WIN32 = sys.platform.startswith('win')
-UNDERSCORE_ON_WIN32 = '_' if _WIN32 else ''
+underscore_on_windows = '_' if _WIN32 else ''
 
 # utility conversion functions
 class LLSupport:
     _mixin_ = True
-
+    
     def to_rstr(s):
         from rpython.rtyper.lltypesystem.rstr import STR, mallocstr
         if s is None:
@@ -28,7 +30,7 @@ class LLSupport:
         for i in range(len(s)):
             p.chars[i] = s[i]
         return p
-    to_runicode = staticmethod(to_runicode)
+    to_runicode = staticmethod(to_runicode)    
 
     def from_rstr(rs):
         if not rs:   # null pointer
@@ -42,6 +44,31 @@ class LLSupport:
         return ''.join([rs.chars[i] for i in range(len(rs.chars))])
     from_rstr_nonnull = staticmethod(from_rstr_nonnull)
 
+class OOSupport:
+    _mixin_ = True
+
+    def to_rstr(s):
+        if s is None:
+            return ootype.null(ootype.String)
+        return ootype.oostring(s, -1)
+    to_rstr = staticmethod(to_rstr)
+
+    def to_runicode(u):
+        return ootype.oounicode(u, -1)
+    to_runicode = staticmethod(to_runicode)
+    
+    def from_rstr(rs):
+        if not rs:   # null pointer
+            return None
+        else:
+            return "".join([rs.ll_stritem_nonneg(i) for i in range(rs.ll_strlen())])
+    from_rstr = staticmethod(from_rstr)        
+
+    def from_rstr_nonnull(rs):
+        assert rs
+        return "".join([rs.ll_stritem_nonneg(i) for i in range(rs.ll_strlen())])
+    from_rstr_nonnull = staticmethod(from_rstr_nonnull)
+
 
 class StringTraits:
     str = str
@@ -49,7 +76,6 @@ class StringTraits:
     CHAR = rffi.CHAR
     CCHARP = rffi.CCHARP
     charp2str = staticmethod(rffi.charp2str)
-    charpsize2str = staticmethod(rffi.charpsize2str)
     scoped_str2charp = staticmethod(rffi.scoped_str2charp)
     str2charp = staticmethod(rffi.str2charp)
     free_charp = staticmethod(rffi.free_charp)
@@ -57,7 +83,7 @@ class StringTraits:
 
     @staticmethod
     def posix_function_name(name):
-        return UNDERSCORE_ON_WIN32 + name
+        return underscore_on_windows + name
 
     @staticmethod
     def ll_os_name(name):
@@ -69,7 +95,6 @@ class UnicodeTraits:
     CHAR = rffi.WCHAR_T
     CCHARP = rffi.CWCHARP
     charp2str = staticmethod(rffi.wcharp2unicode)
-    charpsize2str = staticmethod(rffi.wcharpsize2unicode)
     str2charp = staticmethod(rffi.unicode2wcharp)
     scoped_str2charp = staticmethod(rffi.scoped_unicode2wcharp)
     free_charp = staticmethod(rffi.free_wcharp)
@@ -77,7 +102,7 @@ class UnicodeTraits:
 
     @staticmethod
     def posix_function_name(name):
-        return UNDERSCORE_ON_WIN32 + 'w' + name
+        return underscore_on_windows + 'w' + name
 
     @staticmethod
     def ll_os_name(name):

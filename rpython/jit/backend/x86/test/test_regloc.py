@@ -1,27 +1,17 @@
 import struct, sys
-from rpython.jit.backend.x86.rx86 import R, fits_in_32bits
+from rpython.jit.backend.x86.rx86 import R
 from rpython.jit.backend.x86.regloc import *
 from rpython.jit.backend.x86.test.test_rx86 import CodeBuilder32, CodeBuilder64, assert_encodes_as
 from rpython.jit.backend.x86.assembler import heap
 from rpython.jit.backend.x86.arch import IS_X86_64, IS_X86_32
-from rpython.jit.backend.x86 import codebuf
-from rpython.jit.backend.x86.callbuilder import follow_jump
 from rpython.rlib.rarithmetic import intmask
 import py.test
 
 class LocationCodeBuilder32(CodeBuilder32, LocationCodeBuilder):
-    def force_frame_size(self, frame_size):
-        pass
-
-    def stack_frame_size_delta(self, delta):
-        pass
+    pass
 
 class LocationCodeBuilder64(CodeBuilder64, LocationCodeBuilder):
-    def force_frame_size(self, frame_size):
-        pass
-
-    def stack_frame_size_delta(self, delta):
-        pass
+    pass
 
 cb32 = LocationCodeBuilder32
 cb64 = LocationCodeBuilder64
@@ -72,6 +62,7 @@ def test_cmp_16():
 
 def test_relocation():
     from rpython.rtyper.lltypesystem import lltype, rffi
+    from rpython.jit.backend.x86 import codebuf
     for target in [0x01020304, -0x05060708, 0x0102030405060708]:
         if target > sys.maxint:
             continue
@@ -104,40 +95,6 @@ def test_relocation():
         mc.copy_to_raw_memory(rawstart)
         assert ''.join([buf[i] for i in range(length)]) == expected
         lltype.free(buf, flavor='raw')
-
-class Fake32CodeBlockWrapper(codebuf.MachineCodeBlockWrapper):
-    def check_stack_size_at_ret(self):
-        pass
-        
-def test_follow_jump_instructions_32():
-    buf = lltype.malloc(rffi.CCHARP.TO, 80, flavor='raw')
-    raw = rffi.cast(lltype.Signed, buf)
-    if not fits_in_32bits(raw):
-        lltype.free(buf, flavor='raw')
-        py.test.skip("not testable")
-    mc = Fake32CodeBlockWrapper(); mc.WORD = 4; mc.relocations = []
-    mc.RET()
-    mc.copy_to_raw_memory(raw)
-    mc = Fake32CodeBlockWrapper(); mc.WORD = 4; mc.relocations = []
-    assert follow_jump(raw) == raw
-    mc.JMP(imm(raw))
-    mc.copy_to_raw_memory(raw + 20)
-    assert buf[20] == '\xE9'    # JMP
-    assert buf[21] == '\xE7'    #     -25
-    assert buf[22] == '\xFF'
-    assert buf[23] == '\xFF'
-    assert buf[24] == '\xFF'
-    mc = Fake32CodeBlockWrapper(); mc.WORD = 4; mc.relocations = []
-    assert follow_jump(raw + 20) == raw
-    mc.JMP(imm(raw))
-    mc.copy_to_raw_memory(raw + 40)
-    assert buf[40] == '\xE9'    # JMP
-    assert buf[41] == '\xD3'    #     -45
-    assert buf[42] == '\xFF'
-    assert buf[43] == '\xFF'
-    assert buf[44] == '\xFF'
-    assert follow_jump(raw + 40) == raw
-    lltype.free(buf, flavor='raw')
 
 
 class Test64Bits:
@@ -241,17 +198,6 @@ class Test64Bits:
         expected_instructions = (
                 # mov r11, 0xFEDCBA9876543210
                 '\x49\xBB\x10\x32\x54\x76\x98\xBA\xDC\xFE'
-        )
-        assert cb.getvalue() == expected_instructions
-
-    def test_MOV_64bit_constant_into_rax(self):
-        base_constant = 0xFEDCBA9876543210
-        cb = LocationCodeBuilder64()
-        cb.MOV(eax, imm(base_constant))
-
-        expected_instructions = (
-                # mov rax, 0xFEDCBA9876543210
-                '\x48\xB8\x10\x32\x54\x76\x98\xBA\xDC\xFE'
         )
         assert cb.getvalue() == expected_instructions
 
@@ -425,58 +371,5 @@ class Test64Bits:
                 '\x49\x89\x0C\x83'
                 # pop rcx
                 '\x59'
-        )
-        assert cb.getvalue() == expected_instructions
-
-    # ------------------------------------------------------------
-
-    def test_push_immed64(self):
-        immed = 0x0123456789ABCDEF
-        cb = LocationCodeBuilder64()
-        cb.PUSH(imm(immed))
-        #
-        expected_instructions = (
-                # mov r11, 0x0123456789ABCDEF
-                '\x49\xBB\xEF\xCD\xAB\x89\x67\x45\x23\x01'
-                # push r11
-                '\x41\x53'
-        )
-        assert cb.getvalue() == expected_instructions
-
-    def test_inc_64bit_address_1(self):
-        base_addr = 0x0123456789ABCDEF
-        cb = LocationCodeBuilder64()
-        cb.INC(AddressLoc(ImmedLoc(0), ImmedLoc(0), 0, base_addr))
-        # this case is a INC_j
-        #
-        expected_instructions = (
-                # mov r11, 0x0123456789ABCDEF
-                '\x49\xBB\xEF\xCD\xAB\x89\x67\x45\x23\x01'
-                # inc [r11]
-                '\x49\xFF\x03'
-        )
-        assert cb.getvalue() == expected_instructions
-
-    def test_inc_64bit_address_2(self):
-        py.test.skip("there is no unary instruction INSN_a so far")
-        base_addr = 0x0123456789ABCDEF
-        cb = LocationCodeBuilder64()
-        cb.INC(AddressLoc(ImmedLoc(0), edx, 3, base_addr))
-        # this case would be a INC_a
-        xxx
-
-    def test_inc_64bit_address_3(self):
-        base_addr = 0x0123456789ABCDEF
-        cb = LocationCodeBuilder64()
-        cb.INC(AddressLoc(eax, ImmedLoc(0), 0, base_addr))
-        # this case is a INC_m
-        #
-        expected_instructions = (
-                # mov r11, 0x0123456789ABCDEF
-                '\x49\xBB\xEF\xCD\xAB\x89\x67\x45\x23\x01'
-                # lea r11, [rax+r11]
-                '\x4E\x8D\x1C\x18'
-                # inc [r11]
-                '\x49\xFF\x03'
         )
         assert cb.getvalue() == expected_instructions

@@ -1,9 +1,12 @@
 from rpython.annotator import model as annmodel
 from rpython.tool.pairtype import pairtype
+from rpython.rtyper.rclass import getinstancerepr
 from rpython.rtyper.rmodel import Repr
-from rpython.rtyper.rclass import (getinstancerepr, OBJECTPTR)
+from rpython.rtyper.lltypesystem.rclass import OBJECTPTR
 from rpython.rtyper.lltypesystem import lltype
 from rpython.rtyper.error import TyperError
+
+from rpython.rtyper.ootypesystem import ootype
 
 
 class SomeVRef(annmodel.SomeObject):
@@ -25,7 +28,10 @@ class SomeVRef(annmodel.SomeObject):
         return annmodel.s_Bool
 
     def rtyper_makerepr(self, rtyper):
-        return vrefrepr
+        if rtyper.type_system.name == 'lltypesystem':
+            return vrefrepr
+        elif rtyper.type_system.name == 'ootypesystem':
+            return oovrefrepr
 
     def rtyper_makekey(self):
         return self.__class__,
@@ -64,4 +70,21 @@ class VRefRepr(Repr):
         hop.exception_cannot_occur()
         return hop.genop('jit_is_virtual', [v], resulttype = lltype.Bool)
 
+from rpython.rtyper.ootypesystem.rclass import OBJECT
+
+class OOVRefRepr(VRefRepr):
+    lowleveltype = OBJECT
+    def rtype_simple_call(self, hop):
+        [v] = hop.inputargs(self)
+        hop.exception_is_here()
+        v = hop.genop('jit_force_virtual', [v], resulttype = OBJECT)
+        return hop.genop('oodowncast', [v], resulttype = hop.r_result)
+    
+    def convert_const(self, value):
+        if value() is not None:
+            raise TypeError("only supports virtual_ref_None as a"
+                            " prebuilt virtual_ref")
+        return ootype.ROOT._null
+
 vrefrepr = VRefRepr()
+oovrefrepr = OOVRefRepr()

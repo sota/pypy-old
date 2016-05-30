@@ -1,16 +1,13 @@
 import math
 import ctypes
-import sys
 from rpython.rtyper.lltypesystem import lltype, rffi
 from rpython.rlib import clibffi
 from rpython.rlib.rarithmetic import intmask
 from rpython.rlib.jit_libffi import CIF_DESCRIPTION
 from rpython.rlib.jit_libffi import jit_ffi_prep_cif, jit_ffi_call
 
-if sys.platform == 'win32':
-    math_sin = intmask(ctypes.cast(ctypes.cdll.msvcrt.sin, ctypes.c_void_p).value)
-else:    
-    math_sin = intmask(ctypes.cast(ctypes.CDLL(None).sin, ctypes.c_void_p).value)
+
+math_sin = intmask(ctypes.cast(ctypes.CDLL(None).sin, ctypes.c_void_p).value)
 math_sin = rffi.cast(rffi.VOIDP, math_sin)
 
 
@@ -24,6 +21,7 @@ def test_jit_ffi_call():
     cd.atypes = atypes
     cd.exchange_size = 64    # 64 bytes of exchange data
     cd.exchange_result = 24
+    cd.exchange_result_libffi = 24
     cd.exchange_args[0] = 16
     #
     jit_ffi_prep_cif(cd)

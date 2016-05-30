@@ -12,6 +12,9 @@ from test_all import db, dbshelve, test_support, verbose, \
 
 
 
+if sys.version_info < (2, 4) :
+    from sets import Set as set
+
 
 
 #----------------------------------------------------------------------
@@ -30,6 +33,10 @@ class DataClass:
 
 
 class DBShelveTestCase(unittest.TestCase):
+    if sys.version_info < (2, 4):
+        def assertTrue(self, expr, msg=None):
+            return self.failUnless(expr,msg=msg)
+
     if (sys.version_info < (2, 7)) or ((sys.version_info >= (3, 0)) and
             (sys.version_info < (3, 2))) :
         def assertIn(self, a, b, msg=None) :
@@ -59,7 +66,7 @@ class DBShelveTestCase(unittest.TestCase):
             return bytes(key, "iso8859-1")  # 8 bits
 
     def populateDB(self, d):
-        for x in string.ascii_letters:
+        for x in string.letters:
             d[self.mk('S' + x)] = 10 * x           # add a string
             d[self.mk('I' + x)] = ord(x)           # add an integer
             d[self.mk('L' + x)] = [x] * 10         # add a list

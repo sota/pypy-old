@@ -27,52 +27,6 @@ class AppTest(object):
         assert A.a is not A.__dict__['a']
         assert A.b is A.__dict__['b']
 
-    def test_hidden_applevel(self):
-        import __pypy__
-        import sys
-
-        @__pypy__.hidden_applevel
-        def sneak(): (lambda: 1/0)()
-        try:
-            sneak()
-        except ZeroDivisionError as e:
-            tb = sys.exc_info()[2]
-            assert tb.tb_frame == sys._getframe()
-            assert tb.tb_next.tb_frame.f_code.co_name == '<lambda>'
-        else:
-            assert False, 'Expected ZeroDivisionError'
-
-    def test_hidden_applevel_frames(self):
-        import __pypy__
-        import sys
-
-        @__pypy__.hidden_applevel
-        def test_hidden():
-            assert sys._getframe().f_code.co_name != 'test_hidden'
-            def e(): 1/0
-            try: e()
-            except ZeroDivisionError as e:
-                assert sys.exc_info() == (None, None, None)
-            else: assert False
-            return 2
-        assert test_hidden() == 2
-
-    def test_get_hidden_tb(self):
-        import __pypy__
-        import sys
-
-        @__pypy__.hidden_applevel
-        def test_hidden_with_tb():
-            def not_hidden(): 1/0
-            try: not_hidden()
-            except ZeroDivisionError as e:
-                assert sys.exc_info() == (None, None, None)
-                tb = __pypy__.get_hidden_tb()
-                assert tb.tb_frame.f_code.co_name == 'not_hidden'
-                return True
-            else: return False
-        assert test_hidden_with_tb()
-
     def test_lookup_special(self):
         from __pypy__ import lookup_special
         class X(object):
@@ -92,42 +46,22 @@ class AppTest(object):
         assert x == 42
 
     def test_list_strategy(self):
-        from __pypy__ import strategy
+        from __pypy__ import list_strategy
 
         l = [1, 2, 3]
-        assert strategy(l) == "IntegerListStrategy"
+        assert list_strategy(l) == "int"
         l = ["a", "b", "c"]
-        assert strategy(l) == "BytesListStrategy"
-        l = [u"a", u"b", u"c"]
-        assert strategy(l) == "UnicodeListStrategy"
+        assert list_strategy(l) == "str"
         l = [1.1, 2.2, 3.3]
-        assert strategy(l) == "FloatListStrategy"
+        assert list_strategy(l) == "float"
         l = range(3)
-        assert strategy(l) == "SimpleRangeListStrategy"
-        l = range(1, 2)
-        assert strategy(l) == "RangeListStrategy"
+        assert list_strategy(l) == "range"
         l = [1, "b", 3]
-        assert strategy(l) == "ObjectListStrategy"
+        assert list_strategy(l) == "object"
         l = []
-        assert strategy(l) == "EmptyListStrategy"
+        assert list_strategy(l) == "empty"
         o = 5
-        raises(TypeError, strategy, 5)
-
-    def test_dict_strategy(self):
-        from __pypy__ import strategy
-
-        d = {}
-        assert strategy(d) == "EmptyDictStrategy"
-        d = {1: None, 5: None}
-        assert strategy(d) == "IntDictStrategy"
-
-    def test_set_strategy(self):
-        from __pypy__ import strategy
-
-        s = set()
-        assert strategy(s) == "EmptySetStrategy"
-        s = set([2, 3, 4])
-        assert strategy(s) == "IntegerSetStrategy"
+        raises(TypeError, list_strategy, 5)
 
 
 class AppTestJitFeatures(object):

@@ -1,12 +1,16 @@
 import py
 import sys, operator
 from rpython.translator.translator import TranslationContext
+from rpython.annotator import unaryop, binaryop
 from rpython.rtyper.test import snippet
 from rpython.rlib.rarithmetic import r_int, r_uint, r_longlong, r_ulonglong
 from rpython.rlib.rarithmetic import ovfcheck, r_int64, intmask, int_between
 from rpython.rlib import objectmodel
-from rpython.rtyper.test.tool import BaseRtypingTest
+from rpython.rtyper.test.tool import BaseRtypingTest, LLRtypeMixin, OORtypeMixin
 
+from rpython.rtyper.lltypesystem import lltype
+from rpython.rtyper.ootypesystem import ootype
+from rpython.rtyper.lltypesystem.lloperation import llop
 
 class TestSnippet(object):
 
@@ -28,8 +32,18 @@ class TestSnippet(object):
     def test_int_cast1(self):
         self._test(snippet.int_cast1, [int])
 
+    def DONTtest_unary_operations(self):
+        # XXX TODO test if all unary operations are implemented
+        for opname in unaryop.UNARY_OPERATIONS:
+            print 'UNARY_OPERATIONS:', opname
 
-class TestRint(BaseRtypingTest):
+    def DONTtest_binary_operations(self):
+        # XXX TODO test if all binary operations are implemented
+        for opname in binaryop.BINARY_OPERATIONS:
+            print 'BINARY_OPERATIONS:', opname
+
+
+class BaseTestRint(BaseRtypingTest):
 
     def test_char_constant(self):
         def dummyfn(i):
@@ -73,14 +87,6 @@ class TestRint(BaseRtypingTest):
         res = self.interpret(dummy, [-sys.maxint-1])
         res = self.ll_to_string(res)
         assert res == '-0x8' + '0' * (len(res)-4)
-
-    def test_hex_of_uint(self):
-        def dummy(i):
-            return hex(r_uint(i))
-
-        res = self.interpret(dummy, [-5])
-        res = self.ll_to_string(res)
-        assert res == '0x' + 'f' * (len(res)-3) + 'b'
 
     def test_oct_of_int(self):
         def dummy(i):
@@ -418,3 +424,15 @@ class TestRint(BaseRtypingTest):
         assert not self.interpret(fn, [1, 5, 2])
         assert not self.interpret(fn, [1, 2, 2])
         assert not self.interpret(fn, [1, 1, 1])
+
+
+
+class TestLLtype(BaseTestRint, LLRtypeMixin):
+    pass
+
+class TestOOtype(BaseTestRint, OORtypeMixin):
+    def test_oobox_int(self):
+        def f():
+            x = llop.oobox_int(ootype.Object, 42)
+            return llop.oounbox_int(lltype.Signed, x)
+        assert self.interpret(f, []) == 42

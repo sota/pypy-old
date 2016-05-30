@@ -1,17 +1,12 @@
-import weakref
-from types import MethodType, NoneType
-
-from rpython.annotator.bookkeeper import analyzer_for, immutablevalue
-from rpython.annotator.model import (
-        AnnotatorError, SomeBool, SomeInteger, SomeObject)
+from rpython.rlib.rarithmetic import (r_int, r_uint, intmask, r_singlefloat,
+                                   r_ulonglong, r_longlong, r_longfloat, r_longlonglong,
+                                   base_int, normalizedinttype, longlongmask, longlonglongmask)
 from rpython.rlib.objectmodel import Symbolic
-from rpython.rlib.rarithmetic import (
-    base_int, intmask, is_emulated_long, is_valid_int, longlonglongmask,
-    longlongmask, maxint, normalizedinttype, r_int, r_longfloat, r_longlong,
-    r_longlonglong, r_singlefloat, r_uint, r_ulonglong)
-from rpython.rtyper.extregistry import ExtRegistryEntry
-from rpython.tool import leakfinder
 from rpython.tool.identity_dict import identity_dict
+from rpython.tool import leakfinder
+from types import NoneType
+from rpython.rlib.rarithmetic import maxint, is_valid_int, is_emulated_long
+import weakref
 
 class State(object):
     pass
@@ -48,7 +43,6 @@ class WeakValueDictionary(weakref.WeakValueDictionary):
 
 class _uninitialized(object):
     def __init__(self, TYPE):
-        #self._TYPE = TYPE
         self.TYPE = TYPE
     def __repr__(self):
         return '<Uninitialized %r>'%(self.TYPE,)
@@ -182,8 +176,8 @@ class LowLevelType(object):
     def _freeze_(self):
         return True
 
-    def _note_inlined_into(self, parent, first, last):
-        """Called when this type is being used inline in a container."""
+    def _inline_is_varsize(self, last):
+        return False
 
     def _is_atomic(self):
         return False
@@ -191,19 +185,13 @@ class LowLevelType(object):
     def _is_varsize(self):
         return False
 
-    def _contains_value(self, value):
-        if self is Void:
-            return True
-        return isCompatibleType(typeOf(value), self)
-
 NFOUND = object()
 
 class ContainerType(LowLevelType):
     _adtmeths = {}
 
-    def _note_inlined_into(self, parent, first, last):
-        raise TypeError("%r cannot be inlined in %r" % (
-            self.__class__.__name__, parent.__class__.__name__))
+    def _inline_is_varsize(self, last):
+        raise TypeError, "%r cannot be inlined in structure" % self
 
     def _install_extras(self, adtmeths={}, hints={}):
         self._adtmeths = frozendict(adtmeths)
@@ -265,7 +253,7 @@ class Struct(ContainerType):
         self._arrayfld = None
         for name, typ in fields:
             if name.startswith('_'):
-                raise NameError("%s: field name %r should not start with "
+                raise NameError, ("%s: field name %r should not start with "
                                   "an underscore" % (self._name, name,))
             names.append(name)
             if name in flds:
@@ -280,13 +268,11 @@ class Struct(ContainerType):
 
         # look if we have an inlined variable-sized array as the last field
         if fields:
-            first = True
             for name, typ in fields[:-1]:
-                typ._note_inlined_into(self, first=first, last=False)
+                typ._inline_is_varsize(False)
                 first = False
             name, typ = fields[-1]
-            typ._note_inlined_into(self, first=first, last=True)
-            if typ._is_varsize():
+            if typ._inline_is_varsize(True):
                 self._arrayfld = name
         self._flds = frozendict(flds)
         self._names = tuple(names)
@@ -302,14 +288,11 @@ class Struct(ContainerType):
                 return first, FIRSTTYPE
         return None, None
 
-    def _note_inlined_into(self, parent, first, last):
-        if self._arrayfld is not None:
+    def _inline_is_varsize(self, last):
+        if self._arrayfld:
             raise TypeError("cannot inline a var-sized struct "
                             "inside another container")
-        if self._gckind == 'gc':
-            if not first or not isinstance(parent, GcStruct):
-                raise TypeError("a GcStruct can only be inlined as the first "
-                                "field of another GcStruct")
+        return False
 
     def _is_atomic(self):
         for typ in self._flds.values():
@@ -326,13 +309,15 @@ class Struct(ContainerType):
         except KeyError:
             return ContainerType.__getattr__(self, name)
 
+
     def _nofield(self, name):
-        raise AttributeError('struct %s has no field %r' % (self._name,
-                                                             name))
+        raise AttributeError, 'struct %s has no field %r' % (self._name,
+                                                             name)
 
     def _names_without_voids(self):
-        return [name for name in self._names if self._flds[name] is not Void]
-
+        names_without_voids = [name for name in self._names if self._flds[name] is not Void]
+        return names_without_voids
+    
     def _str_fields_without_voids(self):
         return ', '.join(['%s: %s' % (name, self._flds[name])
                           for name in self._names_without_voids(False)])
@@ -357,6 +342,9 @@ class Struct(ContainerType):
 
     def _short_name(self):
         return "%s %s" % (self.__class__.__name__, self._name)
+
+##     def _defl(self, parent=None, parentindex=None):
+##         return _struct(self, parent=parent, parentindex=parentindex)
 
     def _allocate(self, initialization, parent=None, parentindex=None):
         return _struct(self, initialization=initialization,
@@ -389,7 +377,8 @@ class RttiStruct(Struct):
                                                 about=self)._obj
         Struct._install_extras(self, **kwds)
 
-    def _attach_runtime_type_info_funcptr(self, funcptr, destrptr):
+    def _attach_runtime_type_info_funcptr(self, funcptr, destrptr,
+                                          customtraceptr):
         if self._runtime_type_info is None:
             raise TypeError("attachRuntimeTypeInfo: %r must have been built "
                             "with the rtti=True argument" % (self,))
@@ -413,6 +402,18 @@ class RttiStruct(Struct):
                 raise TypeError("expected a destructor function "
                                 "implementation, got: %s" % destrptr)
             self._runtime_type_info.destructor_funcptr = destrptr
+        if customtraceptr is not None:
+            from rpython.rtyper.lltypesystem import llmemory
+            T = typeOf(customtraceptr)
+            if (not isinstance(T, Ptr) or
+                not isinstance(T.TO, FuncType) or
+                len(T.TO.ARGS) != 2 or
+                T.TO.RESULT != llmemory.Address or
+                T.TO.ARGS[0] != llmemory.Address or
+                T.TO.ARGS[1] != llmemory.Address):
+                raise TypeError("expected a custom trace function "
+                                "implementation, got: %s" % customtraceptr)
+            self._runtime_type_info.custom_trace_funcptr = customtraceptr
 
 class GcStruct(RttiStruct):
     _gckind = 'gc'
@@ -424,7 +425,7 @@ class Array(ContainerType):
     _gckind = 'raw'
     __name__ = 'array'
     _anonym_struct = False
-
+    
     def __init__(self, *fields, **kwds):
         if len(fields) == 1 and isinstance(fields[0], LowLevelType):
             self.OF = fields[0]
@@ -434,18 +435,15 @@ class Array(ContainerType):
         if isinstance(self.OF, ContainerType) and self.OF._gckind != 'raw':
             raise TypeError("cannot have a %s container as array item type"
                             % (self.OF._gckind,))
-        self.OF._note_inlined_into(self, first=False, last=False)
+        self.OF._inline_is_varsize(False)
 
         self._install_extras(**kwds)
 
-    def _note_inlined_into(self, parent, first, last):
-        if not last or not isinstance(parent, Struct):
+    def _inline_is_varsize(self, last):
+        if not last:
             raise TypeError("cannot inline an array in another container"
                             " unless as the last field of a structure")
-        if self._gckind == 'gc':
-            raise TypeError("cannot inline a GC array inside a structure")
-        if parent._gckind == 'gc' and self._hints.get('nolength', False):
-            raise TypeError("cannot inline a no-length array inside a GcStruct")
+        return True
 
     def _is_atomic(self):
         return self.OF._is_atomic()
@@ -483,6 +481,9 @@ class Array(ContainerType):
 
 class GcArray(Array):
     _gckind = 'gc'
+    def _inline_is_varsize(self, last):
+        raise TypeError("cannot inline a GC array inside a structure")
+
 
 class FixedSizeArray(Struct):
     # behaves more or less like a Struct with fields item0, item1, ...
@@ -514,7 +515,7 @@ class FixedSizeArray(Struct):
         if isinstance(self.OF, ContainerType) and self.OF._gckind != 'raw':
             raise TypeError("cannot have a %s container as array item type"
                             % (self.OF._gckind,))
-        self.OF._note_inlined_into(self, first=False, last=False)
+        self.OF._inline_is_varsize(False)
 
     def _str_fields(self):
         return str(self.OF)
@@ -539,7 +540,7 @@ class FixedSizeArray(Struct):
 class FuncType(ContainerType):
     _gckind = 'raw'
     __name__ = 'func'
-    def __init__(self, args, result, abi='FFI_DEFAULT_ABI'):
+    def __init__(self, args, result):
         for arg in args:
             assert isinstance(arg, LowLevelType)
             # There are external C functions eating raw structures, not
@@ -547,9 +548,8 @@ class FuncType(ContainerType):
         self.ARGS = tuple(args)
         assert isinstance(result, LowLevelType)
         if isinstance(result, ContainerType):
-            raise TypeError("function result can only be primitive or pointer")
+            raise TypeError, "function result can only be primitive or pointer"
         self.RESULT = result
-        self.ABI = abi
 
     def __str__(self):
         args = ', '.join(map(str, self.ARGS))
@@ -574,10 +574,8 @@ class OpaqueType(ContainerType):
     _gckind = 'raw'
 
     def __init__(self, tag, hints={}):
-        """If hints['render_structure'] is set, the type is internal and
-        not considered to come from somewhere else (it should be
-        rendered as a structure)
-        """
+        """ if hints['render_structure'] is set, the type is internal and not considered
+            to come from somewhere else (it should be rendered as a structure) """
         self.tag = tag
         self.__name__ = tag
         self.hints = frozendict(hints)
@@ -585,11 +583,8 @@ class OpaqueType(ContainerType):
     def __str__(self):
         return "%s (opaque)" % self.tag
 
-    def _note_inlined_into(self, parent, first, last):
-        # OpaqueType can be inlined, but not GcOpaqueType
-        if self._gckind == 'gc':
-            raise TypeError("%r cannot be inlined in %r" % (
-                self.__class__.__name__, parent.__class__.__name__))
+    def _inline_is_varsize(self, last):
+        return False    # OpaqueType can be inlined
 
     def _container_example(self):
         return _opaque(self)
@@ -607,6 +602,10 @@ class GcOpaqueType(OpaqueType):
 
     def __str__(self):
         return "%s (gcopaque)" % self.tag
+
+    def _inline_is_varsize(self, last):
+        raise TypeError, "%r cannot be inlined in structure" % self
+
 
 class ForwardReference(ContainerType):
     _gckind = 'raw'
@@ -670,12 +669,11 @@ class Number(Primitive):
 
     def normalized(self):
         return build_number(None, normalizedinttype(self._type))
-
+        
 
 _numbertypes = {int: Number("Signed", int, intmask)}
 _numbertypes[r_int] = _numbertypes[int]
-_numbertypes[r_longlonglong] = Number("SignedLongLongLong", r_longlonglong,
-                                      longlonglongmask)
+_numbertypes[r_longlonglong] = Number("SignedLongLongLong", r_longlonglong, longlonglongmask)
 if r_longlong is not r_int:
     _numbertypes[r_longlong] = Number("SignedLongLong", r_longlong,
                                       longlongmask)
@@ -702,8 +700,8 @@ SignedLongLongLong = build_number("SignedLongLongLong", r_longlonglong)
 UnsignedLongLong = build_number("UnsignedLongLong", r_ulonglong)
 
 Float       = Primitive("Float",       0.0)                  # C type 'double'
-SingleFloat = Primitive("SingleFloat", r_singlefloat(0.0))   # 'float'
-LongFloat   = Primitive("LongFloat",   r_longfloat(0.0))     # 'long double'
+SingleFloat = Primitive("SingleFloat", r_singlefloat(0.0))   # C type 'float'
+LongFloat   = Primitive("LongFloat",   r_longfloat(0.0))     # C type 'long double'
 r_singlefloat._TYPE = SingleFloat
 
 Char     = Primitive("Char", '\x00')
@@ -718,7 +716,7 @@ class Ptr(LowLevelType):
     _cache = WeakValueDictionary()  # cache the Ptrs
     def __new__(cls, TO, use_cache=True):
         if not isinstance(TO, ContainerType):
-            raise TypeError("can only point to a Container type, "
+            raise TypeError, ("can only point to a Container type, "
                               "not to %s" % (TO,))
         if not use_cache:
             obj = LowLevelType.__new__(cls)
@@ -768,14 +766,8 @@ class Ptr(LowLevelType):
                          adtmeths=TO._adtmeths)
         else:
             R = GcStruct("Interior", ('ptr', self), ('index', Signed),
-                         hints={'interior_ptr_type':True})
+                         hints={'interior_ptr_type':True})            
         return R
-
-@analyzer_for(Ptr)
-def constPtr(T):
-    assert T.is_constant()
-    return immutablevalue(Ptr(T.const))
-
 
 class InteriorPtr(LowLevelType):
     def __init__(self, PARENTTYPE, TO, offsets):
@@ -835,13 +827,6 @@ def typeOf(val):
         # in an illegal way!
         raise TypeError("typeOf(%r object)" % (tp.__name__,))
 
-@analyzer_for(typeOf)
-def ann_typeOf(s_val):
-    from rpython.rtyper.llannotation import annotation_to_lltype
-    lltype = annotation_to_lltype(s_val, info="in typeOf(): ")
-    return immutablevalue(lltype)
-
-
 _to_primitive = {
     Char: chr,
     UniChar: unichr,
@@ -852,7 +837,7 @@ _to_primitive = {
 def cast_primitive(TGT, value):
     ORIG = typeOf(value)
     if not isinstance(TGT, Primitive) or not isinstance(ORIG, Primitive):
-        raise TypeError("can only primitive to primitive")
+        raise TypeError, "can only primitive to primitive"
     if ORIG == TGT:
         return value
     if ORIG == Char or ORIG == UniChar:
@@ -872,16 +857,7 @@ def cast_primitive(TGT, value):
         return float(value)
     if ORIG == LongFloat and TGT == Float:
         return float(value)
-    raise TypeError("unsupported cast")
-
-@analyzer_for(cast_primitive)
-def ann_cast_primitive(T, s_v):
-    from rpython.rtyper.llannotation import (
-        annotation_to_lltype, ll_to_annotation)
-    assert T.is_constant()
-    return ll_to_annotation(cast_primitive(T.const,
-                                           annotation_to_lltype(s_v)._defl()))
-
+    raise TypeError, "unsupported cast"
 
 def _cast_whatever(TGT, value):
     from rpython.rtyper.lltypesystem import llmemory, rffi
@@ -907,8 +883,7 @@ def _cast_whatever(TGT, value):
     elif TGT == llmemory.Address and isinstance(ORIG, Ptr):
         return llmemory.cast_ptr_to_adr(value)
     elif TGT == Signed and isinstance(ORIG, Ptr) and ORIG.TO._gckind == 'raw':
-        return llmemory.cast_adr_to_int(llmemory.cast_ptr_to_adr(value),
-                                        'symbolic')
+        return llmemory.cast_adr_to_int(llmemory.cast_ptr_to_adr(value), 'symbolic')
     raise TypeError("don't know how to cast from %r to %r" % (ORIG, TGT))
 
 
@@ -936,7 +911,7 @@ def _castdepth(OUTSIDE, INSIDE):
             return dwn
         OUTSIDE = getattr(OUTSIDE, first)
     return -1
-
+ 
 def castable(PTRTYPE, CURTYPE):
     if CURTYPE.TO._gckind != PTRTYPE.TO._gckind:
         raise TypeError("cast_pointer() cannot change the gc status: %s to %s"
@@ -956,25 +931,16 @@ def castable(PTRTYPE, CURTYPE):
         raise InvalidCast(CURTYPE, PTRTYPE)
     return -u
 
-
 def cast_pointer(PTRTYPE, ptr):
     CURTYPE = typeOf(ptr)
     if not isinstance(CURTYPE, Ptr) or not isinstance(PTRTYPE, Ptr):
-        raise TypeError("can only cast pointers to other pointers")
+        raise TypeError, "can only cast pointers to other pointers"
     return ptr._cast_to(PTRTYPE)
-
-@analyzer_for(cast_pointer)
-def ann_cast_pointer(PtrT, s_p):
-    assert isinstance(s_p, SomePtr), "casting of non-pointer: %r" % s_p
-    assert PtrT.is_constant()
-    cast_p = cast_pointer(PtrT.const, s_p.ll_ptrtype._defl())
-    return SomePtr(ll_ptrtype=typeOf(cast_p))
-
 
 def cast_opaque_ptr(PTRTYPE, ptr):
     CURTYPE = typeOf(ptr)
     if not isinstance(CURTYPE, Ptr) or not isinstance(PTRTYPE, Ptr):
-        raise TypeError("can only cast pointers to other pointers")
+        raise TypeError, "can only cast pointers to other pointers"
     if CURTYPE == PTRTYPE:
         return ptr
     if CURTYPE.TO._gckind != PTRTYPE.TO._gckind:
@@ -1017,38 +983,6 @@ def cast_opaque_ptr(PTRTYPE, ptr):
         raise TypeError("invalid cast_opaque_ptr(): %r -> %r" %
                         (CURTYPE, PTRTYPE))
 
-@analyzer_for(cast_opaque_ptr)
-def ann_cast_opaque_ptr(PtrT, s_p):
-    assert isinstance(s_p, SomePtr), "casting of non-pointer: %r" % s_p
-    assert PtrT.is_constant()
-    cast_p = cast_opaque_ptr(PtrT.const, s_p.ll_ptrtype._defl())
-    return SomePtr(ll_ptrtype=typeOf(cast_p))
-
-
-def length_of_simple_gcarray_from_opaque(opaque_ptr):
-    CURTYPE = typeOf(opaque_ptr)
-    if not isinstance(CURTYPE, Ptr):
-        raise TypeError("can only cast pointers to other pointers")
-    if not isinstance(CURTYPE.TO, GcOpaqueType):
-        raise TypeError("expected a GcOpaqueType")
-    try:
-        c = opaque_ptr._obj.container
-    except AttributeError:
-        # if 'opaque_ptr' is already some _llgcopaque, hack its length
-        # by casting it to a random GcArray type and hoping
-        from rpython.rtyper.lltypesystem import rffi
-        p = rffi.cast(Ptr(GcArray(Signed)), opaque_ptr)
-        return len(p)
-    else:
-        return c.getlength()
-
-@analyzer_for(length_of_simple_gcarray_from_opaque)
-def ann_length_of_simple_gcarray_from_opaque(s_p):
-    assert isinstance(s_p, SomePtr), "casting of non-pointer: %r" % s_p
-    assert isinstance(s_p.ll_ptrtype.TO, GcOpaqueType)
-    return SomeInteger(nonneg=True)
-
-
 def direct_fieldptr(structptr, fieldname):
     """Get a pointer to a field in the struct.  The resulting
     pointer is actually of type Ptr(FixedSizeArray(FIELD, 1)).
@@ -1057,21 +991,12 @@ def direct_fieldptr(structptr, fieldname):
     """
     CURTYPE = typeOf(structptr).TO
     if not isinstance(CURTYPE, Struct):
-        raise TypeError("direct_fieldptr: not a struct")
+        raise TypeError, "direct_fieldptr: not a struct"
     if fieldname not in CURTYPE._flds:
-        raise TypeError("%s has no field %r" % (CURTYPE, fieldname))
+        raise TypeError, "%s has no field %r" % (CURTYPE, fieldname)
     if not structptr:
         raise RuntimeError("direct_fieldptr: NULL argument")
     return _subarray._makeptr(structptr._obj, fieldname, structptr._solid)
-
-@analyzer_for(direct_fieldptr)
-def ann_direct_fieldptr(s_p, s_fieldname):
-    assert isinstance(s_p, SomePtr), "direct_* of non-pointer: %r" % s_p
-    assert s_fieldname.is_constant()
-    cast_p = direct_fieldptr(s_p.ll_ptrtype._example(),
-                                    s_fieldname.const)
-    return SomePtr(ll_ptrtype=typeOf(cast_p))
-
 
 def direct_arrayitems(arrayptr):
     """Get a pointer to the first item of the array.  The resulting
@@ -1081,17 +1006,10 @@ def direct_arrayitems(arrayptr):
     """
     CURTYPE = typeOf(arrayptr).TO
     if not isinstance(CURTYPE, (Array, FixedSizeArray)):
-        raise TypeError("direct_arrayitems: not an array")
+        raise TypeError, "direct_arrayitems: not an array"
     if not arrayptr:
         raise RuntimeError("direct_arrayitems: NULL argument")
     return _subarray._makeptr(arrayptr._obj, 0, arrayptr._solid)
-
-@analyzer_for(direct_arrayitems)
-def ann_direct_arrayitems(s_p):
-    assert isinstance(s_p, SomePtr), "direct_* of non-pointer: %r" % s_p
-    cast_p = direct_arrayitems(s_p.ll_ptrtype._example())
-    return SomePtr(ll_ptrtype=typeOf(cast_p))
-
 
 def direct_ptradd(ptr, n):
     """Shift a pointer forward or backward by n items.  The pointer must
@@ -1107,17 +1025,19 @@ def direct_ptradd(ptr, n):
     parent, base = parentlink(ptr._obj)
     return _subarray._makeptr(parent, base + n, ptr._solid)
 
-@analyzer_for(direct_ptradd)
-def ann_direct_ptradd(s_p, s_n):
-    assert isinstance(s_p, SomePtr), "direct_* of non-pointer: %r" % s_p
-    # don't bother with an example here: the resulting pointer is the same
-    return s_p
-
-
 def parentlink(container):
     parent = container._parentstructure()
     if parent is not None:
         return parent, container._parent_index
+##        if isinstance(parent, _struct):
+##            for name in parent._TYPE._names:
+##                if getattr(parent, name) is container:
+##                    return parent, name
+##            raise RuntimeError("lost ourselves")
+##        if isinstance(parent, _array):
+##            raise TypeError("cannot fish a pointer to an array item or an "
+##                            "inlined substructure of it")
+##        raise AssertionError("don't know about %r" % (parent,))
     else:
         return None, None
 
@@ -1181,12 +1101,7 @@ class _abstract_ptr(object):
                 type(other).__name__,))
         if self._TYPE != other._TYPE:
             raise TypeError("comparing %r and %r" % (self._TYPE, other._TYPE))
-        try:
-            return self._obj == other._obj
-        except DelayedPointer:
-            # if one of the two pointers is delayed, they cannot
-            # possibly be equal unless they are the same _ptr instance
-            return self is other
+        return self._obj == other._obj
 
     def __ne__(self, other):
         return not (self == other)
@@ -1203,9 +1118,9 @@ class _abstract_ptr(object):
         except DelayedPointer:
             return True    # assume it's not a delayed null
 
-    # _setobj, _getobj and _obj0 are really _internal_ implementations
-    # details of _ptr, use _obj if necessary instead !
-    def _setobj(self, pointing_to, solid=False):
+    # _setobj, _getobj and _obj0 are really _internal_ implementations details of _ptr,
+    # use _obj if necessary instead !
+    def _setobj(self, pointing_to, solid=False):        
         if pointing_to is None:
             obj0 = None
         elif (solid or self._T._gckind != 'raw' or
@@ -1216,7 +1131,7 @@ class _abstract_ptr(object):
             obj0 = weakref.ref(pointing_to)
         self._set_solid(solid)
         self._set_obj0(obj0)
-
+        
     def _getobj(self, check=True):
         obj = self._obj0
         if obj is not None:
@@ -1271,12 +1186,12 @@ class _abstract_ptr(object):
                 if T1 == T2:
                     setattr(self._obj, field_name, val)
                 else:
-                    raise TypeError(
-                        "%r instance field %r:\nexpects %r\n    got %r" %
-                        (self._T, field_name, T1, T2))
+                    raise TypeError("%r instance field %r:\n"
+                                    "expects %r\n"
+                                    "    got %r" % (self._T, field_name, T1, T2))
                 return
-        raise AttributeError("%r instance has no field %r" %
-                             (self._T, field_name))
+        raise AttributeError("%r instance has no field %r" % (self._T,
+                                                              field_name))
 
     def __getitem__(self, i): # ! can only return basic or ptr !
         if isinstance(self._T, (Array, FixedSizeArray)):
@@ -1293,8 +1208,7 @@ class _abstract_ptr(object):
         if isinstance(self._T, (Array, FixedSizeArray)):
             T1 = self._T.OF
             if isinstance(T1, ContainerType):
-                raise TypeError("cannot directly assign to container array "
-                                "items")
+                raise TypeError("cannot directly assign to container array items")
             T2 = typeOf(val)
             if T2 != T1:
                 from rpython.rtyper.lltypesystem import rffi
@@ -1344,8 +1258,7 @@ class _abstract_ptr(object):
         from rpython.rtyper.lltypesystem import rffi
         if isinstance(self._T, FuncType):
             if len(args) != len(self._T.ARGS):
-                raise TypeError("calling %r with wrong argument number: %r" %
-                                (self._T, args))
+                raise TypeError,"calling %r with wrong argument number: %r" % (self._T, args)
             for i, a, ARG in zip(range(len(self._T.ARGS)), args, self._T.ARGS):
                 if typeOf(a) != ARG:
                     # ARG could be Void
@@ -1370,11 +1283,11 @@ class _abstract_ptr(object):
                         pass
                     else:
                         args_repr = [typeOf(arg) for arg in args]
-                        raise TypeError("calling %r with wrong argument "
+                        raise TypeError, ("calling %r with wrong argument "
                                           "types: %r" % (self._T, args_repr))
             callb = self._obj._callable
             if callb is None:
-                raise RuntimeError("calling undefined function")
+                raise RuntimeError,"calling undefined function"
             return callb(*args)
         raise TypeError("%r instance is not a function" % (self._T,))
 
@@ -1394,7 +1307,7 @@ class _abstract_ptr(object):
             return result
 
 class _ptr(_abstract_ptr):
-    __slots__ = ('_TYPE',
+    __slots__ = ('_TYPE', 
                  '_weak', '_solid',
                  '_obj0', '__weakref__')
 
@@ -1444,13 +1357,11 @@ class _ptr(_abstract_ptr):
                 raise RuntimeError("widening to trash: %r" % self)
             PARENTTYPE = struc._parent_type
             if getattr(parent, PARENTTYPE._names[0]) != struc:
-                 # xxx different exception perhaps?
-                raise InvalidCast(CURTYPE, PTRTYPE)
+                raise InvalidCast(CURTYPE, PTRTYPE) # xxx different exception perhaps?
             struc = parent
             u -= 1
         if PARENTTYPE != PTRTYPE.TO:
-            raise RuntimeError("widening %r inside %r instead of %r" %
-                               (CURTYPE, PARENTTYPE, PTRTYPE.TO))
+            raise RuntimeError("widening %r inside %r instead of %r" % (CURTYPE, PARENTTYPE, PTRTYPE.TO))
         return _ptr(PTRTYPE, struc, solid=self._solid)
 
     def _cast_to_int(self, check=True):
@@ -1461,18 +1372,13 @@ class _ptr(_abstract_ptr):
             return obj     # special case for cast_int_to_ptr() results
         obj = normalizeptr(self, check)._getobj(check)
         if isinstance(obj, int):
-            # special case for cast_int_to_ptr() results put into
-            # opaques
-            return obj
+            return obj     # special case for cast_int_to_ptr() results put into opaques
         if getattr(obj, '_read_directly_intval', False):
             return obj.intval   # special case for _llgcopaque
         result = intmask(obj._getid())
         # assume that id() returns an addressish value which is
         # not zero and aligned to at least a multiple of 4
-        # (at least for GC pointers; we can't really assume anything
-        # for raw addresses)
-        if self._T._gckind == 'gc':
-            assert result != 0 and (result & 3) == 0
+        assert result != 0 and (result & 3) == 0
         return result
 
     def _cast_to_adr(self):
@@ -1504,87 +1410,13 @@ class _ptr(_abstract_ptr):
         """XXX A nice docstring here"""
         T = typeOf(val)
         if isinstance(T, ContainerType):
-            if (self._T._gckind == 'gc' and T._gckind == 'raw' and
-                not isinstance(T, OpaqueType)):
+            if self._T._gckind == 'gc' and T._gckind == 'raw' and not isinstance(T, OpaqueType):
                 val = _interior_ptr(T, self._obj, [offset])
             else:
                 val = _ptr(Ptr(T), val, solid=self._solid)
         return val
 
 assert not '__dict__' in dir(_ptr)
-
-class _ptrEntry(ExtRegistryEntry):
-    _type_ = _ptr
-
-    def compute_annotation(self):
-        from rpython.rtyper.llannotation import SomePtr
-        return SomePtr(typeOf(self.instance))
-
-class SomePtr(SomeObject):
-    knowntype = _ptr
-    immutable = True
-
-    def __init__(self, ll_ptrtype):
-        assert isinstance(ll_ptrtype, Ptr)
-        self.ll_ptrtype = ll_ptrtype
-
-    def can_be_none(self):
-        return False
-
-    def getattr(self, s_attr):
-        from rpython.rtyper.llannotation import SomeLLADTMeth, ll_to_annotation
-        if not s_attr.is_constant():
-            raise AnnotatorError("getattr on ptr %r with non-constant "
-                                 "field-name" % self.ll_ptrtype)
-        example = self.ll_ptrtype._example()
-        try:
-            v = example._lookup_adtmeth(s_attr.const)
-        except AttributeError:
-            v = getattr(example, s_attr.const)
-            return ll_to_annotation(v)
-        else:
-            if isinstance(v, MethodType):
-                ll_ptrtype = typeOf(v.im_self)
-                assert isinstance(ll_ptrtype, (Ptr, InteriorPtr))
-                return SomeLLADTMeth(ll_ptrtype, v.im_func)
-            return immutablevalue(v)
-    getattr.can_only_throw = []
-
-    def len(self):
-        length = self.ll_ptrtype._example()._fixedlength()
-        if length is None:
-            return SomeObject.len(self)
-        else:
-            return immutablevalue(length)
-
-    def setattr(self, s_attr, s_value): # just doing checking
-        from rpython.rtyper.llannotation import annotation_to_lltype
-        if not s_attr.is_constant():
-            raise AnnotatorError("setattr on ptr %r with non-constant "
-                                 "field-name" % self.ll_ptrtype)
-        example = self.ll_ptrtype._example()
-        if getattr(example, s_attr.const) is not None:  # ignore Void s_value
-            v_lltype = annotation_to_lltype(s_value)
-            setattr(example, s_attr.const, v_lltype._defl())
-
-    def call(self, args):
-        from rpython.rtyper.llannotation import (
-            annotation_to_lltype, ll_to_annotation)
-        args_s, kwds_s = args.unpack()
-        if kwds_s:
-            raise Exception("keyword arguments to call to a low-level fn ptr")
-        info = 'argument to ll function pointer call'
-        llargs = [annotation_to_lltype(s_arg, info)._defl()
-                  for s_arg in args_s]
-        v = self.ll_ptrtype._example()(*llargs)
-        return ll_to_annotation(v)
-
-    def bool(self):
-        result = SomeBool()
-        if self.is_constant():
-            result.const = bool(self.const)
-        return result
-
 
 class _interior_ptr(_abstract_ptr):
     __slots__ = ('_parent', '_offsets')
@@ -1600,7 +1432,7 @@ class _interior_ptr(_abstract_ptr):
         self._set_offsets(_offsets)
 
     def __nonzero__(self):
-        raise RuntimeError("do not test an interior pointer for nullity")
+        raise RuntimeError, "do not test an interior pointer for nullity"
 
     def _get_obj(self):
         ob = self._parent
@@ -1630,8 +1462,9 @@ class _interior_ptr(_abstract_ptr):
             assert T._gckind == 'raw'
             val = _interior_ptr(T, self._parent, self._offsets + [offset])
         return val
-
-
+    
+    
+        
 assert not '__dict__' in dir(_interior_ptr)
 
 class _container(object):
@@ -1745,10 +1578,10 @@ def _struct_variety(flds, cache={}):
         return cache[tag]
     except KeyError:
         class _struct1(_struct):
-            __slots__ = tag + ('__arena_location__',)
+            __slots__ = flds
         cache[tag] = _struct1
         return _struct1
-
+ 
 #for pickling support:
 def _get_empty_instance_of_struct_variety(flds):
     cls = _struct_variety(flds)
@@ -1759,28 +1592,22 @@ class _struct(_parentable):
 
     __slots__ = ('_hash_cache_', '_compilation_info')
 
-    def __new__(self, TYPE, n=None, initialization=None, parent=None,
-                parentindex=None):
-        if isinstance(TYPE, FixedSizeArray):
-            my_variety = _fixedsizearray
-        else:
-            my_variety = _struct_variety(TYPE._names)
+    def __new__(self, TYPE, n=None, initialization=None, parent=None, parentindex=None):
+        my_variety = _struct_variety(TYPE._names)
         return object.__new__(my_variety)
 
-    def __init__(self, TYPE, n=None, initialization=None, parent=None,
-                 parentindex=None):
+    def __init__(self, TYPE, n=None, initialization=None, parent=None, parentindex=None):
         _parentable.__init__(self, TYPE)
         if n is not None and TYPE._arrayfld is None:
             raise TypeError("%r is not variable-sized" % (TYPE,))
         if n is None and TYPE._arrayfld is not None:
             raise TypeError("%r is variable-sized" % (TYPE,))
+        first, FIRSTTYPE = TYPE._first_struct()
         for fld, typ in TYPE._flds.items():
             if fld == TYPE._arrayfld:
-                value = _array(typ, n, initialization=initialization,
-                               parent=self, parentindex=fld)
+                value = _array(typ, n, initialization=initialization, parent=self, parentindex=fld)
             else:
-                value = typ._allocate(initialization=initialization,
-                                      parent=self, parentindex=fld)
+                value = typ._allocate(initialization=initialization, parent=self, parentindex=fld)
             setattr(self, fld, value)
         if parent is not None:
             self._setparentstructure(parent, parentindex)
@@ -1816,60 +1643,34 @@ class _struct(_parentable):
             raise UninitializedMemoryAccess("%r.%s"%(self, field_name))
         return r
 
-
-class _fixedsizearray(_struct):
-    def __init__(self, TYPE, n=None, initialization=None, parent=None,
-                 parentindex=None):
-        _parentable.__init__(self, TYPE)
-        if n is not None:
-            raise TypeError("%r is not variable-sized" % (TYPE,))
-        typ = TYPE.OF
-        storage = []
-        for i, fld in enumerate(TYPE._names):
-            value = typ._allocate(initialization=initialization,
-                                  parent=self, parentindex=fld)
-            storage.append(value)
-        self._items = storage
-        if parent is not None:
-            self._setparentstructure(parent, parentindex)
-
+    # for FixedSizeArray kind of structs:
+    
     def getlength(self):
+        assert isinstance(self._TYPE, FixedSizeArray)
         return self._TYPE.length
 
     def getbounds(self):
         return 0, self.getlength()
 
     def getitem(self, index, uninitialized_ok=False):
-        assert 0 <= index < self.getlength()
-        return self._items[index]
+        assert isinstance(self._TYPE, FixedSizeArray)
+        return self._getattr('item%d' % index, uninitialized_ok)
 
     def setitem(self, index, value):
-        assert 0 <= index < self.getlength()
-        self._items[index] = value
+        assert isinstance(self._TYPE, FixedSizeArray)
+        setattr(self, 'item%d' % index, value)
 
-    def __getattr__(self, name):
-        # obscure
-        if name.startswith("item"):
-            return self.getitem(int(name[len('item'):]))
-        return _struct.__getattr__(self, name)
-
-    def __setattr__(self, name, value):
-        if name.startswith("item"):
-            self.setitem(int(name[len('item'):]), value)
-            return
-        _struct.__setattr__(self, name, value)
 
 class _array(_parentable):
     _kind = "array"
 
-    __slots__ = ('items', '__arena_location__',)
+    __slots__ = ('items',)
 
-    def __init__(self, TYPE, n, initialization=None, parent=None,
-                 parentindex=None):
+    def __init__(self, TYPE, n, initialization=None, parent=None, parentindex=None):
         if not is_valid_int(n):
-            raise TypeError("array length must be an int")
+            raise TypeError, "array length must be an int"
         if n < 0:
-            raise ValueError("negative array length")
+            raise ValueError, "negative array length"
         _parentable.__init__(self, TYPE)
         myrange = self._check_range(n)
         self.items = [TYPE.OF._allocate(initialization=initialization,
@@ -2034,8 +1835,7 @@ class _subarray(_parentable):     # only for direct_fieldptr()
                     if not key._was_freed():
                         newcache[key] = value
                 except RuntimeError:
-                    # ignore "accessing subxxx, but already gc-ed parent"
-                    pass
+                    pass    # ignore "accessing subxxx, but already gc-ed parent"
             if newcache:
                 _subarray._cache[T] = newcache
             else:
@@ -2091,10 +1891,6 @@ class _func(_container):
         attrs.setdefault('_name', '?')
         attrs.setdefault('_callable', None)
         self.__dict__.update(attrs)
-        if '_callable' in attrs and hasattr(attrs['_callable'],
-                                            '_compilation_info'):
-            self.__dict__['compilation_info'] = \
-                attrs['_callable']._compilation_info
 
     def __repr__(self):
         return '<%s>' % (self,)
@@ -2163,7 +1959,7 @@ class _opaque(_parentable):
         # if we are an opaque containing a normal Struct/GcStruct,
         # unwrap it
         if hasattr(self, 'container'):
-            # an integer, cast to a ptr, cast to an opaque
+            # an integer, cast to a ptr, cast to an opaque    
             if type(self.container) is int:
                 return self.container
             if getattr(self.container, '_carry_around_for_tests', False):
@@ -2190,75 +1986,34 @@ def malloc(T, n=None, flavor='gc', immortal=False, zero=False,
         assert n is None
         o = _opaque(T, initialization=initialization)
     else:
-        raise TypeError("malloc: unmallocable type")
+        raise TypeError, "malloc: unmallocable type"
     if flavor == 'gc' and T._gckind != 'gc' and not immortal:
-        raise TypeError("gc flavor malloc of a non-GC non-immortal structure")
+        raise TypeError, "gc flavor malloc of a non-GC non-immortal structure"
     if flavor == "raw" and not immortal and track_allocation:
         leakfinder.remember_malloc(o, framedepth=2)
     solid = immortal or flavor == 'raw'
     return _ptr(Ptr(T), o, solid)
 
-@analyzer_for(malloc)
-def ann_malloc(s_T, s_n=None, s_flavor=None, s_zero=None,
-               s_track_allocation=None, s_add_memory_pressure=None):
-    assert (s_n is None or s_n.knowntype == int
-            or issubclass(s_n.knowntype, base_int))
-    assert s_T.is_constant()
-    if s_n is not None:
-        n = 1
-    else:
-        n = None
-    if s_zero:
-        assert s_zero.is_constant()
-    if s_flavor is None:
-        p = malloc(s_T.const, n)
-        r = SomePtr(typeOf(p))
-    else:
-        assert s_flavor.is_constant()
-        assert s_track_allocation is None or s_track_allocation.is_constant()
-        assert (s_add_memory_pressure is None or
-                s_add_memory_pressure.is_constant())
-        # not sure how to call malloc() for the example 'p' in the
-        # presence of s_extraargs
-        r = SomePtr(Ptr(s_T.const))
-    return r
-
-
 def free(p, flavor, track_allocation=True):
     if flavor.startswith('gc'):
-        raise TypeError("gc flavor free")
+        raise TypeError, "gc flavor free"
     T = typeOf(p)
     if not isinstance(T, Ptr) or p._togckind() != 'raw':
-        raise TypeError("free(): only for pointers to non-gc containers")
+        raise TypeError, "free(): only for pointers to non-gc containers"
     if track_allocation:
         leakfinder.remember_free(p._obj0)
     p._obj0._free()
 
-@analyzer_for(free)
-def ann_free(s_p, s_flavor, s_track_allocation=None):
-    assert s_flavor.is_constant()
-    assert s_track_allocation is None or s_track_allocation.is_constant()
-    # same problem as in malloc(): some flavors are not easy to
-    # malloc-by-example
-    #T = s_p.ll_ptrtype.TO
-    #p = malloc(T, flavor=s_flavor.const)
-    #free(p, flavor=s_flavor.const)
-
-
 def render_immortal(p, track_allocation=True):
     T = typeOf(p)
     if not isinstance(T, Ptr) or p._togckind() != 'raw':
-        raise TypeError("free(): only for pointers to non-gc containers")
+        raise TypeError, "free(): only for pointers to non-gc containers"
     if track_allocation:
         leakfinder.remember_free(p._obj0)
 
-@analyzer_for(render_immortal)
-def ann_render_immortal(s_p, s_track_allocation=None):
-    assert s_track_allocation is None or s_track_allocation.is_constant()
-
-def _make_scoped_allocator(T, zero):
+def _make_scoped_allocator(T):
     class ScopedAlloc:
-        def __init__(self, n=None):
+        def __init__(self, n=None, zero=False):
             if n is None:
                 self.buf = malloc(T, flavor='raw', zero=zero)
             else:
@@ -2282,12 +2037,12 @@ def scoped_alloc(T, n=None, zero=False):
             ...use array...
         ...it's freed now.
     """
-    return _make_scoped_allocator(T, zero)(n=n)
-scoped_alloc._annspecialcase_ = 'specialize:arg(0, 2)'
+    return _make_scoped_allocator(T)(n=n, zero=zero)
+scoped_alloc._annspecialcase_ = 'specialize:arg(0)'
 
 def functionptr(TYPE, name, **attrs):
     if not isinstance(TYPE, FuncType):
-        raise TypeError("functionptr() for FuncTypes only")
+        raise TypeError, "functionptr() for FuncTypes only"
     try:
         hash(tuple(attrs.items()))
     except TypeError:
@@ -2295,60 +2050,18 @@ def functionptr(TYPE, name, **attrs):
     o = _func(TYPE, _name=name, **attrs)
     return _ptr(Ptr(TYPE), o)
 
-def _getconcretetype(v):
-    return v.concretetype
-
-def getfunctionptr(graph, getconcretetype=_getconcretetype):
-    """Return callable given a Python function."""
-    llinputs = [getconcretetype(v) for v in graph.getargs()]
-    lloutput = getconcretetype(graph.getreturnvar())
-
-    FT = FuncType(llinputs, lloutput)
-    name = graph.name
-    if hasattr(graph, 'func') and callable(graph.func):
-        # the Python function object can have _llfnobjattrs_, specifying
-        # attributes that are forced upon the functionptr().  The idea
-        # for not passing these extra attributes as arguments to
-        # getcallable() itself is that multiple calls to getcallable()
-        # for the same graph should return equal functionptr() objects.
-        if hasattr(graph.func, '_llfnobjattrs_'):
-            fnobjattrs = graph.func._llfnobjattrs_.copy()
-            # can specify a '_name', but use graph.name by default
-            name = fnobjattrs.pop('_name', name)
-        else:
-            fnobjattrs = {}
-        # _callable is normally graph.func, but can be overridden:
-        # see fakeimpl in extfunc.py
-        _callable = fnobjattrs.pop('_callable', graph.func)
-        return functionptr(FT, name, graph=graph, _callable=_callable,
-                           **fnobjattrs)
-    else:
-        return functionptr(FT, name, graph=graph)
-
 def nullptr(T):
     return Ptr(T)._defl()
 
-@analyzer_for(nullptr)
-def ann_nullptr(T):
-    assert T.is_constant()
-    p = nullptr(T.const)
-    return immutablevalue(p)
-
-
 def opaqueptr(TYPE, name, **attrs):
     if not isinstance(TYPE, OpaqueType):
-        raise TypeError("opaqueptr() for OpaqueTypes only")
+        raise TypeError, "opaqueptr() for OpaqueTypes only"
     o = _opaque(TYPE, _name=name, **attrs)
     return _ptr(Ptr(TYPE), o, solid=True)
 
 
 def cast_ptr_to_int(ptr):
     return ptr._cast_to_int()
-
-@analyzer_for(cast_ptr_to_int)
-def ann_cast_ptr_to_int(s_ptr): # xxx
-    return SomeInteger()
-
 
 def cast_int_to_ptr(PTRTYPE, oddint):
     if oddint == 0:
@@ -2357,36 +2070,26 @@ def cast_int_to_ptr(PTRTYPE, oddint):
         raise ValueError("only odd integers can be cast back to ptr")
     return _ptr(PTRTYPE, oddint, solid=True)
 
-@analyzer_for(cast_int_to_ptr)
-def ann_cast_int_to_ptr(PtrT, s_int):
-    assert PtrT.is_constant()
-    return SomePtr(ll_ptrtype=PtrT.const)
-
-
-def attachRuntimeTypeInfo(GCSTRUCT, funcptr=None, destrptr=None):
+def attachRuntimeTypeInfo(GCSTRUCT, funcptr=None, destrptr=None,
+                          customtraceptr=None):
     if not isinstance(GCSTRUCT, RttiStruct):
-        raise TypeError("expected a RttiStruct: %s" % GCSTRUCT)
-    GCSTRUCT._attach_runtime_type_info_funcptr(funcptr, destrptr)
+        raise TypeError, "expected a RttiStruct: %s" % GCSTRUCT
+    GCSTRUCT._attach_runtime_type_info_funcptr(funcptr, destrptr,
+                                               customtraceptr)
     return _ptr(Ptr(RuntimeTypeInfo), GCSTRUCT._runtime_type_info)
 
 def getRuntimeTypeInfo(GCSTRUCT):
     if not isinstance(GCSTRUCT, RttiStruct):
-        raise TypeError("expected a RttiStruct: %s" % GCSTRUCT)
+        raise TypeError, "expected a RttiStruct: %s" % GCSTRUCT
     if GCSTRUCT._runtime_type_info is None:
-        raise ValueError("no attached runtime type info for GcStruct %s" %
+        raise ValueError, ("no attached runtime type info for GcStruct %s" % 
                            GCSTRUCT._name)
     return _ptr(Ptr(RuntimeTypeInfo), GCSTRUCT._runtime_type_info)
-
-@analyzer_for(getRuntimeTypeInfo)
-def ann_getRuntimeTypeInfo(T):
-    assert T.is_constant()
-    return immutablevalue(getRuntimeTypeInfo(T.const))
-
 
 def runtime_type_info(p):
     T = typeOf(p)
     if not isinstance(T, Ptr) or not isinstance(T.TO, RttiStruct):
-        raise TypeError("runtime_type_info on non-RttiStruct pointer: %s" % p)
+        raise TypeError, "runtime_type_info on non-RttiStruct pointer: %s" % p
     struct = p._obj
     top_parent = top_container(struct)
     result = getRuntimeTypeInfo(top_parent._TYPE)
@@ -2396,31 +2099,19 @@ def runtime_type_info(p):
         T = typeOf(query_funcptr).TO.ARGS[0]
         result2 = query_funcptr(cast_pointer(T, p))
         if result != result2:
-            raise RuntimeError("runtime type-info function for %s:\n"
+            raise RuntimeError, ("runtime type-info function for %s:\n"
                                  "        returned: %s,\n"
                                  "should have been: %s" % (p, result2, result))
     return result
 
-@analyzer_for(runtime_type_info)
-def ann_runtime_type_info(s_p):
-    assert isinstance(s_p, SomePtr), \
-        "runtime_type_info of non-pointer: %r" % s_p
-    return SomePtr(typeOf(runtime_type_info(s_p.ll_ptrtype._example())))
-
-
 def identityhash(p):
     """Returns the lltype-level hash of the given GcStruct.
-    Not for NULL. See rlib.objectmodel.compute_identity_hash() for more
+    Also works with most ootype objects.  Not for NULL.
+    See rlib.objectmodel.compute_identity_hash() for more
     information about the RPython-level meaning of this.
     """
     assert p
     return p._identityhash()
-
-@analyzer_for(identityhash)
-def ann_identityhash(s_obj):
-    assert isinstance(s_obj, SomePtr)
-    return SomeInteger()
-
 
 def identityhash_nocache(p):
     """Version of identityhash() to use from backends that don't care about
@@ -2503,5 +2194,3 @@ def dissect_ll_instance(v, t=None, memo=None):
         for item in v.items:
             for i in dissect_ll_instance(item, t.OF, memo):
                 yield i
-
-

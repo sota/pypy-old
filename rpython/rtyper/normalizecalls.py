@@ -6,7 +6,6 @@ from rpython.rlib.objectmodel import ComputedIntSymbolic
 from rpython.rtyper.error import TyperError
 from rpython.rtyper.rmodel import getgcflavor
 from rpython.tool.sourcetools import valid_identifier
-from rpython.annotator.classdesc import ClassDesc
 
 
 def normalize_call_familes(annotator):
@@ -20,6 +19,15 @@ def normalize_call_familes(annotator):
 
 def normalize_calltable(annotator, callfamily):
     """Try to normalize all rows of a table."""
+    overridden = False
+    for desc in callfamily.descs:
+        if getattr(desc, 'overridden', False):
+            overridden = True
+    if overridden:
+        if len(callfamily.descs) > 1:
+            raise Exception("non-static call to overridden function")
+        callfamily.overridden = True
+        return
     nshapes = len(callfamily.calltables)
     for shape, table in callfamily.calltables.items():
         for row in table:
@@ -54,8 +62,6 @@ def raise_call_table_too_complex_error(callfamily, annotator):
             msg.append("the following functions:")
             msg.append("    %s" % ("\n    ".join(pfg), ))
             msg.append("are called with inconsistent numbers of arguments")
-            msg.append("(and/or the argument names are different, which is"
-                       " not supported in this case)")
             if shape1[0] != shape2[0]:
                 msg.append("sometimes with %s arguments, sometimes with %s" % (shape1[0], shape2[0]))
             else:
@@ -86,8 +92,9 @@ def normalize_calltable_row_signature(annotator, shape, row):
     else:
         return False   # nothing to do, all signatures already match
 
-    shape_cnt, shape_keys, shape_star = shape
-    assert not shape_star, "should have been removed at this stage"
+    shape_cnt, shape_keys, shape_star, shape_stst = shape
+    assert not shape_star, "XXX not implemented"
+    assert not shape_stst, "XXX not implemented"
 
     # for the first 'shape_cnt' arguments we need to generalize to
     # a common type
@@ -203,18 +210,18 @@ def normalize_calltable_row_annotation(annotator, graphs):
 
 # ____________________________________________________________
 
-def merge_classpbc_getattr_into_classdef(annotator):
+def merge_classpbc_getattr_into_classdef(rtyper):
     # code like 'some_class.attr' will record an attribute access in the
     # PBC access set of the family of classes of 'some_class'.  If the classes
     # have corresponding ClassDefs, they are not updated by the annotator.
     # We have to do it now.
-    all_families = annotator.bookkeeper.classpbc_attr_families
+    all_families = rtyper.annotator.bookkeeper.classpbc_attr_families
     for attrname, access_sets in all_families.items():
         for access_set in access_sets.infos():
             descs = access_set.descs
             if len(descs) <= 1:
                 continue
-            if not isinstance(descs.iterkeys().next(), ClassDesc):
+            if not isinstance(descs.iterkeys().next(), description.ClassDesc):
                 continue
             classdefs = [desc.getuniqueclassdef() for desc in descs]
             commonbase = classdefs[0]
@@ -223,8 +230,9 @@ def merge_classpbc_getattr_into_classdef(annotator):
                 if commonbase is None:
                     raise TyperError("reading attribute %r: no common base "
                                      "class for %r" % (attrname, descs.keys()))
-            extra_access_sets = commonbase.extra_access_sets
-            if commonbase.repr is not None:
+            extra_access_sets = rtyper.class_pbc_attributes.setdefault(
+                commonbase, {})
+            if commonbase in rtyper.class_reprs:
                 assert access_set in extra_access_sets # minimal sanity check
                 continue
             access_set.commonbase = commonbase
@@ -242,7 +250,7 @@ def create_class_constructors(annotator):
         if len(family.descs) <= 1:
             continue
         descs = family.descs.keys()
-        if not isinstance(descs[0], ClassDesc):
+        if not isinstance(descs[0], description.ClassDesc):
             continue
         # Note that if classes are in the same callfamily, their __init__
         # attribute must be in the same attrfamily as well.
@@ -294,16 +302,12 @@ def create_instantiate_function(annotator, classdef):
 
 # ____________________________________________________________
 
-class TooLateForNewSubclass(Exception):
-    pass
-
 class TotalOrderSymbolic(ComputedIntSymbolic):
 
     def __init__(self, orderwitness, peers):
         self.orderwitness = orderwitness
         self.peers = peers
         self.value = None
-        self._with_subclasses = None    # unknown
         peers.append(self)
 
     def __cmp__(self, other):
@@ -320,34 +324,12 @@ class TotalOrderSymbolic(ComputedIntSymbolic):
     def __rsub__(self, other):
         return other - self.compute_fn()
 
-    def check_any_subclass_in_peer_list(self, i):
-        # check if the next peer, in order, is or not the end
-        # marker for this start marker
-        assert self.peers[i] is self
-        return self.peers[i + 1].orderwitness != self.orderwitness + [MAX]
-
-    def number_with_subclasses(self):
-        # Return True or False depending on whether this is the
-        # subclassrange_min corresponding to a class which has subclasses
-        # or not.  If this is called and returns False, then adding later
-        # new subclasses will crash in compute_fn().
-        if self._with_subclasses is None:     # unknown so far
-            self.peers.sort()
-            i = self.peers.index(self)
-            self._with_subclasses = self.check_any_subclass_in_peer_list(i)
-        return self._with_subclasses
-
     def compute_fn(self):
         if self.value is None:
             self.peers.sort()
             for i, peer in enumerate(self.peers):
                 assert peer.value is None or peer.value == i
                 peer.value = i
-                #
-                if peer._with_subclasses is False:
-                    if peer.check_any_subclass_in_peer_list(i):
-                        raise TooLateForNewSubclass
-                #
             assert self.value is not None
         return self.value
 
@@ -399,13 +381,13 @@ def get_unique_cdef_id(cdef):
 
 # ____________________________________________________________
 
-def perform_normalizations(annotator):
-    create_class_constructors(annotator)
-    annotator.frozen += 1
+def perform_normalizations(rtyper):
+    create_class_constructors(rtyper.annotator)
+    rtyper.annotator.frozen += 1
     try:
-        normalize_call_familes(annotator)
-        merge_classpbc_getattr_into_classdef(annotator)
-        assign_inheritance_ids(annotator)
+        normalize_call_familes(rtyper.annotator)
+        merge_classpbc_getattr_into_classdef(rtyper)
+        assign_inheritance_ids(rtyper.annotator)
     finally:
-        annotator.frozen -= 1
-    create_instantiate_functions(annotator)
+        rtyper.annotator.frozen -= 1
+    create_instantiate_functions(rtyper.annotator)

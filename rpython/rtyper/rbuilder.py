@@ -49,15 +49,12 @@ class AbstractStringBuilderRepr(Repr):
         hop.exception_cannot_occur()
         return hop.gendirectcall(self.ll_build, *vlist)
 
-    def rtype_bool(self, hop):
+    def rtype_is_true(self, hop):
         vlist = hop.inputargs(self)
         hop.exception_cannot_occur()
-        return hop.gendirectcall(self.ll_bool, *vlist)
+        return hop.gendirectcall(self.ll_is_true, *vlist)
 
     def convert_const(self, value):
-        if value is None:
-            return self.empty()
-        s = value.build()
-        ll_obj = self.ll_new(len(s))
-        self.ll_append(ll_obj, self.convert_to_ll(s))
-        return ll_obj
+        if not value is None:
+            raise TypeError("Prebuilt builedrs that are not none unsupported")
+        return self.empty()

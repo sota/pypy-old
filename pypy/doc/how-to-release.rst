@@ -1,23 +1,9 @@
-The PyPy Release Process
-========================
 
-Release Policy
-++++++++++++++
-
-We try to create a stable release a few times a year. These are released on
-a branch named like release-2.x or release-4.x, and each release is tagged,
-for instance release-4.0.1. 
-
-After release, inevitably there are bug fixes. It is the responsibility of
-the commiter who fixes a bug to make sure this fix is on the release branch,
-so that we can then create a tagged bug-fix release, which will hopefully
-happen more often than stable releases.
-
-How to Create a PyPy Release
-++++++++++++++++++++++++++++
+Making a PyPy Release
+=======================
 
 Overview
---------
+---------
 
 As a meta rule setting up issues in the tracker for items here may help not
 forgetting things. A set of todo files may also work.
@@ -26,55 +12,37 @@ Check and prioritize all issues for the release, postpone some if necessary,
 create new  issues also as necessary. An important thing is to get
 the documentation into an up-to-date state!
 
-
 Release Steps
--------------
+----------------
 
-* If needed, make a release branch
-* Bump the
+* at code freeze make a release branch using release-x.x.x in mercurial
+  IMPORTANT: bump the
   pypy version number in module/sys/version.py and in
-  module/cpyext/include/patchlevel.h and . The branch
-  will capture the revision number of this change for the release.
-
-  Some of the next updates may be done before or after branching; make
+  module/cpyext/include/patchlevel.h, notice that the branch
+  will capture the revision number of this change for the release;
+  some of the next updates may be done before or after branching; make
   sure things are ported back to the trunk and to the branch as
-  necessary.
+  necessary
 * update pypy/doc/contributor.rst (and possibly LICENSE)
-  pypy/doc/tool/makecontributor.py generates the list of contributors
 * rename pypy/doc/whatsnew_head.rst to whatsnew_VERSION.rst
-  create a fresh whatsnew_head.rst after the release
-  and add the new file to  pypy/doc/index-of-whatsnew.rst
-* go to pypy/tool/release and run
-  ``force-builds.py <release branch>``
-  The following JIT binaries should be built, however, we need more buildbots
-  windows, linux-32, linux-64, osx64, armhf-raring, armhf-raspberrian, armel,
-  freebsd64 
-
+  and create a fresh whatsnew_head.rst after the release
+* update README
+* change the tracker to have a new release tag to file bugs against
+* go to pypy/tool/release and run:
+  force-builds.py /release/<release branch>
 * wait for builds to complete, make sure there are no failures
-* download the builds, repackage binaries. Tag the release version
-  and download and repackage source from bitbucket. You may find it
-  convenient to use the ``repackage.sh`` script in pypy/tool/release to do this. 
+* run pypy/tool/release/make_release.py, this will build necessary binaries
+  and upload them to pypy.org
 
-  Otherwise repackage and upload source "-src.tar.bz2" to bitbucket
-  and to cobra, as some packagers prefer a clearly labeled source package
-  ( download e.g.  https://bitbucket.org/pypy/pypy/get/release-2.5.x.tar.bz2,
-  unpack, rename the top-level directory to "pypy-2.5.0-src", repack, and upload)
-
-* Upload binaries to https://bitbucket.org/pypy/pypy/downloads
+  Following binaries should be built, however, we need more buildbots:
+    JIT: windows, linux, os/x
+    no JIT: windows, linux, os/x
+    sandbox: linux, os/x
 
 * write release announcement pypy/doc/release-x.y(.z).txt
-
-  The release announcement should contain a direct link to the download page
-
-* Add the new files to  pypy/doc/index-of-{whatsnew,release-notes}.rst
-
+  the release announcement should contain a direct link to the download page
 * update pypy.org (under extradoc/pypy.org), rebuild and commit
 
 * post announcement on morepypy.blogspot.com
-* send announcements to twitter.com, pypy-dev, python-list,
+* send announcements to pypy-dev, python-list,
   python-announce, python-dev ...
-
-* add a tag on the pypy/jitviewer repo that corresponds to pypy release
-* add a tag on the codespeed web site that corresponds to pypy release
-* update the version number in {rpython,pypy}/doc/conf.py.
-* revise versioning at https://readthedocs.org/projects/pypy

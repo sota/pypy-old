@@ -9,12 +9,7 @@ import sys
 import types
 import math
 import inspect
-from collections import OrderedDict
-
-from rpython.tool.sourcetools import rpython_wrapper, func_with_new_name
-from rpython.rtyper.extregistry import ExtRegistryEntry
-from rpython.flowspace.specialcase import register_flow_sc
-from rpython.flowspace.model import Constant
+from rpython.tool.sourcetools import rpython_wrapper
 
 # specialize is a decorator factory for attaching _annspecialcase_
 # attributes to functions: for example
@@ -28,6 +23,7 @@ from rpython.flowspace.model import Constant
 # def f(...
 #
 
+from rpython.rtyper.extregistry import ExtRegistryEntry
 
 class _Specialize(object):
     def memo(self):
@@ -114,8 +110,6 @@ class _Specialize(object):
 
 specialize = _Specialize()
 
-NOT_CONSTANT = object()      # to use in enforceargs()
-
 def enforceargs(*types_, **kwds):
     """ Decorate a function with forcing of RPython-level types on arguments.
     None means no enforcing.
@@ -126,7 +120,7 @@ def enforceargs(*types_, **kwds):
     """
     typecheck = kwds.pop('typecheck', True)
     if types_ and kwds:
-        raise TypeError('Cannot mix positional arguments and keywords')
+        raise TypeError, 'Cannot mix positional arguments and keywords'
 
     if not typecheck:
         def decorator(f):
@@ -181,7 +175,7 @@ def enforceargs(*types_, **kwds):
                 if not s_expected.contains(s_argtype):
                     msg = "%s argument %r must be of type %s" % (
                         f.func_name, srcargs[i], expected_type)
-                    raise TypeError(msg)
+                    raise TypeError, msg
         #
         template = """
             def {name}({arglist}):
@@ -205,11 +199,6 @@ def enforceargs(*types_, **kwds):
         return result
     return decorator
 
-def always_inline(func):
-    """ mark the function as to-be-inlined by the RPython optimizations (not
-    the JIT!), no matter its size."""
-    func._always_inline_ = True
-    return func
 
 
 # ____________________________________________________________
@@ -275,10 +264,12 @@ class CDefinedIntSymbolic(Symbolic):
         return lltype.Signed
 
 malloc_zero_filled = CDefinedIntSymbolic('MALLOC_ZERO_FILLED', default=0)
+running_on_llinterp = CDefinedIntSymbolic('RUNNING_ON_LLINTERP', default=1)
+# running_on_llinterp is meant to have the value 0 in all backends
 
 # ____________________________________________________________
 
-def instantiate(cls, nonmovable=False):
+def instantiate(cls):
     "Create an empty instance of 'cls'."
     if isinstance(cls, type):
         return cls.__new__(cls)
@@ -287,25 +278,7 @@ def instantiate(cls, nonmovable=False):
 
 def we_are_translated():
     return False
-
-@register_flow_sc(we_are_translated)
-def sc_we_are_translated(ctx):
-    return Constant(True)
-
-def register_replacement_for(replaced_function, sandboxed_name=None):
-    def wrap(func):
-        from rpython.rtyper.extregistry import ExtRegistryEntry
-        class ExtRegistry(ExtRegistryEntry):
-            _about_ = replaced_function
-            def compute_annotation(self):
-                if sandboxed_name:
-                    config = self.bookkeeper.annotator.translator.config
-                    if config.translation.sandbox:
-                        func._sandbox_external_name = sandboxed_name
-                        func._dont_inline_ = True
-                return self.bookkeeper.immutablevalue(func)
-        return func
-    return wrap
+# annotation -> True (replaced by the flow objspace)
 
 def keepalive_until_here(*values):
     pass
@@ -333,25 +306,6 @@ def int_to_bytearray(i):
     # XXX this can be made more efficient in the future
     return bytearray(str(i))
 
-def fetch_translated_config():
-    """Returns the config that is current when translating.
-    Returns None if not translated.
-    """
-    return None
-
-class Entry(ExtRegistryEntry):
-    _about_ = fetch_translated_config
-
-    def compute_result_annotation(self):
-        config = self.bookkeeper.annotator.translator.config
-        return self.bookkeeper.immutablevalue(config)
-
-    def specialize_call(self, hop):
-        from rpython.rtyper.lltypesystem import lltype
-        translator = hop.rtyper.annotator.translator
-        hop.exception_cannot_occur()
-        return hop.inputconst(lltype.Void, translator.config)
-
 # ____________________________________________________________
 
 class FREED_OBJECT(object):
@@ -378,10 +332,9 @@ class Entry(ExtRegistryEntry):
     _about_ = newlist_hint
 
     def compute_result_annotation(self, s_sizehint):
-        from rpython.annotator.model import SomeInteger, AnnotatorError
+        from rpython.annotator.model import SomeInteger
 
-        if not isinstance(s_sizehint, SomeInteger):
-            raise AnnotatorError("newlist_hint() argument must be an int")
+        assert isinstance(s_sizehint, SomeInteger)
         s_l = self.bookkeeper.newlist()
         s_l.listdef.listitem.resize()
         return s_l
@@ -406,13 +359,8 @@ class Entry(ExtRegistryEntry):
 
     def compute_result_annotation(self, s_l, s_sizehint):
         from rpython.annotator import model as annmodel
-        if annmodel.s_None.contains(s_l):
-            return   # first argument is only None so far, but we
-                     # expect a generalization later
-        if not isinstance(s_l, annmodel.SomeList):
-            raise annmodel.AnnotatorError("First argument must be a list")
-        if not isinstance(s_sizehint, annmodel.SomeInteger):
-            raise annmodel.AnnotatorError("Second argument must be an integer")
+        assert isinstance(s_l, annmodel.SomeList)
+        assert isinstance(s_sizehint, annmodel.SomeInteger)
         s_l.listdef.listitem.resize()
 
     def specialize_call(self, hop):
@@ -435,8 +383,14 @@ def compute_hash(x):
 
     Note that this can return 0 or -1 too.
 
-    It returns the same number, both before and after translation.
-    Dictionaries don't need to be rehashed after translation.
+    Behavior across translation:
+
+      * on lltypesystem, it always returns the same number, both
+        before and after translation.  Dictionaries don't need to
+        be rehashed after translation.
+
+      * on ootypesystem, the value changes because of translation.
+        Dictionaries need to be rehashed.
     """
     if isinstance(x, (str, unicode)):
         return _hash_string(x)
@@ -471,18 +425,15 @@ def compute_unique_id(x):
     object that turns into a GC object.  This operation can be very
     costly depending on the garbage collector.  To remind you of this
     fact, we don't support id(x) directly.
+    (XXX not implemented on ootype, falls back to compute_identity_hash)
     """
-    # The assumption with RPython is that a regular integer is wide enough
-    # to store a pointer.  The following intmask() should not loose any
-    # information.
-    from rpython.rlib.rarithmetic import intmask
-    return intmask(id(x))
+    return id(x)      # XXX need to return r_longlong on some platforms
 
 def current_object_addr_as_int(x):
-    """A cheap version of id(x).
-
-    The current memory location of an object can change over time for moving
-    GCs.
+    """A cheap version of id(x).  The current memory location of an
+    object can change over time for moving GCs.  Also note that on
+    ootypesystem this typically doesn't return the real address but
+    just the same as compute_hash(x).
     """
     from rpython.rlib.rarithmetic import intmask
     return intmask(id(x))
@@ -567,8 +518,12 @@ class Entry(ExtRegistryEntry):
     def specialize_call(self, hop):
         from rpython.rtyper.lltypesystem import lltype
         vobj, = hop.inputargs(hop.args_r[0])
-        ok = (isinstance(vobj.concretetype, lltype.Ptr) and
-                vobj.concretetype.TO._gckind == 'gc')
+        if hop.rtyper.type_system.name == 'lltypesystem':
+            ok = (isinstance(vobj.concretetype, lltype.Ptr) and
+                  vobj.concretetype.TO._gckind == 'gc')
+        else:
+            from rpython.rtyper.ootypesystem import ootype
+            ok = isinstance(vobj.concretetype, ootype.OOType)
         if not ok:
             from rpython.rtyper.error import TyperError
             raise TyperError("compute_identity_hash() cannot be applied to"
@@ -586,8 +541,12 @@ class Entry(ExtRegistryEntry):
     def specialize_call(self, hop):
         from rpython.rtyper.lltypesystem import lltype
         vobj, = hop.inputargs(hop.args_r[0])
-        ok = (isinstance(vobj.concretetype, lltype.Ptr) and
-                vobj.concretetype.TO._gckind == 'gc')
+        if hop.rtyper.type_system.name == 'lltypesystem':
+            ok = (isinstance(vobj.concretetype, lltype.Ptr) and
+                  vobj.concretetype.TO._gckind == 'gc')
+        else:
+            from rpython.rtyper.ootypesystem import ootype
+            ok = isinstance(vobj.concretetype, (ootype.Instance, ootype.BuiltinType))
         if not ok:
             from rpython.rtyper.error import TyperError
             raise TyperError("compute_unique_id() cannot be applied to"
@@ -605,10 +564,16 @@ class Entry(ExtRegistryEntry):
     def specialize_call(self, hop):
         vobj, = hop.inputargs(hop.args_r[0])
         hop.exception_cannot_occur()
-        from rpython.rtyper.lltypesystem import lltype
-        if isinstance(vobj.concretetype, lltype.Ptr):
-            return hop.genop('cast_ptr_to_int', [vobj],
-                                resulttype = lltype.Signed)
+        if hop.rtyper.type_system.name == 'lltypesystem':
+            from rpython.rtyper.lltypesystem import lltype
+            if isinstance(vobj.concretetype, lltype.Ptr):
+                return hop.genop('cast_ptr_to_int', [vobj],
+                                 resulttype = lltype.Signed)
+        elif hop.rtyper.type_system.name == 'ootypesystem':
+            from rpython.rtyper.ootypesystem import ootype
+            if isinstance(vobj.concretetype, ootype.Instance):
+                return hop.genop('gc_identityhash', [vobj],
+                                 resulttype = ootype.Signed)
         from rpython.rtyper.error import TyperError
         raise TyperError("current_object_addr_as_int() cannot be applied to"
                          " %r" % (vobj.concretetype,))
@@ -616,12 +581,24 @@ class Entry(ExtRegistryEntry):
 # ____________________________________________________________
 
 def hlinvoke(repr, llcallable, *args):
-    raise TypeError("hlinvoke is meant to be rtyped and not called direclty")
+    raise TypeError, "hlinvoke is meant to be rtyped and not called direclty"
+
+def invoke_around_extcall(before, after):
+    """Call before() before any external function call, and after() after.
+    At the moment only one pair before()/after() can be registered at a time.
+    """
+    # NOTE: the hooks are cleared during translation!  To be effective
+    # in a compiled program they must be set at run-time.
+    from rpython.rtyper.lltypesystem import rffi
+    rffi.aroundstate.before = before
+    rffi.aroundstate.after = after
+    # the 'aroundstate' contains regular function and not ll pointers to them,
+    # but let's call llhelper() anyway to force their annotation
+    from rpython.rtyper.annlowlevel import llhelper
+    llhelper(rffi.AroundFnPtr, before)
+    llhelper(rffi.AroundFnPtr, after)
 
 def is_in_callback():
-    """Returns True if we're currently in a callback *or* if there are
-    multiple threads around.
-    """
     from rpython.rtyper.lltypesystem import rffi
     return rffi.stackcounter.stacks_counter > 1
 
@@ -659,30 +636,6 @@ class UnboxedValue(object):
 
 # ____________________________________________________________
 
-def likely(condition):
-    assert isinstance(condition, bool)
-    return condition
-
-def unlikely(condition):
-    assert isinstance(condition, bool)
-    return condition
-
-class Entry(ExtRegistryEntry):
-    _about_ = (likely, unlikely)
-
-    def compute_result_annotation(self, s_x):
-        from rpython.annotator import model as annmodel
-        return annmodel.SomeBool()
-
-    def specialize_call(self, hop):
-        from rpython.rtyper.lltypesystem import lltype
-        vlist = hop.inputargs(lltype.Bool)
-        hop.exception_cannot_occur()
-        return hop.genop(self.instance.__name__, vlist,
-                         resulttype=lltype.Bool)
-
-# ____________________________________________________________
-
 
 class r_dict(object):
     """An RPython dict-like object.
@@ -690,11 +643,8 @@ class r_dict(object):
     The functions key_eq() and key_hash() are used by the key comparison
     algorithm."""
 
-    def _newdict(self):
-        return {}
-
     def __init__(self, key_eq, key_hash, force_non_null=False):
-        self._dict = self._newdict()
+        self._dict = {}
         self.key_eq = key_eq
         self.key_hash = key_hash
         self.force_non_null = force_non_null
@@ -729,7 +679,7 @@ class r_dict(object):
         return dk.key, value
 
     def copy(self):
-        result = self.__class__(self.key_eq, self.key_hash)
+        result = r_dict(self.key_eq, self.key_hash)
         result.update(self)
         return result
 
@@ -765,9 +715,6 @@ class r_dict(object):
     def __hash__(self):
         raise TypeError("cannot hash r_dict instances")
 
-class r_ordereddict(r_dict):
-    def _newdict(self):
-        return OrderedDict()
 
 class _r_dictkey(object):
     __slots__ = ['dic', 'key', 'hash']
@@ -789,145 +736,8 @@ class _r_dictkey(object):
     def __repr__(self):
         return repr(self.key)
 
-
-@specialize.call_location()
-def prepare_dict_update(dict, n_elements):
-    """RPython hint that the given dict (or r_dict) will soon be
-    enlarged by n_elements."""
-    if we_are_translated():
-        dict._prepare_dict_update(n_elements)
-        # ^^ call an extra method that doesn't exist before translation
-
-@specialize.call_location()
-def reversed_dict(d):
-    """Equivalent to reversed(ordered_dict), but works also for
-    regular dicts."""
-    # note that there is also __pypy__.reversed_dict(), which we could
-    # try to use here if we're not translated and running on top of pypy,
-    # but that seems a bit pointless
-    if not we_are_translated():
-        d = d.keys()
-    return reversed(d)
-
-def _expected_hash(d, key):
-    if isinstance(d, r_dict):
-        return d.key_hash(key)
-    else:
-        return compute_hash(key)
-
-def _iterkeys_with_hash_untranslated(d):
-    for k in d:
-        yield (k, _expected_hash(d, k))
-
-@specialize.call_location()
-def iterkeys_with_hash(d):
-    """Iterates (key, hash) pairs without recomputing the hash."""
-    if not we_are_translated():
-        return _iterkeys_with_hash_untranslated(d)
-    return d.iterkeys_with_hash()
-
-def _iteritems_with_hash_untranslated(d):
-    for k, v in d.iteritems():
-        yield (k, v, _expected_hash(d, k))
-
-@specialize.call_location()
-def iteritems_with_hash(d):
-    """Iterates (key, value, keyhash) triples without recomputing the hash."""
-    if not we_are_translated():
-        return _iteritems_with_hash_untranslated(d)
-    return d.iteritems_with_hash()
-
-@specialize.call_location()
-def contains_with_hash(d, key, h):
-    """Same as 'key in d'.  The extra argument is the hash.  Use this only
-    if you got the hash just now from some other ..._with_hash() function."""
-    if not we_are_translated():
-        assert _expected_hash(d, key) == h
-        return key in d
-    return d.contains_with_hash(key, h)
-
-@specialize.call_location()
-def setitem_with_hash(d, key, h, value):
-    """Same as 'd[key] = value'.  The extra argument is the hash.  Use this only
-    if you got the hash just now from some other ..._with_hash() function."""
-    if not we_are_translated():
-        assert _expected_hash(d, key) == h
-        d[key] = value
-        return
-    d.setitem_with_hash(key, h, value)
-
-@specialize.call_location()
-def getitem_with_hash(d, key, h):
-    """Same as 'd[key]'.  The extra argument is the hash.  Use this only
-    if you got the hash just now from some other ..._with_hash() function."""
-    if not we_are_translated():
-        assert _expected_hash(d, key) == h
-        return d[key]
-    return d.getitem_with_hash(key, h)
-
-@specialize.call_location()
-def delitem_with_hash(d, key, h):
-    """Same as 'del d[key]'.  The extra argument is the hash.  Use this only
-    if you got the hash just now from some other ..._with_hash() function."""
-    if not we_are_translated():
-        assert _expected_hash(d, key) == h
-        del d[key]
-        return
-    d.delitem_with_hash(key, h)
-
-# ____________________________________________________________
-
-def import_from_mixin(M, special_methods=['__init__', '__del__']):
-    """Copy all methods and class attributes from the class M into
-    the current scope.  Should be called when defining a class body.
-    Function and staticmethod objects are duplicated, which means
-    that annotation will not consider them as identical to another
-    copy in another unrelated class.
-
-    By default, "special" methods and class attributes, with a name
-    like "__xxx__", are not copied unless they are "__init__" or
-    "__del__".  The list can be changed with the optional second
-    argument.
-    """
-    flatten = {}
-    caller = sys._getframe(1)
-    caller_name = caller.f_globals.get('__name__')
-    immutable_fields = []
-    for base in inspect.getmro(M):
-        if base is object:
-            continue
-        for key, value in base.__dict__.items():
-            if key == '_immutable_fields_':
-                immutable_fields.extend(value)
-                continue
-            if key.startswith('__') and key.endswith('__'):
-                if key not in special_methods:
-                    continue
-            if key in flatten:
-                continue
-            if isinstance(value, types.FunctionType):
-                value = func_with_new_name(value, value.__name__)
-            elif isinstance(value, staticmethod):
-                func = value.__get__(42)
-                func = func_with_new_name(func, func.__name__)
-                if caller_name:
-                    # staticmethods lack a unique im_class so further
-                    # distinguish them from themselves
-                    func.__module__ = caller_name
-                value = staticmethod(func)
-            elif isinstance(value, classmethod):
-                raise AssertionError("classmethods not supported "
-                                     "in 'import_from_mixin'")
-            flatten[key] = value
-    #
-    target = caller.f_locals
-    for key, value in flatten.items():
-        if key in target:
-            raise Exception("import_from_mixin: would overwrite the value "
-                            "already defined locally for %r" % (key,))
-        if key == '_mixin_':
-            raise Exception("import_from_mixin(M): class M should not "
-                            "have '_mixin_ = True'")
-        target[key] = value
-    if immutable_fields:
-        target['_immutable_fields_'] = target.get('_immutable_fields_', []) + immutable_fields
+class _r_dictkey_with_hash(_r_dictkey):
+    def __init__(self, dic, key, hash):
+        self.dic = dic
+        self.key = key
+        self.hash = hash

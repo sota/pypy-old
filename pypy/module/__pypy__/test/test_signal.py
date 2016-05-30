@@ -8,7 +8,6 @@ class AppTestMinimal:
 
     def test_signal(self):
         from __pypy__ import thread
-        assert type(thread.signals_enabled).__module__ == '__pypy__.thread'
         with thread.signals_enabled:
             pass
         # assert did not crash
@@ -29,17 +28,15 @@ class AppTestThreadSignal(GenericTestThread):
         import __pypy__, thread, signal, time, sys
 
         def subthread():
-            print('subthread started')
             try:
                 with __pypy__.thread.signals_enabled:
                     thread.interrupt_main()
                     for i in range(10):
-                        print('x')
-                        time.sleep(0.25)
+                        print 'x'
+                        time.sleep(0.1)
             except BaseException, e:
                 interrupted.append(e)
             finally:
-                print('subthread stops, interrupted=%r' % (interrupted,))
                 done.append(None)
 
         # This is normally called by app_main.py
@@ -55,13 +52,11 @@ class AppTestThreadSignal(GenericTestThread):
             try:
                 done = []
                 interrupted = []
-                print('--- start ---')
                 thread.start_new_thread(subthread, ())
-                for j in range(30):
+                for j in range(10):
                     if len(done): break
-                    print('.')
-                    time.sleep(0.25)
-                print('main thread loop done')
+                    print '.'
+                    time.sleep(0.1)
                 assert len(done) == 1
                 assert len(interrupted) == 1
                 assert 'KeyboardInterrupt' in interrupted[0].__class__.__name__
@@ -82,7 +77,7 @@ class AppTestThreadSignal(GenericTestThread):
         def threadfunction():
             pid = fork()
             if pid == 0:
-                print('in child')
+                print 'in child'
                 # signal() only works from the 'main' thread
                 signal.signal(signal.SIGUSR1, signal.SIG_IGN)
                 os._exit(42)
@@ -118,7 +113,7 @@ class AppTestThreadSignalLock:
 
         def subthread():
             try:
-                time.sleep(0.5)
+                time.sleep(0.25)
                 with __pypy__.thread.signals_enabled:
                     thread.interrupt_main()
             except BaseException, e:

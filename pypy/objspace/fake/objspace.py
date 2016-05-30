@@ -2,8 +2,8 @@ from rpython.annotator.model import SomeInstance, s_None
 from pypy.interpreter import argument, gateway
 from pypy.interpreter.baseobjspace import W_Root, ObjSpace, SpaceCache
 from pypy.interpreter.typedef import TypeDef, GetSetProperty
+from pypy.objspace.std.stdtypedef import StdTypeDef
 from pypy.objspace.std.sliceobject import W_SliceObject
-from rpython.rlib.buffer import StringBuffer
 from rpython.rlib.objectmodel import instantiate, we_are_translated, specialize
 from rpython.rlib.nonconst import NonConstant
 from rpython.rlib.rarithmetic import r_uint, r_singlefloat
@@ -39,42 +39,29 @@ class W_MyObject(W_Root):
     def setclass(self, space, w_subtype):
         is_root(w_subtype)
 
-    def buffer_w(self, space, flags):
-        return StringBuffer("foobar")
-
     def str_w(self, space):
         return NonConstant("foobar")
 
     def unicode_w(self, space):
         return NonConstant(u"foobar")
 
-    def int_w(self, space, allow_conversion=True):
+    def int_w(self, space):
         return NonConstant(-42)
 
     def uint_w(self, space):
         return r_uint(NonConstant(42))
 
-    def bigint_w(self, space, allow_conversion=True):
+    def bigint_w(self, space):
         from rpython.rlib.rbigint import rbigint
         return rbigint.fromint(NonConstant(42))
 
-class W_MyListObj(W_MyObject):
-    def append(self, w_other):
-        pass
-
 class W_MyType(W_MyObject):
-    name = "foobar"
-
     def __init__(self):
         self.mro_w = [w_some_obj(), w_some_obj()]
         self.dict_w = {'__str__': w_some_obj()}
 
     def get_module(self):
         return w_some_obj()
-
-
-    def getname(self, space):
-        return self.name
 
 def w_some_obj():
     if NonConstant(False):
@@ -115,20 +102,12 @@ class Entry(ExtRegistryEntry):
 # ____________________________________________________________
 
 
-BUILTIN_TYPES = ['int', 'str', 'float', 'long', 'tuple', 'list', 'dict',
-                 'unicode', 'complex', 'slice', 'bool', 'basestring', 'object',
-                 'bytearray', 'buffer', 'set', 'frozenset']
-
 class FakeObjSpace(ObjSpace):
     def __init__(self, config=None):
         self._seen_extras = []
         ObjSpace.__init__(self, config=config)
-        self.setup()
 
-    def _freeze_(self):
-        return True
-
-    def float_w(self, w_obj, allow_conversion=True):
+    def float_w(self, w_obj):
         is_root(w_obj)
         return NonConstant(42.5)
 
@@ -149,16 +128,10 @@ class FakeObjSpace(ObjSpace):
             is_root(w_x)
         return w_some_obj()
 
-    def newset(self, list_w=None):
-        if list_w is not None:
-            for w_x in list_w:
-                is_root(w_x)
-        return w_some_obj()
-
     def newlist(self, list_w):
         for w_x in list_w:
             is_root(w_x)
-        return W_MyListObj()
+        return w_some_obj()
 
     def newslice(self, w_start, w_end, w_step):
         is_root(w_start)
@@ -185,15 +158,9 @@ class FakeObjSpace(ObjSpace):
     def newseqiter(self, x):
         return w_some_obj()
 
-    def newbuffer(self, x):
-        return w_some_obj()
-
     def marshal_w(self, w_obj):
         "NOT_RPYTHON"
         raise NotImplementedError
-
-    def wrapbytes(self, x):
-        return w_some_obj()
 
     def wrap(self, x):
         if not we_are_translated():
@@ -315,12 +282,6 @@ class FakeObjSpace(ObjSpace):
         ec._py_repr = None
         return ec
 
-    def unicode_from_object(self, w_obj):
-        return w_some_obj()
-
-    def _try_fetch_pycode(self, w_func):
-        return None
-
     # ----------
 
     def translates(self, func=None, argtypes=None, seeobj_w=[], **kwds):
@@ -333,9 +294,6 @@ class FakeObjSpace(ObjSpace):
         t = TranslationContext(config=config)
         self.t = t     # for debugging
         ann = t.buildannotator()
-        def _do_startup():
-            self.threadlocals.enter_thread(self)
-        ann.build_types(_do_startup, [], complete_now=False)
         if func is not None:
             ann.build_types(func, argtypes, complete_now=False)
         if seeobj_w:
@@ -358,52 +316,51 @@ class FakeObjSpace(ObjSpace):
         t.buildrtyper().specialize()
         t.checkgraphs()
 
-    def setup(space):
-        for name in (ObjSpace.ConstantTable +
-                     ObjSpace.ExceptionTable +
-                     BUILTIN_TYPES):
-            setattr(space, 'w_' + name, w_some_obj())
-        space.w_type = w_some_type()
-        #
-        for (name, _, arity, _) in ObjSpace.MethodTable:
-            if name == 'type':
-                continue
-            args = ['w_%d' % i for i in range(arity)]
-            params = args[:]
-            d = {'is_root': is_root,
-                 'w_some_obj': w_some_obj}
-            if name in ('get',):
-                params[-1] += '=None'
-            exec compile2("""\
-                def meth(%s):
-                    %s
-                    return w_some_obj()
-            """ % (', '.join(params),
-                   '; '.join(['is_root(%s)' % arg for arg in args]))) in d
-            meth = func_with_new_name(d['meth'], name)
-            setattr(space, name, meth)
-        #
-        for name in ObjSpace.IrregularOpTable:
-            assert hasattr(space, name)    # missing?
 
+def setup():
+    for name in (ObjSpace.ConstantTable +
+                 ObjSpace.ExceptionTable +
+                 ['int', 'str', 'float', 'long', 'tuple', 'list',
+                  'dict', 'unicode', 'complex', 'slice', 'bool',
+                  'basestring', 'object', 'bytearray']):
+        setattr(FakeObjSpace, 'w_' + name, w_some_obj())
+    FakeObjSpace.w_type = w_some_type()
+    #
+    for (name, _, arity, _) in ObjSpace.MethodTable:
+        if name == 'type':
+            continue
+        args = ['w_%d' % i for i in range(arity)]
+        params = args[:]
+        d = {'is_root': is_root,
+             'w_some_obj': w_some_obj}
+        if name in ('get',):
+            params[-1] += '=None'
+        exec compile2("""\
+            def meth(self, %s):
+                %s
+                return w_some_obj()
+        """ % (', '.join(params),
+               '; '.join(['is_root(%s)' % arg for arg in args]))) in d
+        meth = func_with_new_name(d['meth'], name)
+        setattr(FakeObjSpace, name, meth)
+    #
+    for name in ObjSpace.IrregularOpTable:
+        assert hasattr(FakeObjSpace, name)    # missing?
+
+setup()
 
 # ____________________________________________________________
 
 @specialize.memo()
 def see_typedef(space, typedef):
     assert isinstance(typedef, TypeDef)
-    if typedef.name not in BUILTIN_TYPES:
+    if not isinstance(typedef, StdTypeDef):
         for name, value in typedef.rawdict.items():
             space.wrap(value)
 
 class FakeCompiler(object):
-    def compile(self, code, name, mode, flags):
-        return FakePyCode()
+    pass
 FakeObjSpace.default_compiler = FakeCompiler()
-
-class FakePyCode(W_Root):
-    def exec_code(self, space, w_globals, w_locals):
-        return W_Root()
 
 
 class FakeModule(W_Root):

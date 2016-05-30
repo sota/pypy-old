@@ -4,22 +4,22 @@ import os
 
 from rpython.jit.backend.arm import conditions as c, registers as r
 from rpython.jit.backend.arm import shift
-from rpython.jit.backend.arm.arch import (WORD, DOUBLE_WORD,
+from rpython.jit.backend.arm.arch import (WORD, DOUBLE_WORD, FUNC_ALIGN,
     JITFRAME_FIXED_SIZE)
 from rpython.jit.backend.arm.codebuilder import InstrBuilder, OverwritingBuilder
-from rpython.jit.backend.arm.locations import imm, StackLocation, get_fp_offset
-from rpython.jit.backend.arm.helper.regalloc import VMEM_imm_size
+from rpython.jit.backend.arm.locations import imm, StackLocation
 from rpython.jit.backend.arm.opassembler import ResOpAssembler
 from rpython.jit.backend.arm.regalloc import (Regalloc,
     CoreRegisterManager, check_imm_arg, VFPRegisterManager,
-    operations as regalloc_operations)
+    operations as regalloc_operations,
+    operations_with_guard as regalloc_operations_with_guard)
 from rpython.jit.backend.llsupport import jitframe, rewrite
 from rpython.jit.backend.llsupport.assembler import DEBUG_COUNTER, debug_bridge, BaseAssembler
 from rpython.jit.backend.llsupport.regalloc import get_scale, valid_addressing_size
 from rpython.jit.backend.llsupport.asmmemmgr import MachineDataBlockWrapper
 from rpython.jit.backend.model import CompiledLoopToken
 from rpython.jit.codewriter.effectinfo import EffectInfo
-from rpython.jit.metainterp.history import AbstractFailDescr, FLOAT, INT, VOID
+from rpython.jit.metainterp.history import AbstractFailDescr, FLOAT
 from rpython.jit.metainterp.resoperation import rop
 from rpython.rlib.debug import debug_print, debug_start, debug_stop
 from rpython.rlib.jit import AsmInfo
@@ -27,8 +27,6 @@ from rpython.rlib.objectmodel import we_are_translated, specialize, compute_uniq
 from rpython.rlib.rarithmetic import r_uint
 from rpython.rtyper.annlowlevel import llhelper, cast_instance_to_gcref
 from rpython.rtyper.lltypesystem import lltype, rffi
-from rpython.jit.backend.arm import callbuilder
-from rpython.rtyper.lltypesystem.lloperation import llop
 
 class AssemblerARM(ResOpAssembler):
 
@@ -56,15 +54,13 @@ class AssemblerARM(ResOpAssembler):
         BaseAssembler.setup_once(self)
 
     def setup(self, looptoken):
-        BaseAssembler.setup(self, looptoken)
         assert self.memcpy_addr != 0, 'setup_once() not called?'
         if we_are_translated():
             self.debug = False
         self.current_clt = looptoken.compiled_loop_token
         self.mc = InstrBuilder(self.cpu.cpuinfo.arch_version)
         self.pending_guards = []
-        #assert self.datablockwrapper is None --- but obscure case
-        # possible, e.g. getting MemoryError and continuing
+        assert self.datablockwrapper is None
         allblocks = self.get_asmmemmgr_blocks(looptoken)
         self.datablockwrapper = MachineDataBlockWrapper(self.cpu.asmmemmgr,
                                                         allblocks)
@@ -77,6 +73,7 @@ class AssemblerARM(ResOpAssembler):
         self._regalloc = None
         self.mc = None
         self.pending_guards = None
+        assert self.datablockwrapper is None
 
     def setup_failure_recovery(self):
         self.failure_recovery_code = [0, 0, 0, 0]
@@ -101,7 +98,7 @@ class AssemblerARM(ResOpAssembler):
         self.store_reg(mc, r.r0, r.fp, ofs)
         mc.MOV_rr(r.r0.value, r.fp.value)
         self.gen_func_epilog(mc)
-        rawstart = mc.materialize(self.cpu, [])
+        rawstart = mc.materialize(self.cpu.asmmemmgr, [])
         self.propagate_exception_path = rawstart
 
     def _store_and_reset_exception(self, mc, excvalloc=None, exctploc=None,
@@ -114,7 +111,7 @@ class AssemblerARM(ResOpAssembler):
         tmpreg = r.lr
         mc.gen_load_int(r.ip.value, self.cpu.pos_exc_value())
         if excvalloc is not None: # store
-            assert excvalloc.is_core_reg()
+            assert excvalloc.is_reg()
             self.load_reg(mc, excvalloc, r.ip)
         if on_frame:
             # store exc_value in JITFRAME
@@ -126,7 +123,7 @@ class AssemblerARM(ResOpAssembler):
             self.store_reg(mc, r.ip, r.fp, ofs, helper=tmpreg)
         if exctploc is not None:
             # store pos_exception in exctploc
-            assert exctploc.is_core_reg()
+            assert exctploc.is_reg()
             mc.gen_load_int(r.ip.value, self.cpu.pos_exception())
             self.load_reg(mc, exctploc, r.ip, helper=tmpreg)
 
@@ -147,7 +144,7 @@ class AssemblerARM(ResOpAssembler):
         tmpreg = r.lr # use lr as a second temporary reg
         mc.gen_load_int(r.ip.value, self.cpu.pos_exc_value())
         if excvalloc is not None:
-            assert excvalloc.is_core_reg()
+            assert excvalloc.is_reg()
             self.store_reg(mc, excvalloc, r.ip)
         else:
             assert exctploc is not r.fp
@@ -197,7 +194,7 @@ class AssemblerARM(ResOpAssembler):
         mc.ADD_ri(r.sp.value, r.sp.value, (len(r.argument_regs) + 2) * WORD)
         mc.B(self.propagate_exception_path)
         #
-        rawstart = mc.materialize(self.cpu, [])
+        rawstart = mc.materialize(self.cpu.asmmemmgr, [])
         self.stack_check_slowpath = rawstart
 
     def _build_wb_slowpath(self, withcards, withfloats=False, for_frame=False):
@@ -224,10 +221,6 @@ class AssemblerARM(ResOpAssembler):
         if not for_frame:
             self._push_all_regs_to_jitframe(mc, [], withfloats, callee_only=True)
         else:
-            # NOTE: don't save registers on the jitframe here!  It might
-            # override already-saved values that will be restored
-            # later...
-            #
             # we're possibly called from the slowpath of malloc
             # save the caller saved registers
             # assuming we do not collect here
@@ -258,28 +251,11 @@ class AssemblerARM(ResOpAssembler):
         #
         mc.POP([r.ip.value, r.pc.value])
         #
-        rawstart = mc.materialize(self.cpu, [])
+        rawstart = mc.materialize(self.cpu.asmmemmgr, [])
         if for_frame:
             self.wb_slowpath[4] = rawstart
         else:
             self.wb_slowpath[withcards + 2 * withfloats] = rawstart
-
-    def _build_cond_call_slowpath(self, supports_floats, callee_only):
-        """ This builds a general call slowpath, for whatever call happens to
-        come.
-        """
-        mc = InstrBuilder(self.cpu.cpuinfo.arch_version)
-        #
-        self._push_all_regs_to_jitframe(mc, [], self.cpu.supports_floats, callee_only)
-        ## args are in their respective positions
-        mc.PUSH([r.ip.value, r.lr.value])
-        mc.BLX(r.r4.value)
-        self._reload_frame_if_necessary(mc)
-        self._pop_all_regs_from_jitframe(mc, [], supports_floats,
-                                      callee_only)
-        # return
-        mc.POP([r.ip.value, r.pc.value])
-        return mc.materialize(self.cpu, [])
 
     def _build_malloc_slowpath(self, kind):
         """ While arriving on slowpath, we have a gcpattern on stack 0.
@@ -355,7 +331,7 @@ class AssemblerARM(ResOpAssembler):
         mc.POP([r.ip.value, r.pc.value])
 
         #
-        rawstart = mc.materialize(self.cpu, [])
+        rawstart = mc.materialize(self.cpu.asmmemmgr, [])
         return rawstart
 
     def _reload_frame_if_necessary(self, mc):
@@ -379,63 +355,54 @@ class AssemblerARM(ResOpAssembler):
 
     def _push_all_regs_to_jitframe(self, mc, ignored_regs, withfloats,
                                 callee_only=False):
-        # Push general purpose registers
         base_ofs = self.cpu.get_baseofs_of_frame_field()
         if callee_only:
             regs = CoreRegisterManager.save_around_call_regs
         else:
             regs = CoreRegisterManager.all_regs
-        # XXX add special case if ignored_regs are a block at the start of regs
-        if not ignored_regs:  # we want to push a contiguous block of regs
-            assert check_imm_arg(base_ofs)
-            mc.ADD_ri(r.ip.value, r.fp.value, base_ofs)
-            mc.STM(r.ip.value, [reg.value for reg in regs])
-        else:
-            for reg in ignored_regs:
-                assert not reg.is_vfp_reg()  # sanity check
-            # we can have holes in the list of regs
-            for i, gpr in enumerate(regs):
-                if gpr in ignored_regs:
-                    continue
-                self.store_reg(mc, gpr, r.fp, base_ofs + i * WORD)
-
+        # XXX use STMDB ops here
+        for i, gpr in enumerate(regs):
+            if gpr in ignored_regs:
+                continue
+            self.store_reg(mc, gpr, r.fp, base_ofs + i * WORD)
         if withfloats:
-            # Push VFP regs
-            regs = VFPRegisterManager.all_regs
-            ofs = len(CoreRegisterManager.all_regs) * WORD
-            assert check_imm_arg(ofs+base_ofs)
-            mc.ADD_ri(r.ip.value, r.fp.value, imm=ofs+base_ofs)
-            mc.VSTM(r.ip.value, [vfpr.value for vfpr in regs])
+            if callee_only:
+                regs = VFPRegisterManager.save_around_call_regs
+            else:
+                regs = VFPRegisterManager.all_regs
+            for i, vfpr in enumerate(regs):
+                if vfpr in ignored_regs:
+                    continue
+                ofs = len(CoreRegisterManager.all_regs) * WORD
+                ofs += i * DOUBLE_WORD + base_ofs
+                self.store_reg(mc, vfpr, r.fp, ofs)
 
     def _pop_all_regs_from_jitframe(self, mc, ignored_regs, withfloats,
                                  callee_only=False):
-        # Pop general purpose registers
+        # Pop all general purpose registers
         base_ofs = self.cpu.get_baseofs_of_frame_field()
         if callee_only:
             regs = CoreRegisterManager.save_around_call_regs
         else:
             regs = CoreRegisterManager.all_regs
-        # XXX add special case if ignored_regs are a block at the start of regs
-        if not ignored_regs:  # we want to pop a contiguous block of regs
-            assert check_imm_arg(base_ofs)
-            mc.ADD_ri(r.ip.value, r.fp.value, base_ofs)
-            mc.LDM(r.ip.value, [reg.value for reg in regs])
-        else:
-            for reg in ignored_regs:
-                assert not reg.is_vfp_reg()  # sanity check
-            # we can have holes in the list of regs
-            for i, gpr in enumerate(regs):
-                if gpr in ignored_regs:
-                    continue
-                ofs = i * WORD + base_ofs
-                self.load_reg(mc, gpr, r.fp, ofs)
+        # XXX use LDMDB ops here
+        for i, gpr in enumerate(regs):
+            if gpr in ignored_regs:
+                continue
+            ofs = i * WORD + base_ofs
+            self.load_reg(mc, gpr, r.fp, ofs)
         if withfloats:
-            # Pop VFP regs
-            regs = VFPRegisterManager.all_regs
-            ofs = len(CoreRegisterManager.all_regs) * WORD
-            assert check_imm_arg(ofs+base_ofs)
-            mc.ADD_ri(r.ip.value, r.fp.value, imm=ofs+base_ofs)
-            mc.VLDM(r.ip.value, [vfpr.value for vfpr in regs])
+            # Pop all XMM regs
+            if callee_only:
+                regs = VFPRegisterManager.save_around_call_regs
+            else:
+                regs = VFPRegisterManager.all_regs
+            for i, vfpr in enumerate(regs):
+                if vfpr in ignored_regs:
+                    continue
+                ofs = len(CoreRegisterManager.all_regs) * WORD
+                ofs += i * DOUBLE_WORD + base_ofs
+                self.load_reg(mc, vfpr, r.fp, ofs)
 
     def _build_failure_recovery(self, exc, withfloats=False):
         mc = InstrBuilder(self.cpu.cpuinfo.arch_version)
@@ -476,7 +443,7 @@ class AssemblerARM(ResOpAssembler):
         mc.MOV_rr(r.r0.value, r.fp.value)
         #
         self.gen_func_epilog(mc)
-        rawstart = mc.materialize(self.cpu, [])
+        rawstart = mc.materialize(self.cpu.asmmemmgr, [])
         self.failure_recovery_code[exc + 2 * withfloats] = rawstart
 
     def generate_quick_failure(self, guardtok):
@@ -487,6 +454,10 @@ class AssemblerARM(ResOpAssembler):
         self.mc.BL(target)
         return startpos
 
+    def align(self):
+        while(self.mc.currpos() % FUNC_ALIGN != 0):
+            self.mc.writechar(chr(0))
+
     def gen_func_epilog(self, mc=None, cond=c.AL):
         gcrootmap = self.cpu.gc_ll_descr.gcrootmap
         if mc is None:
@@ -496,11 +467,9 @@ class AssemblerARM(ResOpAssembler):
         if self.cpu.supports_floats:
             mc.VPOP([reg.value for reg in r.callee_saved_vfp_registers],
                                                                     cond=cond)
-        # pop all callee saved registers.  This pops 'pc' last.
-        # It also pops the threadlocal_addr back into 'r1', but it
-        # is not needed any more and will be discarded.
+        # pop all callee saved registers and IP to keep the alignment
         mc.POP([reg.value for reg in r.callee_restored_registers] +
-                                                       [r.r1.value], cond=cond)
+                                                       [r.ip.value], cond=cond)
         mc.BKPT()
 
     def gen_func_prolog(self):
@@ -509,16 +478,11 @@ class AssemblerARM(ResOpAssembler):
         if self.cpu.supports_floats:
             stack_size += len(r.callee_saved_vfp_registers) * 2 * WORD
 
-        # push all callee saved registers including lr; and push r1 as
-        # well, which contains the threadlocal_addr argument.  Note that
-        # we're pushing a total of 10 words, which keeps the stack aligned.
+        # push all callee saved registers and IP to keep the alignment
         self.mc.PUSH([reg.value for reg in r.callee_saved_registers] +
-                                                        [r.r1.value])
-        self.saved_threadlocal_addr = 0   # at offset 0 from location 'sp'
+                                                        [r.ip.value])
         if self.cpu.supports_floats:
             self.mc.VPUSH([reg.value for reg in r.callee_saved_vfp_registers])
-            self.saved_threadlocal_addr += (
-                len(r.callee_saved_vfp_registers) * 2 * WORD)
         assert stack_size % 8 == 0 # ensure we keep alignment
 
         # set fp to point to the JITFRAME
@@ -556,7 +520,7 @@ class AssemblerARM(ResOpAssembler):
         debug_stop('jit-backend-ops')
 
     def _call_header(self):
-        assert self.mc.currpos() == 0
+        self.align()
         self.gen_func_prolog()
 
     def _call_header_with_stack_check(self):
@@ -578,8 +542,7 @@ class AssemblerARM(ResOpAssembler):
             self.mc.BL(self.stack_check_slowpath, c=c.HI)      # call if ip > lr
 
     # cpu interface
-    def assemble_loop(self, jd_id, unique_id, logger, loopname, inputargs,
-                      operations, looptoken, log):
+    def assemble_loop(self, loopname, inputargs, operations, looptoken, log):
         clt = CompiledLoopToken(self.cpu, looptoken.number)
         looptoken.compiled_loop_token = clt
         clt._debug_nbargs = len(inputargs)
@@ -589,9 +552,6 @@ class AssemblerARM(ResOpAssembler):
             assert len(set(inputargs)) == len(inputargs)
 
         self.setup(looptoken)
-        #self.codemap_builder.enter_portal_frame(jd_id, unique_id,
-        #                                self.mc.get_relative_pos())
-
 
         frame_info = self.datablockwrapper.malloc_aligned(
             jitframe.JITFRAMEINFO_SIZE, alignment=WORD)
@@ -631,9 +591,6 @@ class AssemblerARM(ResOpAssembler):
                     'loop.asm')
 
         ops_offset = self.mc.ops_offset
-        if logger is not None:
-            logger.log_loop(inputargs, operations, 0, "rewritten",
-                            name=loopname, ops_offset=ops_offset)
         self.teardown()
 
         debug_start("jit-backend-addr")
@@ -648,10 +605,8 @@ class AssemblerARM(ResOpAssembler):
                        size_excluding_failure_stuff - loop_head)
 
     def _assemble(self, regalloc, inputargs, operations):
-        self.guard_success_cc = c.cond_none
         regalloc.compute_hint_frame_locations(operations)
         self._walk_operations(inputargs, operations, regalloc)
-        assert self.guard_success_cc == c.cond_none
         frame_depth = regalloc.get_final_frame_depth()
         jump_target_descr = regalloc.jump_target_descr
         if jump_target_descr is not None:
@@ -660,14 +615,13 @@ class AssemblerARM(ResOpAssembler):
             frame_depth = max(frame_depth, target_frame_depth)
         return frame_depth
 
-    def assemble_bridge(self, logger, faildescr, inputargs, operations,
-                        original_loop_token, log):
+    def assemble_bridge(self, faildescr, inputargs, operations,
+                                                    original_loop_token, log):
         if not we_are_translated():
             # Arguments should be unique
             assert len(set(inputargs)) == len(inputargs)
 
         self.setup(original_loop_token)
-        #self.codemap.inherit_code_from_position(faildescr.adr_jump_offset)
         descr_number = compute_unique_id(faildescr)
         if log:
             operations = self._inject_debugging_code(faildescr, operations,
@@ -711,18 +665,15 @@ class AssemblerARM(ResOpAssembler):
                           frame_depth_no_fixed_size + JITFRAME_FIXED_SIZE)
         self.fixup_target_tokens(rawstart)
         self.update_frame_depth(frame_depth)
-        if logger:
-            logger.log_bridge(inputargs, operations, "rewritten", faildescr,
-                              ops_offset=ops_offset)
         self.teardown()
 
         debug_bridge(descr_number, rawstart, codeendpos)
 
         return AsmInfo(ops_offset, startpos + rawstart, codeendpos - startpos)
 
-    def new_stack_loc(self, i, tp):
+    def new_stack_loc(self, i, pos, tp):
         base_ofs = self.cpu.get_baseofs_of_frame_field()
-        return StackLocation(i, get_fp_offset(base_ofs, i), tp)
+        return StackLocation(i, pos + base_ofs, tp)
 
     def check_frame_before_jump(self, target_token):
         if target_token in self.target_tokens_currently_compiling:
@@ -859,7 +810,7 @@ class AssemblerARM(ResOpAssembler):
         # restore registers
         self._pop_all_regs_from_jitframe(mc, [], self.cpu.supports_floats)
         mc.POP([r.ip.value, r.pc.value])  # return
-        self._frame_realloc_slowpath = mc.materialize(self.cpu, [])
+        self._frame_realloc_slowpath = mc.materialize(self.cpu.asmmemmgr, [])
 
     def _load_shadowstack_top(self, mc, reg, gcrootmap):
         rst = gcrootmap.get_root_stack_top_addr()
@@ -888,12 +839,8 @@ class AssemblerARM(ResOpAssembler):
         self.datablockwrapper.done()      # finish using cpu.asmmemmgr
         self.datablockwrapper = None
         allblocks = self.get_asmmemmgr_blocks(looptoken)
-        size = self.mc.get_relative_pos() 
-        res = self.mc.materialize(self.cpu, allblocks,
+        return self.mc.materialize(self.cpu.asmmemmgr, allblocks,
                                    self.cpu.gc_ll_descr.gcrootmap)
-        #self.cpu.codemap.register_codemap(
-        #    self.codemap.get_final_bytecode(res, size))
-        return res
 
     def update_frame_depth(self, frame_depth):
         baseofs = self.cpu.get_baseofs_of_frame_field()
@@ -910,11 +857,11 @@ class AssemblerARM(ResOpAssembler):
             descr = tok.faildescr
             assert isinstance(descr, AbstractFailDescr)
             failure_recovery_pos = block_start + tok.pos_recovery_stub
-            descr.adr_jump_offset = failure_recovery_pos
+            descr._arm_failure_recovery_block = failure_recovery_pos
             relative_offset = tok.pos_recovery_stub - tok.offset
             guard_pos = block_start + tok.offset
-            if not tok.guard_not_invalidated():
-                # patch the guard jump to the stub
+            if not tok.is_guard_not_invalidated:
+                # patch the guard jumpt to the stub
                 # overwrite the generate NOP with a B_offs to the pos of the
                 # stub
                 mc = InstrBuilder(self.cpu.cpuinfo.arch_version)
@@ -932,54 +879,81 @@ class AssemblerARM(ResOpAssembler):
     def _walk_operations(self, inputargs, operations, regalloc):
         fcond = c.AL
         self._regalloc = regalloc
-        regalloc.operations = operations
         while regalloc.position() < len(operations) - 1:
             regalloc.next_instruction()
             i = regalloc.position()
             op = operations[i]
             self.mc.mark_op(op)
             opnum = op.getopnum()
-            if op.has_no_side_effect() and op not in regalloc.longevity:
+            if op.has_no_side_effect() and op.result not in regalloc.longevity:
                 regalloc.possibly_free_vars_for_op(op)
-            elif not we_are_translated() and op.getopnum() == -127:
+            elif self._regalloc.can_merge_with_next_guard(op, i, operations):
+                guard = operations[i + 1]
+                assert guard.is_guard()
+                arglocs = regalloc_operations_with_guard[opnum](regalloc, op,
+                                        guard, fcond)
+                fcond = asm_operations_with_guard[opnum](self, op,
+                                        guard, arglocs, regalloc, fcond)
+                regalloc.next_instruction()
+                regalloc.possibly_free_vars_for_op(guard)
+                regalloc.possibly_free_vars(guard.getfailargs())
+            elif not we_are_translated() and op.getopnum() == -124:
                 regalloc.prepare_force_spill(op, fcond)
             else:
                 arglocs = regalloc_operations[opnum](regalloc, op, fcond)
                 if arglocs is not None:
                     fcond = asm_operations[opnum](self, op, arglocs,
                                                         regalloc, fcond)
-                    assert fcond is not None
             if op.is_guard():
                 regalloc.possibly_free_vars(op.getfailargs())
-            if op.type != 'v':
-                regalloc.possibly_free_var(op)
+            if op.result:
+                regalloc.possibly_free_var(op.result)
             regalloc.possibly_free_vars_for_op(op)
             regalloc.free_temp_vars()
             regalloc._check_invariants()
-        if not we_are_translated():
-            self.mc.BKPT()
         self.mc.mark_op(None)  # end of the loop
-        regalloc.operations = None
 
-    def regalloc_emit_extra(self, op, arglocs, fcond, regalloc):
-        # for calls to a function with a specifically-supported OS_xxx
+    def regalloc_emit_llong(self, op, arglocs, fcond, regalloc):
         effectinfo = op.getdescr().get_extra_info()
         oopspecindex = effectinfo.oopspecindex
-        asm_extra_operations[oopspecindex](self, op, arglocs, regalloc, fcond)
+        asm_llong_operations[oopspecindex](self, op, arglocs, regalloc, fcond)
         return fcond
+
+    def regalloc_emit_math(self, op, arglocs, fcond, regalloc):
+        effectinfo = op.getdescr().get_extra_info()
+        oopspecindex = effectinfo.oopspecindex
+        asm_math_operations[oopspecindex](self, op, arglocs, regalloc, fcond)
+        return fcond
+
+    def _ensure_result_bit_extension(self, resloc, size, signed):
+        if size == 4:
+            return
+        if size == 1:
+            if not signed:  # unsigned char
+                self.mc.AND_ri(resloc.value, resloc.value, 0xFF)
+            else:
+                self.mc.LSL_ri(resloc.value, resloc.value, 24)
+                self.mc.ASR_ri(resloc.value, resloc.value, 24)
+        elif size == 2:
+            if not signed:
+                self.mc.LSL_ri(resloc.value, resloc.value, 16)
+                self.mc.LSR_ri(resloc.value, resloc.value, 16)
+            else:
+                self.mc.LSL_ri(resloc.value, resloc.value, 16)
+                self.mc.ASR_ri(resloc.value, resloc.value, 16)
 
     def patch_trace(self, faildescr, looptoken, bridge_addr, regalloc):
         b = InstrBuilder(self.cpu.cpuinfo.arch_version)
-        patch_addr = faildescr.adr_jump_offset
+        patch_addr = faildescr._arm_failure_recovery_block
         assert patch_addr != 0
         b.B(bridge_addr)
         b.copy_to_raw_memory(patch_addr)
-        faildescr.adr_jump_offset = 0
+        faildescr._arm_failure_recovery_block = 0
 
     # regalloc support
     def load(self, loc, value):
         """load an immediate value into a register"""
-        assert (loc.is_core_reg() and value.is_imm()
+        assert (loc.is_reg() and value.is_imm()
                     or loc.is_vfp_reg() and value.is_imm_float())
         if value.is_imm():
             self.mc.gen_load_int(loc.value, value.getint())
@@ -990,11 +964,11 @@ class AssemblerARM(ResOpAssembler):
     def load_reg(self, mc, target, base, ofs=0, cond=c.AL, helper=r.ip):
         if target.is_vfp_reg():
             return self._load_vfp_reg(mc, target, base, ofs, cond, helper)
-        elif target.is_core_reg():
+        elif target.is_reg():
             return self._load_core_reg(mc, target, base, ofs, cond, helper)
 
     def _load_vfp_reg(self, mc, target, base, ofs, cond=c.AL, helper=r.ip):
-        if check_imm_arg(ofs, VMEM_imm_size):
+        if check_imm_arg(ofs):
             mc.VLDR(target.value, base.value, imm=ofs, cond=cond)
         else:
             mc.gen_load_int(helper.value, ofs, cond=cond)
@@ -1015,7 +989,7 @@ class AssemblerARM(ResOpAssembler):
             return self._store_core_reg(mc, source, base, ofs, cond, helper)
 
     def _store_vfp_reg(self, mc, source, base, ofs, cond=c.AL, helper=r.ip):
-        if check_imm_arg(ofs, VMEM_imm_size):
+        if check_imm_arg(ofs):
             mc.VSTR(source.value, base.value, imm=ofs, cond=cond)
         else:
             mc.gen_load_int(helper.value, ofs, cond=cond)
@@ -1029,111 +1003,82 @@ class AssemblerARM(ResOpAssembler):
             mc.gen_load_int(helper.value, ofs, cond=cond)
             mc.STR_rr(source.value, base.value, helper.value, cond=cond)
 
-    def get_tmp_reg(self, forbidden_regs=None):
-        if forbidden_regs is None:
-            return r.ip, False
-        for x in [r.ip, r.lr]:
-            if x not in forbidden_regs:
-                return x, False
-        # pick some reg, that we need to save
-        for x in r.all_regs:
-            if x not in forbidden_regs:
-                return x, True
-        assert 0
-
     def _mov_imm_to_loc(self, prev_loc, loc, cond=c.AL):
-        if loc.type == FLOAT:
+        if not loc.is_reg() and not (loc.is_stack() and loc.type != FLOAT):
             raise AssertionError("invalid target for move from imm value")
-        if loc.is_core_reg():
+        if loc.is_reg():
             new_loc = loc
-        elif loc.is_stack() or loc.is_raw_sp():
+        elif loc.is_stack():
+            self.mc.PUSH([r.lr.value], cond=cond)
             new_loc = r.lr
         else:
             raise AssertionError("invalid target for move from imm value")
         self.mc.gen_load_int(new_loc.value, prev_loc.value, cond=cond)
         if loc.is_stack():
             self.regalloc_mov(new_loc, loc)
-        elif loc.is_raw_sp():
-            self.store_reg(self.mc, new_loc, r.sp, loc.value, cond=cond, helper=r.ip)
+            self.mc.POP([r.lr.value], cond=cond)
 
     def _mov_reg_to_loc(self, prev_loc, loc, cond=c.AL):
         if loc.is_imm():
             raise AssertionError("mov reg to imm doesn't make sense")
-        if loc.is_core_reg():
+        if loc.is_reg():
             self.mc.MOV_rr(loc.value, prev_loc.value, cond=cond)
         elif loc.is_stack() and loc.type != FLOAT:
             # spill a core register
-            temp, save = self.get_tmp_reg([prev_loc, loc])
+            if prev_loc is r.ip:
+                temp = r.lr
+            else:
+                temp = r.ip
             offset = loc.value
             is_imm = check_imm_arg(offset, size=0xFFF)
-            if not is_imm and save:
+            if not is_imm:
                 self.mc.PUSH([temp.value], cond=cond)
             self.store_reg(self.mc, prev_loc, r.fp, offset, helper=temp, cond=cond)
-            if not is_imm and save:
+            if not is_imm:
                 self.mc.POP([temp.value], cond=cond)
-        elif loc.is_raw_sp() and loc.type != FLOAT:
-            temp, save = self.get_tmp_reg([prev_loc])
-            assert not save
-            self.store_reg(self.mc, prev_loc, r.sp, loc.value, cond=cond, helper=temp)
         else:
             assert 0, 'unsupported case'
 
     def _mov_stack_to_loc(self, prev_loc, loc, cond=c.AL):
-        helper = None
-        offset = prev_loc.value
-        tmp = None
-        if loc.is_core_reg():
+        # disabled for now, has side effects in combination with remap_frame_layout when called from a jump
+        helper = None # self._regalloc.get_free_reg()
+        if loc.is_reg():
             assert prev_loc.type != FLOAT, 'trying to load from an \
                 incompatible location into a core register'
+            assert loc is not r.lr, 'lr is not supported as a target \
+                when moving from the stack'
             # unspill a core register
+            offset = prev_loc.value
             is_imm = check_imm_arg(offset, size=0xFFF)
-            helper, save = self.get_tmp_reg([loc])
-            save_helper = not is_imm and save
+            helper = r.lr if helper is None else helper
+            save_helper = not is_imm and helper is r.lr
         elif loc.is_vfp_reg():
             assert prev_loc.type == FLOAT, 'trying to load from an \
                 incompatible location into a float register'
             # load spilled value into vfp reg
+            offset = prev_loc.value
             is_imm = check_imm_arg(offset)
-            helper, save = self.get_tmp_reg()
-            save_helper = not is_imm and save
-        elif loc.is_raw_sp():
-            assert (loc.type == prev_loc.type == FLOAT
-                    or (loc.type != FLOAT and prev_loc.type != FLOAT))
-            tmp = loc
-            if loc.is_float():
-                loc = r.vfp_ip
-            else:
-                loc, save_helper = self.get_tmp_reg()
-                assert not save_helper
-            helper, save_helper = self.get_tmp_reg([loc])
-            assert not save_helper
+            helper = r.ip if helper is None else helper
+            save_helper = not is_imm and helper is r.ip
         else:
             assert 0, 'unsupported case'
-
         if save_helper:
             self.mc.PUSH([helper.value], cond=cond)
         self.load_reg(self.mc, loc, r.fp, offset, cond=cond, helper=helper)
         if save_helper:
             self.mc.POP([helper.value], cond=cond)
 
-        if tmp and tmp.is_raw_sp():
-            self.store_reg(self.mc, loc, r.sp, tmp.value, cond=cond, helper=helper)
-
     def _mov_imm_float_to_loc(self, prev_loc, loc, cond=c.AL):
         if loc.is_vfp_reg():
-            helper, save_helper = self.get_tmp_reg([loc])
-            if save_helper:
-                self.mc.PUSH([helper.value], cond=cond)
-            self.mc.gen_load_int(helper.value, prev_loc.getint(), cond=cond)
-            self.load_reg(self.mc, loc, helper, 0, cond=cond)
-            if save_helper:
-                self.mc.POP([helper.value], cond=cond)
-        elif loc.is_stack() and loc.type == FLOAT:
+            self.mc.PUSH([r.ip.value], cond=cond)
+            self.mc.gen_load_int(r.ip.value, prev_loc.getint(), cond=cond)
+            self.load_reg(self.mc, loc, r.ip, 0, cond=cond)
+            self.mc.POP([r.ip.value], cond=cond)
+        elif loc.is_stack():
+            self.regalloc_push(r.vfp_ip)
             self.regalloc_mov(prev_loc, r.vfp_ip, cond)
             self.regalloc_mov(r.vfp_ip, loc, cond)
-        elif loc.is_raw_sp() and loc.type == FLOAT:
-            self.regalloc_mov(prev_loc, r.vfp_ip, cond)
-            self.regalloc_mov(r.vfp_ip, loc, cond)
+            self.regalloc_pop(r.vfp_ip)
         else:
             assert 0, 'unsupported case'
 
@@ -1146,19 +1091,11 @@ class AssemblerARM(ResOpAssembler):
             # spill vfp register
             offset = loc.value
             is_imm = check_imm_arg(offset)
-            self.store_reg(self.mc, prev_loc, r.fp, offset, cond=cond, helper=r.ip)
-        elif loc.is_raw_sp():
-            assert loc.type == FLOAT, 'trying to store to an \
-                incompatible location from a float register'
-            self.store_reg(self.mc, prev_loc, r.sp, loc.value, cond=cond)
-        else:
-            assert 0, 'unsupported case'
-
-    def _mov_raw_sp_to_loc(self, prev_loc, loc, cond=c.AL):
-        if loc.is_core_reg():
-            # load a value from 'SP + n'
-            assert prev_loc.value <= 0xFFF     # not too far
-            self.load_reg(self.mc, loc, r.sp, prev_loc.value, cond=cond)
+            if not is_imm:
+                self.mc.PUSH([r.ip.value], cond=cond)
+            self.store_reg(self.mc, prev_loc, r.fp, offset, cond=cond)
+            if not is_imm:
+                self.mc.POP([r.ip.value], cond=cond)
         else:
             assert 0, 'unsupported case'
 
@@ -1166,7 +1103,7 @@ class AssemblerARM(ResOpAssembler):
         """Moves a value from a previous location to some other location"""
         if prev_loc.is_imm():
             return self._mov_imm_to_loc(prev_loc, loc, cond)
-        elif prev_loc.is_core_reg():
+        elif prev_loc.is_reg():
             self._mov_reg_to_loc(prev_loc, loc, cond)
         elif prev_loc.is_stack():
             self._mov_stack_to_loc(prev_loc, loc, cond)
@@ -1174,8 +1111,6 @@ class AssemblerARM(ResOpAssembler):
             self._mov_imm_float_to_loc(prev_loc, loc, cond)
         elif prev_loc.is_vfp_reg():
             self._mov_vfp_reg_to_loc(prev_loc, loc, cond)
-        elif prev_loc.is_raw_sp():
-            self._mov_raw_sp_to_loc(prev_loc, loc, cond)
         else:
             assert 0, 'unsupported case'
     mov_loc_loc = regalloc_mov
@@ -1187,29 +1122,23 @@ class AssemblerARM(ResOpAssembler):
         if vfp_loc.is_vfp_reg():
             self.mc.VMOV_rc(reg1.value, reg2.value, vfp_loc.value, cond=cond)
         elif vfp_loc.is_imm_float():
-            helper, save_helper = self.get_tmp_reg([reg1, reg2])
-            if save_helper:
-                self.mc.PUSH([helper.value], cond=cond)
-            self.mc.gen_load_int(helper.value, vfp_loc.getint(), cond=cond)
+            self.mc.PUSH([r.ip.value], cond=cond)
+            self.mc.gen_load_int(r.ip.value, vfp_loc.getint(), cond=cond)
             # we need to load one word to loc and one to loc+1 which are
             # two 32-bit core registers
-            self.mc.LDR_ri(reg1.value, helper.value, cond=cond)
-            self.mc.LDR_ri(reg2.value, helper.value, imm=WORD, cond=cond)
-            if save_helper:
-                self.mc.POP([helper.value], cond=cond)
+            self.mc.LDR_ri(reg1.value, r.ip.value, cond=cond)
+            self.mc.LDR_ri(reg2.value, r.ip.value, imm=WORD, cond=cond)
+            self.mc.POP([r.ip.value], cond=cond)
         elif vfp_loc.is_stack() and vfp_loc.type == FLOAT:
             # load spilled vfp value into two core registers
             offset = vfp_loc.value
             if not check_imm_arg(offset, size=0xFFF):
-                helper, save_helper = self.get_tmp_reg([reg1, reg2])
-                if save_helper:
-                    self.mc.PUSH([helper.value], cond=cond)
-                self.mc.gen_load_int(helper.value, offset, cond=cond)
-                self.mc.LDR_rr(reg1.value, r.fp.value, helper.value, cond=cond)
-                self.mc.ADD_ri(helper.value, helper.value, imm=WORD, cond=cond)
-                self.mc.LDR_rr(reg2.value, r.fp.value, helper.value, cond=cond)
-                if save_helper:
-                    self.mc.POP([helper.value], cond=cond)
+                self.mc.PUSH([r.ip.value], cond=cond)
+                self.mc.gen_load_int(r.ip.value, offset, cond=cond)
+                self.mc.LDR_rr(reg1.value, r.fp.value, r.ip.value, cond=cond)
+                self.mc.ADD_ri(r.ip.value, r.ip.value, imm=WORD, cond=cond)
+                self.mc.LDR_rr(reg2.value, r.fp.value, r.ip.value, cond=cond)
+                self.mc.POP([r.ip.value], cond=cond)
             else:
                 self.mc.LDR_ri(reg1.value, r.fp.value, imm=offset, cond=cond)
                 self.mc.LDR_ri(reg2.value, r.fp.value,
@@ -1227,15 +1156,12 @@ class AssemblerARM(ResOpAssembler):
             # move from two core registers to a float stack location
             offset = vfp_loc.value
             if not check_imm_arg(offset + WORD, size=0xFFF):
-                helper, save_helper = self.get_tmp_reg([reg1, reg2])
-                if save_helper:
-                    self.mc.PUSH([helper.value], cond=cond)
-                self.mc.gen_load_int(helper.value, offset, cond=cond)
-                self.mc.STR_rr(reg1.value, r.fp.value, helper.value, cond=cond)
-                self.mc.ADD_ri(helper.value, helper.value, imm=WORD, cond=cond)
-                self.mc.STR_rr(reg2.value, r.fp.value, helper.value, cond=cond)
-                if save_helper:
-                    self.mc.POP([helper.value], cond=cond)
+                self.mc.PUSH([r.ip.value], cond=cond)
+                self.mc.gen_load_int(r.ip.value, offset, cond=cond)
+                self.mc.STR_rr(reg1.value, r.fp.value, r.ip.value, cond=cond)
+                self.mc.ADD_ri(r.ip.value, r.ip.value, imm=WORD, cond=cond)
+                self.mc.STR_rr(reg2.value, r.fp.value, r.ip.value, cond=cond)
+                self.mc.POP([r.ip.value], cond=cond)
             else:
                 self.mc.STR_ri(reg1.value, r.fp.value, imm=offset, cond=cond)
                 self.mc.STR_ri(reg2.value, r.fp.value,
@@ -1255,7 +1181,7 @@ class AssemblerARM(ResOpAssembler):
                 scratch_reg = r.vfp_ip
             self.regalloc_mov(loc, scratch_reg, cond)
             self.regalloc_push(scratch_reg, cond)
-        elif loc.is_core_reg():
+        elif loc.is_reg():
             self.mc.PUSH([loc.value], cond=cond)
         elif loc.is_vfp_reg():
             self.mc.VPUSH([loc.value], cond=cond)
@@ -1278,7 +1204,7 @@ class AssemblerARM(ResOpAssembler):
                 scratch_reg = r.vfp_ip
             self.regalloc_pop(scratch_reg)
             self.regalloc_mov(scratch_reg, loc)
-        elif loc.is_core_reg():
+        elif loc.is_reg():
             self.mc.POP([loc.value], cond=cond)
         elif loc.is_vfp_reg():
             self.mc.VPOP([loc.value], cond=cond)
@@ -1346,7 +1272,7 @@ class AssemblerARM(ResOpAssembler):
 
         # lengthloc is the length of the array, which we must not modify!
         assert lengthloc is not r.r0 and lengthloc is not r.r1
-        if lengthloc.is_core_reg():
+        if lengthloc.is_reg():
             varsizeloc = lengthloc
         else:
             assert lengthloc.is_stack()
@@ -1482,30 +1408,8 @@ class AssemblerARM(ResOpAssembler):
         #
         return shiftsize
 
-    def simple_call(self, fnloc, arglocs, result_loc=r.r0):
-        if result_loc is None:
-            result_type = VOID
-            result_size = 0
-        elif result_loc.is_vfp_reg():
-            result_type = FLOAT
-            result_size = DOUBLE_WORD
-        else:
-            result_type = INT
-            result_size = WORD
-        cb = callbuilder.get_callbuilder(self.cpu, self, fnloc, arglocs,
-                                     result_loc, result_type,
-                                     result_size)
-        cb.emit()
-
-    def simple_call_no_collect(self, fnloc, arglocs):
-        cb = callbuilder.get_callbuilder(self.cpu, self, fnloc, arglocs)
-        cb.emit_no_collect()
-
-
 def not_implemented(msg):
-    msg = '[ARM/asm] %s\n' % msg
-    if we_are_translated():
-        llop.debug_print(lltype.Void, msg)
+    os.write(2, '[ARM/asm] %s\n' % msg)
     raise NotImplementedError(msg)
 
 
@@ -1514,14 +1418,29 @@ def notimplemented_op(self, op, arglocs, regalloc, fcond):
     raise NotImplementedError(op)
 
 
+def notimplemented_op_with_guard(self, op, guard_op, arglocs, regalloc, fcond):
+    print "[ARM/asm] %s with guard %s not implemented" % \
+                        (op.getopname(), guard_op.getopname())
+    raise NotImplementedError(op)
+
 asm_operations = [notimplemented_op] * (rop._LAST + 1)
-asm_extra_operations = {}
+asm_operations_with_guard = [notimplemented_op_with_guard] * (rop._LAST + 1)
+asm_llong_operations = {}
+asm_math_operations = {}
 
 for name, value in ResOpAssembler.__dict__.iteritems():
-    if name.startswith('emit_opx_'):
-        opname = name[len('emit_opx_'):]
-        num = getattr(EffectInfo, 'OS_' + opname.upper())
-        asm_extra_operations[num] = value
+    if name.startswith('emit_guard_'):
+        opname = name[len('emit_guard_'):]
+        num = getattr(rop, opname.upper())
+        asm_operations_with_guard[num] = value
+    elif name.startswith('emit_op_llong_'):
+        opname = name[len('emit_op_llong_'):]
+        num = getattr(EffectInfo, 'OS_LLONG_' + opname.upper())
+        asm_llong_operations[num] = value
+    elif name.startswith('emit_op_math_'):
+        opname = name[len('emit_op_math_'):]
+        num = getattr(EffectInfo, 'OS_MATH_' + opname.upper())
+        asm_math_operations[num] = value
     elif name.startswith('emit_op_'):
         opname = name[len('emit_op_'):]
         num = getattr(rop, opname.upper())

@@ -11,8 +11,6 @@ import _collections
 
 
 class defaultdict(dict):
-    __slots__ = ['default_factory']
-    __module__ = 'collections'
 
     def __init__(self, *args, **kwds):
         if len(args) > 0:
@@ -22,7 +20,7 @@ class defaultdict(dict):
                 raise TypeError("first argument must be callable")
         else:
             default_factory = None
-        defaultdict.default_factory.__set__(self, default_factory)
+        self.default_factory = default_factory
         super(defaultdict, self).__init__(*args, **kwds)
 
     def __missing__(self, key):
@@ -35,15 +33,15 @@ class defaultdict(dict):
             return "defaultdict(...)"
         try:
             recurse.add(id(self))
-            return "defaultdict(%s, %s)" % (self.default_factory,
-                                            super(defaultdict, self).__repr__())
+            return "defaultdict(%s, %s)" % (repr(self.default_factory), super(defaultdict, self).__repr__())
         finally:
             recurse.remove(id(self))
 
     def copy(self):
         return type(self)(self.default_factory, self)
 
-    __copy__ = copy
+    def __copy__(self):
+        return self.copy()
 
     def __reduce__(self):
         """
@@ -57,5 +55,4 @@ class defaultdict(dict):
 
            This API is used by pickle.py and copy.py.
         """
-        return (type(self), (self.default_factory,), None, None,
-                defaultdict.iteritems(self))
+        return (type(self), (self.default_factory,), None, None, self.iteritems())

@@ -1,3 +1,4 @@
+=============================
 PyPy's Configuration Handling
 =============================
 
@@ -5,17 +6,16 @@ Due to more and more available configuration options it became quite annoying to
 hand the necessary options to where they are actually used and even more
 annoying to add new options. To circumvent these problems configuration
 management was introduced. There all the necessary options are stored in a
-configuration object, which is available nearly everywhere in the `RPython
+configuration object, which is available nearly everywhere in the `RPython 
 toolchain`_ and in the standard interpreter so that adding new options becomes
 trivial. Options are organized into a tree. Configuration objects can be
 created in different ways, there is support for creating an optparse command
 line parser automatically.
 
-.. _RPython toolchain: https://rpython.readthedocs.org/
-
+_`RPython toolchain`: translation.html
 
 Main Assumption
----------------
+===============
 
 Configuration objects are produced at the entry points  and handed down to
 where they are actually used. This keeps configuration local but available
@@ -24,7 +24,7 @@ command line.
 
 
 API Details
------------
+===========
 
 The handling of options is split into two parts: the description of which
 options are available, what their possible values and defaults are and how they
@@ -40,9 +40,8 @@ The Options are organized in a tree. Every option has a name, as does every
 option group. The parts of the full name of the option are separated by dots:
 e.g. ``config.translation.thread``.
 
-
 Description of Options
-~~~~~~~~~~~~~~~~~~~~~~
+----------------------
 
 All the constructors take a ``name`` and a ``doc`` argument as first arguments
 to give the option or option group a name and to document it. Most constructors
@@ -71,7 +70,6 @@ This class is used to group suboptions.
         ``children`` is a list of option descriptions (including
         ``OptionDescription`` instances for nested namespaces).
 
-
 ``ChoiceOption``
 ++++++++++++++++
 
@@ -83,11 +81,10 @@ Represents a choice out of several objects. The option can also have the value
         ``requires`` is a dictionary mapping values to lists of of two-element
         tuples.
 
-
 ``BoolOption``
 ++++++++++++++
 
-Represents a choice between ``True`` and ``False``.
+Represents a choice between ``True`` and ``False``. 
 
     ``__init__(self, name, doc, default=None, requires=None, suggests=None, cmdline=DEFAULT, negation=True)``
         ``default`` specifies the default value of the option. ``requires`` is
@@ -106,6 +103,7 @@ Represents a choice between ``True`` and ``False``.
 Represents a choice of an integer.
 
     ``__init__(self, name, doc, default=None, cmdline=DEFAULT)``
+        
 
 
 ``FloatOption``
@@ -114,6 +112,7 @@ Represents a choice of an integer.
 Represents a choice of a floating point number.
 
     ``__init__(self, name, doc, default=None, cmdline=DEFAULT)``
+        
 
 
 ``StrOption``
@@ -122,10 +121,12 @@ Represents a choice of a floating point number.
 Represents the choice of a string.
 
     ``__init__(self, name, doc, default=None, cmdline=DEFAULT)``
+        
+
 
 
 Configuration Objects
-~~~~~~~~~~~~~~~~~~~~~
+---------------------
 
 ``Config`` objects hold the chosen values for the options (of the default,
 if no choice was made). A ``Config`` object is described by an
@@ -163,7 +164,7 @@ Description of the (useful) methods on ``Config``:
 
 
 Production of optparse Parsers
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+------------------------------
 
 To produce an optparse parser use the function ``to_optparse``. It will create
 an option parser using callbacks in such a way that the config object used for
@@ -181,11 +182,14 @@ creating the parser is updated automatically.
 
 
 The usage of config objects in PyPy
------------------------------------
+===================================
 
-The two large parts of PyPy, the Python interpreter and the RPython
+The two large parts of PyPy, the Python interpreter and the `RPython 
+toolchain`_ 
 toolchain, have two separate sets of options. The translation toolchain options
 can be found on the ``config`` attribute of all ``TranslationContext``
-instances and are described in :source:`rpython/config/translationoption.py`. The interpreter options
+instances and are described in `rpython/config/translationoption.py`_. The interpreter options
 are attached to the object space, also under the name ``config`` and are
-described in :source:`pypy/config/pypyoption.py`.
+described in `pypy/config/pypyoption.py`_.
+
+.. include:: _ref.txt

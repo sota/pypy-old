@@ -1,7 +1,6 @@
 from rpython.tool.udir import udir
 import os
 
-
 class AppTestFileIO:
     spaceconfig = dict(usemodules=['_io'] + (['fcntl'] if os.name != 'nt' else []))
 
@@ -18,15 +17,9 @@ class AppTestFileIO:
         import _io
         f = _io.FileIO(self.tmpfile, 'a')
         assert f.name.endswith('tmpfile')
-        assert f.mode == 'ab'
+        assert f.mode == 'wb'
         assert f.closefd is True
         f.close()
-
-    def test_invalid_fd(self):
-        import _io
-        raises(ValueError, _io.FileIO, -10)
-        raises(TypeError, _io.FileIO, 2 ** 31)
-        raises(TypeError, _io.FileIO, -2 ** 31 - 1)
 
     def test_weakrefable(self):
         import _io
@@ -82,8 +75,7 @@ class AppTestFileIO:
         import _io
         filename = self.tmpfile + '_w'
         f = _io.FileIO(filename, 'wb')
-        f.write("te")
-        f.write(u"st")
+        f.write("test")
         # try without flushing
         f2 = _io.FileIO(filename, 'rb')
         assert f2.read() == "test"
@@ -136,14 +128,6 @@ class AppTestFileIO:
         a = bytearray('x' * 10)
         f = _io.FileIO(self.tmpfile, 'r+')
         assert f.readinto(a) == 10
-        exc = raises(TypeError, f.readinto, u"hello")
-        assert str(exc.value) == "cannot use unicode as modifiable buffer"
-        exc = raises(TypeError, f.readinto, buffer(b"hello"))
-        assert str(exc.value) == "must be read-write buffer, not buffer"
-        exc = raises(TypeError, f.readinto, buffer(bytearray("hello")))
-        assert str(exc.value) == "must be read-write buffer, not buffer"
-        exc = raises(TypeError, f.readinto, memoryview(b"hello"))
-        assert str(exc.value) == "must be read-write buffer, not memoryview"
         f.close()
         assert a == 'a\nb\nc\0\0\0\0\0'
         #
@@ -181,47 +165,6 @@ class AppTestFileIO:
         f.close()
         assert repr(f) == "<_io.FileIO [closed]>"
 
-    def test_unclosed_fd_on_exception(self):
-        import _io
-        import os
-        class MyException(Exception): pass
-        class MyFileIO(_io.FileIO):
-            def __setattr__(self, name, value):
-                if name == "name":
-                    raise MyException("blocked setting name")
-                return super(MyFileIO, self).__setattr__(name, value)
-        fd = os.open(self.tmpfile, os.O_RDONLY)
-        raises(MyException, MyFileIO, fd)
-        os.close(fd)  # should not raise OSError(EBADF)
-
-    def test_mode_strings(self):
-        import _io
-        import os
-        for modes in [('w', 'wb'), ('wb', 'wb'), ('wb+', 'rb+'),
-                      ('w+b', 'rb+'), ('a', 'ab'), ('ab', 'ab'),
-                      ('ab+', 'ab+'), ('a+b', 'ab+'), ('r', 'rb'),
-                      ('rb', 'rb'), ('rb+', 'rb+'), ('r+b', 'rb+')]:
-            # read modes are last so that TESTFN will exist first
-            with _io.FileIO(self.tmpfile, modes[0]) as f:
-                assert f.mode == modes[1]
-
-    def test_flush_error_on_close(self):
-        # Test that the file is closed despite failed flush
-        # and that flush() is called before file closed.
-        import _io, os
-        fd = os.open(self.tmpfile, os.O_RDONLY, 0666)
-        f = _io.FileIO(fd, 'r', closefd=False)
-        closed = []
-        def bad_flush():
-            closed[:] = [f.closed]
-            raise IOError()
-        f.flush = bad_flush
-        raises(IOError, f.close) # exception not swallowed
-        assert f.closed
-        assert closed         # flush() called
-        assert not closed[0]  # flush() called before file closed
-        os.close(fd)
-
 def test_flush_at_exit():
     from pypy import conftest
     from pypy.tool.option import make_config, make_objspace
@@ -233,13 +176,12 @@ def test_flush_at_exit():
     space.appexec([space.wrap(str(tmpfile))], """(tmpfile):
         import io
         f = io.open(tmpfile, 'w', encoding='ascii')
-        f.write(u'42')
+        f.write('42')
         # no flush() and no close()
         import sys; sys._keepalivesomewhereobscure = f
     """)
     space.finish()
     assert tmpfile.read() == '42'
-
 
 def test_flush_at_exit_IOError_and_ValueError():
     from pypy import conftest

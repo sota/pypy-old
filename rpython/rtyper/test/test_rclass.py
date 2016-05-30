@@ -6,10 +6,11 @@ from rpython.flowspace.model import summary
 from rpython.rlib.rarithmetic import r_longlong
 from rpython.rtyper.lltypesystem.lltype import (typeOf, Signed, getRuntimeTypeInfo,
     identityhash)
+from rpython.rtyper.ootypesystem import ootype
 from rpython.rtyper.error import TyperError
 from rpython.rtyper.rclass import (IR_IMMUTABLE, IR_IMMUTABLE_ARRAY,
     IR_QUASIIMMUTABLE, IR_QUASIIMMUTABLE_ARRAY)
-from rpython.rtyper.test.tool import BaseRtypingTest
+from rpython.rtyper.test.tool import BaseRtypingTest, LLRtypeMixin, OORtypeMixin
 from rpython.translator.translator import TranslationContext, graphof
 
 
@@ -35,7 +36,7 @@ class B(A):
 class C(B):
     pass
 
-class TestRclass(BaseRtypingTest):
+class BaseTestRclass(BaseRtypingTest):
 
     def test_instanceattr(self):
         def dummyfn():
@@ -70,7 +71,7 @@ class TestRclass(BaseRtypingTest):
                 return A
             else:
                 return B
-
+            
         def dummyfn(i):
             C = pick(i)
             i = C()
@@ -92,7 +93,7 @@ class TestRclass(BaseRtypingTest):
                 return A
             else:
                 return B
-
+            
         def dummyfn(i):
             C = pick(i)
             i = C()
@@ -280,14 +281,14 @@ class TestRclass(BaseRtypingTest):
 
         class B(A):
             pass
-
+        
         def f():
             a = A()
             b = B()
             a.meth(1) # the self of this variant is annotated with A
             b.meth(2) # the self of this variant is annotated with B
             return 42
-
+        
         res = self.interpret(f, [])
         assert res == 42
 
@@ -299,18 +300,18 @@ class TestRclass(BaseRtypingTest):
         class B(A):
             pass
         def f(i):
-            if i == 0:
+            if i == 0: 
                 c1 = A()
-            else:
+            else: 
                 c1 = B()
             return issubclass(type(c1), B)
-        assert self.interpret(f, [0]) == False
+        assert self.interpret(f, [0]) == False 
         assert self.interpret(f, [1]) == True
 
         def g(i):
-            if i == 0:
+            if i == 0: 
                 c1 = A()
-            else:
+            else: 
                 c1 = B()
             return issubclass(type(c1), A)
         assert self.interpret(g, [0]) == True
@@ -440,25 +441,6 @@ class TestRclass(BaseRtypingTest):
         res = self.interpret(f, [3])
         assert res == ~0x0200 & 0x3ff
 
-    def test_class___name__(self):
-        class ACLS(object): pass
-        class Bcls(ACLS): pass
-        class CCls(ACLS): pass
-        def nameof(cls):
-            return cls.__name__
-        nameof._annspecialcase_ = "specialize:memo"
-        def f(i):
-            if i == 1: x = ACLS()
-            elif i == 2: x = Bcls()
-            else: x = CCls()
-            return nameof(x.__class__)
-        res = self.interpret(f, [1])
-        assert ''.join(res.chars) == 'ACLS'
-        res = self.interpret(f, [2])
-        assert ''.join(res.chars) == 'Bcls'
-        res = self.interpret(f, [3])
-        assert ''.join(res.chars) == 'CCls'
-
     def test_hash_preservation(self):
         from rpython.rlib.objectmodel import current_object_addr_as_int
         from rpython.rlib.objectmodel import compute_identity_hash
@@ -486,9 +468,11 @@ class TestRclass(BaseRtypingTest):
         # a value that is (or was) the current_object_addr_as_int().
         # --- disabled: assert res.item0 == res.item1
         # the following property is essential on top of the lltypesystem
-        # otherwise prebuilt dictionaries are broken.
-        assert res.item2 == h_c
-        assert res.item3 == h_d
+        # otherwise prebuilt dictionaries are broken.  It's wrong on
+        # top of the ootypesystem though.
+        if isinstance(self, LLRtypeMixin):
+            assert res.item2 == h_c
+            assert res.item3 == h_d
 
     def test_circular_hash_initialization(self):
         class B:
@@ -533,10 +517,10 @@ class TestRclass(BaseRtypingTest):
 
         def f():
             return type(a) is A
-
+        
         res = self.interpret(f, [])
-
-
+        
+        
     def test_void_fnptr(self):
         def g():
             return 42
@@ -748,7 +732,7 @@ class TestRclass(BaseRtypingTest):
     def test_immutable(self):
         class I(object):
             _immutable_ = True
-
+            
             def __init__(self, v):
                 self.v = v
 
@@ -774,7 +758,9 @@ class TestRclass(BaseRtypingTest):
         A_TYPE = deref(graph.getreturnvar().concretetype)
         accessor = A_TYPE._hints["immutable_fields"]
         assert accessor.fields == {"inst_x": IR_IMMUTABLE,
-                                   "inst_y": IR_IMMUTABLE_ARRAY}
+                                   "inst_y": IR_IMMUTABLE_ARRAY} or \
+               accessor.fields == {"ox": IR_IMMUTABLE,
+                                   "oy": IR_IMMUTABLE_ARRAY} # for ootype
 
     def test_immutable_fields_subclass_1(self):
         from rpython.jit.metainterp.typesystem import deref
@@ -792,7 +778,8 @@ class TestRclass(BaseRtypingTest):
         t, typer, graph = self.gengraph(f, [])
         B_TYPE = deref(graph.getreturnvar().concretetype)
         accessor = B_TYPE._hints["immutable_fields"]
-        assert accessor.fields == {"inst_x": IR_IMMUTABLE}
+        assert accessor.fields == {"inst_x": IR_IMMUTABLE} or \
+               accessor.fields == {"ox": IR_IMMUTABLE} # for ootype
 
     def test_immutable_fields_subclass_2(self):
         from rpython.jit.metainterp.typesystem import deref
@@ -812,7 +799,9 @@ class TestRclass(BaseRtypingTest):
         B_TYPE = deref(graph.getreturnvar().concretetype)
         accessor = B_TYPE._hints["immutable_fields"]
         assert accessor.fields == {"inst_x": IR_IMMUTABLE,
-                                   "inst_y": IR_IMMUTABLE}
+                                   "inst_y": IR_IMMUTABLE} or \
+               accessor.fields == {"ox": IR_IMMUTABLE,
+                                   "oy": IR_IMMUTABLE} # for ootype
 
     def test_immutable_fields_only_in_subclass(self):
         from rpython.jit.metainterp.typesystem import deref
@@ -830,7 +819,8 @@ class TestRclass(BaseRtypingTest):
         t, typer, graph = self.gengraph(f, [])
         B_TYPE = deref(graph.getreturnvar().concretetype)
         accessor = B_TYPE._hints["immutable_fields"]
-        assert accessor.fields == {"inst_y": IR_IMMUTABLE}
+        assert accessor.fields == {"inst_y": IR_IMMUTABLE} or \
+               accessor.fields == {"oy": IR_IMMUTABLE} # for ootype
 
     def test_immutable_forbidden_inheritance_1(self):
         from rpython.rtyper.rclass import ImmutableConflictError
@@ -869,9 +859,13 @@ class TestRclass(BaseRtypingTest):
         t, typer, graph = self.gengraph(f, [])
         B_TYPE = deref(graph.getreturnvar().concretetype)
         assert B_TYPE._hints["immutable"]
-        A_TYPE = B_TYPE.super
+        try:
+            A_TYPE = B_TYPE.super
+        except AttributeError:
+            A_TYPE = B_TYPE._superclass  # for ootype
         accessor = A_TYPE._hints["immutable_fields"]
-        assert accessor.fields == {"inst_v": IR_IMMUTABLE}
+        assert accessor.fields == {"inst_v": IR_IMMUTABLE} or \
+               accessor.fields == {"ov": IR_IMMUTABLE} # for ootype
 
     def test_immutable_subclass_1(self):
         from rpython.rtyper.rclass import ImmutableConflictError
@@ -936,25 +930,16 @@ class TestRclass(BaseRtypingTest):
         B_TYPE = deref(graph.getreturnvar().concretetype)
         accessor = B_TYPE._hints["immutable_fields"]
         assert accessor.fields == {"inst_y": IR_IMMUTABLE,
-                                   "inst_b": IR_QUASIIMMUTABLE}
+                                   "inst_b": IR_QUASIIMMUTABLE} or \
+               accessor.fields == {"ox": IR_IMMUTABLE,
+                                   "oy": IR_IMMUTABLE,
+                                   "oa": IR_QUASIIMMUTABLE,
+                                   "ob": IR_QUASIIMMUTABLE} # for ootype
         found = []
         for op in graph.startblock.operations:
             if op.opname == 'jit_force_quasi_immutable':
                 found.append(op.args[1].value)
         assert found == ['mutate_a', 'mutate_a', 'mutate_b']
-
-    def test_quasi_immutable_clashes_with_immutable(self):
-        from rpython.jit.metainterp.typesystem import deref
-        class A(object):
-            _immutable_ = True
-            _immutable_fields_ = ['a?']
-        def f():
-            a = A()
-            a.x = 42
-            a.a = 142
-            return A()
-        with py.test.raises(TyperError):
-            self.gengraph(f, [])
 
     def test_quasi_immutable_array(self):
         from rpython.jit.metainterp.typesystem import deref
@@ -969,7 +954,8 @@ class TestRclass(BaseRtypingTest):
         t, typer, graph = self.gengraph(f, [])
         A_TYPE = deref(graph.getreturnvar().concretetype)
         accessor = A_TYPE._hints["immutable_fields"]
-        assert accessor.fields == {"inst_c": IR_QUASIIMMUTABLE_ARRAY}
+        assert accessor.fields == {"inst_c": IR_QUASIIMMUTABLE_ARRAY} or \
+               accessor.fields == {"oc": IR_QUASIIMMUTABLE_ARRAY} # for ootype
         found = []
         for op in graph.startblock.operations:
             if op.opname == 'jit_force_quasi_immutable':
@@ -986,6 +972,8 @@ class TestRclass(BaseRtypingTest):
             B()
         self.gengraph(f, [])
 
+
+class TestLLtype(BaseTestRclass, LLRtypeMixin):
 
     def test__del__(self):
         class A(object):
@@ -1157,12 +1145,23 @@ class TestRclass(BaseRtypingTest):
             assert sorted([u]) == [6]                    # 32-bit types
             assert sorted([i, r, d, l]) == [2, 3, 4, 5]  # 64-bit types
 
+    def test_nonmovable(self):
+        for (nonmovable, opname) in [(True, 'malloc_nonmovable'),
+                                     (False, 'malloc')]:
+            class A(object):
+                _alloc_nonmovable_ = nonmovable
+            def f():
+                return A()
+            t, typer, graph = self.gengraph(f, [])
+            assert summary(graph) == {opname: 1,
+                                      'cast_pointer': 1,
+                                      'setfield': 1}
 
     def test_iter(self):
         class Iterable(object):
             def __init__(self):
                 self.counter = 0
-
+            
             def __iter__(self):
                 return self
 
@@ -1185,7 +1184,7 @@ class TestRclass(BaseRtypingTest):
         class BaseIterable(object):
             def __init__(self):
                 self.counter = 0
-
+            
             def __iter__(self):
                 return self
 
@@ -1194,7 +1193,7 @@ class TestRclass(BaseRtypingTest):
                     raise StopIteration
                 self.counter += self.step
                 return self.counter - 1
-
+        
         class Iterable(BaseIterable):
             step = 1
 
@@ -1214,94 +1213,124 @@ class TestRclass(BaseRtypingTest):
         assert self.interpret(f, [True]) == f(True)
         assert self.interpret(f, [False]) == f(False)
 
-    def test_indexing(self):
+
+class TestOOtype(BaseTestRclass, OORtypeMixin):
+
+    def test__del__(self):
         class A(object):
-            def __init__(self, data):
-                self.data = data
-
-            def __getitem__(self, i):
-                return self.data[i]
-
-            def __setitem__(self, i, v):
-                self.data[i] = v
-
-            def __getslice__(self, start, stop):
-                assert start >= 0
-                assert stop >= 0
-                return self.data[start:stop]
-
-            def __setslice__(self, start, stop, v):
-                assert start >= 0
-                assert stop >= 0
-                i = 0
-                for n in range(start, stop):
-                    self.data[n] = v[i]
-                    i += 1
-
-        def getitem(i):
-            a = A("abcdefg")
-            return a[i]
-
-        def setitem(i, v):
-            a = A([0] * 5)
-            a[i] = v
-            return a[i]
-
-        def getslice(start, stop):
-            a = A([1, 2, 3, 4, 5, 6])
-            sum = 0
-            for i in a[start:stop]:
-                sum += i
-            return sum
-
-        def setslice(start, stop, i):
-            a = A([0] * stop)
-            a[start:stop] = range(start, stop)
-            return a[i]
-
-        assert self.interpret(getitem, [0]) == getitem(0)
-        assert self.interpret(getitem, [1]) == getitem(1)
-        assert self.interpret(setitem, [0, 5]) == setitem(0, 5)
-        assert self.interpret(getslice, [0, 4]) == getslice(0, 4)
-        assert self.interpret(getslice, [1, 4]) == getslice(1, 4)
-        assert self.interpret(setslice, [4, 6, 5]) == setslice(4, 6, 5)
-
-    def test_len(self):
-        class A(object):
-            def __len__(self):
-                return 5
-
-        def fn():
-            a = A()
-            return len(a)
-
-        assert self.interpret(fn, []) == fn()
-
-    def test_init_with_star_args(self):
-        class Base(object):
-            def __init__(self, a, b):
-                self.a = a
-                self.b = b
-        class A(Base):
-            def __init__(self, *args):
-                Base.__init__(self, *args)
-                self.c = -1
-        cls = [Base, A]
-
-        def f(k, a, b):
-            return cls[k](a, b).b
-
-        assert self.interpret(f, [1, 4, 7]) == 7
-
-    def test_flatten_convert_const(self):
-        # check that we can convert_const() a chain of more than 1000
-        # instances
-        class A(object):
-            def __init__(self, next):
-                self.next = next
-        a = None
-        for i in range(1500):
-            a = A(a)
+            def __init__(self):
+                self.a = 2
+            def __del__(self):
+                self.a = 3
         def f():
-            return a.next.next.next.next is not None
-        assert self.interpret(f, []) == True
+            a = A()
+            return a.a
+        t = TranslationContext()
+        t.buildannotator().build_types(f, [])
+        t.buildrtyper(type_system=self.type_system).specialize()
+        graph = graphof(t, f)
+        TYPE = graph.startblock.operations[0].args[0].value
+        _, meth = TYPE._lookup("o__del__")
+        assert meth.finalizer
+
+    def test_del_inheritance(self):
+        from rpython.rlib import rgc
+        class State:
+            pass
+        s = State()
+        s.a_dels = 0
+        s.b_dels = 0
+        class A(object):
+            def __del__(self):
+                s.a_dels += 1
+        class B(A):
+            def __del__(self):
+                s.b_dels += 1
+        class C(A):
+            pass
+        def f():
+            A()
+            B()
+            C()
+            A()
+            B()
+            C()
+            rgc.collect()
+            return s.a_dels * 10 + s.b_dels
+        res = f()
+        assert res == 42
+        t = TranslationContext()
+        t.buildannotator().build_types(f, [])
+        t.buildrtyper(type_system=self.type_system).specialize()
+        graph = graphof(t, f)
+        TYPEA = graph.startblock.operations[0].args[0].value
+        TYPEB = graph.startblock.operations[1].args[0].value
+        TYPEC = graph.startblock.operations[2].args[0].value
+        _, destra = TYPEA._lookup("o__del__")
+        _, destrb = TYPEB._lookup("o__del__")
+        _, destrc = TYPEC._lookup("o__del__")
+        assert destra == destrc
+        assert destrb is not None
+        assert destra is not None
+
+    def test_cast_object_instance(self):
+        A = ootype.Instance("Foo", ootype.ROOT)
+
+        def fn_instance():
+            a = ootype.new(A)
+            obj = ootype.cast_to_object(a)
+            a2 = ootype.cast_from_object(A, obj)
+            a3 = ootype.cast_from_object(ootype.ROOT, obj)
+            assert a is a2
+            assert a is a3
+        self.interpret(fn_instance, [])
+
+    def test_cast_object_record(self):
+        B = ootype.Record({'x': ootype.Signed}) 
+
+        def fn_record():
+            b = ootype.new(B)
+            b.x = 42
+            obj = ootype.cast_to_object(b)
+            b2 = ootype.cast_from_object(B, obj)
+            assert b2.x == 42
+            assert b is b2
+        self.interpret(fn_record, [])
+
+    def test_cast_object_null(self):
+        A = ootype.Instance("Foo", ootype.ROOT)
+        B = ootype.Record({'x': ootype.Signed}) 
+
+        def fn_null():
+            a = ootype.null(A)
+            b = ootype.null(B)
+            obj1 = ootype.cast_to_object(a)
+            obj2 = ootype.cast_to_object(b)
+            assert obj1 == obj2
+            assert ootype.cast_from_object(A, obj1) == a
+            assert ootype.cast_from_object(B, obj2) == b
+        self.interpret(fn_null, [])
+
+    def test_cast_object_is_true(self):
+        A = ootype.Instance("Foo", ootype.ROOT)
+        def fn_is_true(flag):
+            if flag:
+                a = ootype.new(A)
+            else:
+                a = ootype.null(A)
+            obj = ootype.cast_to_object(a)
+            return bool(obj)
+        assert self.interpret(fn_is_true, [True]) is True
+        assert self.interpret(fn_is_true, [False]) is False
+
+    def test_cast_object_mix_null(self):
+        A = ootype.Instance("Foo", ootype.ROOT)
+        def fn_mix_null(flag):
+            a = ootype.new(A)
+            obj = ootype.cast_to_object(a)
+            if flag:
+                return obj
+            else:
+                return ootype.NULL
+        res = self.interpret(fn_mix_null, [False])
+        assert res is ootype.NULL

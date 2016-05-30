@@ -4,8 +4,7 @@ static PyMethodDef dotted_functions[] = {
     {NULL, NULL}
 };
 
-PyMODINIT_FUNC
-initdotted(void)
+void initdotted(void)
 {
     Py_InitModule("pypy.module.cpyext.test.dotted", dotted_functions);
 }

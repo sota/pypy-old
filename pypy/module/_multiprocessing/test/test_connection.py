@@ -8,13 +8,8 @@ class TestImport:
         from pypy.module._multiprocessing import interp_semaphore
 
 class AppTestBufferTooShort:
-    spaceconfig = {'usemodules': ['_multiprocessing', 'thread', 'signal',
-                                  'itertools', 'select', 'struct', 'binascii']}
-    if sys.platform == 'win32':
-        spaceconfig['usemodules'].append('_rawffi')
-    else:
-        spaceconfig['usemodules'].append('fcntl')
-
+    spaceconfig = dict(usemodules=['_multiprocessing', 'thread', 'signal',
+                                   'itertools'])
 
     def setup_class(cls):
         if cls.runappdirect:
@@ -73,14 +68,7 @@ class BaseConnectionTest(object):
         assert rhandle.readable
 
 class AppTestWinpipeConnection(BaseConnectionTest):
-    spaceconfig = {
-        "usemodules": [
-            '_multiprocessing', 'thread', 'signal', 'struct', 'array',
-            'itertools', '_socket', 'binascii',
-        ]
-    }
-    if sys.platform == 'win32':
-        spaceconfig['usemodules'].append('_rawffi')
+    spaceconfig = dict(usemodules=('_multiprocessing', 'thread', 'signal'))
 
     def setup_class(cls):
         if sys.platform != "win32":
@@ -92,6 +80,7 @@ class AppTestWinpipeConnection(BaseConnectionTest):
             # just for multiprocessing to import correctly on Windows
             w_modules = space.sys.get('modules')
             space.setitem(w_modules, space.wrap('msvcrt'), space.sys)
+            space.setitem(w_modules, space.wrap('_subprocess'), space.sys)
         else:
             import _multiprocessing
 
@@ -105,12 +94,9 @@ class AppTestSocketConnection(BaseConnectionTest):
     spaceconfig = {
         "usemodules": [
             '_multiprocessing', 'thread', 'signal', 'struct', 'array',
-            'itertools', '_socket', 'binascii', 'select' ]
+            'itertools', '_socket', 'binascii',
+        ]
     }
-    if sys.platform == 'win32':
-        spaceconfig['usemodules'].append('_rawffi')
-    else:
-        spaceconfig['usemodules'].append('fcntl')
 
     def setup_class(cls):
         cls.w_connections = cls.space.newlist([])
@@ -187,13 +173,3 @@ class AppTestSocketConnection(BaseConnectionTest):
         assert data1 == '\x00\x00\x00\x03abc'
         data2 = sock.recv(8)
         assert data2 == '\x00\x00\x00\x04defg'
-
-    def test_repr(self):
-        import _multiprocessing, os
-        fd = os.dup(1)     # closed by Connection.__del__
-        c = _multiprocessing.Connection(fd)
-        assert repr(c) == '<read-write Connection, handle %d>' % fd
-        if hasattr(_multiprocessing, 'PipeConnection'):
-            fd = os.dup(1)     # closed by PipeConnection.__del__
-            c = _multiprocessing.PipeConnection(fd)
-            assert repr(c) == '<read-write PipeConnection, handle %d>' % fd

@@ -7,8 +7,8 @@
 extern "C" {
 #endif
 
-#define PyString_GET_SIZE(op) PyString_Size((PyObject*)(op))
-#define PyString_AS_STRING(op) PyString_AsString((PyObject*)(op))
+#define PyString_GET_SIZE(op) PyString_Size(op)
+#define PyString_AS_STRING(op) PyString_AsString(op)
 
 typedef struct {
     PyObject_HEAD
@@ -16,8 +16,8 @@ typedef struct {
     Py_ssize_t size;
 } PyStringObject;
 
-PyAPI_FUNC(PyObject *) PyString_FromFormatV(const char *format, va_list vargs);
-PyAPI_FUNC(PyObject *) PyString_FromFormat(const char *format, ...);
+PyObject *PyString_FromFormatV(const char *format, va_list vargs);
+PyObject *PyString_FromFormat(const char *format, ...);
 
 #ifdef __cplusplus
 }

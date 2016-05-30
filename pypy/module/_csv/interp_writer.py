@@ -160,7 +160,8 @@ def csv_writer(space, w_fileobj, w_dialect=None,
     return W_Writer(space, dialect, w_fileobj)
 
 W_Writer.typedef = TypeDef(
-        '_csv.writer',
+        'writer',
+        __module__ = '_csv',
         dialect = interp_attrproperty_w('dialect', W_Writer),
         writerow = interp2app(W_Writer.writerow),
         writerows = interp2app(W_Writer.writerows),

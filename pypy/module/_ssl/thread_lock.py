@@ -1,5 +1,4 @@
-from rpython.rlib import rthread
-from rpython.rlib.ropenssl import libraries
+from rpython.rlib.ropenssl import *
 from rpython.rtyper.lltypesystem import lltype, rffi
 from rpython.translator.tool.cbuild import ExternalCompilationInfo
 
@@ -23,20 +22,14 @@ from rpython.translator.tool.cbuild import ExternalCompilationInfo
 # without caring about the GIL.
 
 separate_module_source = """
+
 #include <openssl/crypto.h>
-#ifndef _WIN32
-# include <pthread.h>
-#endif
 
 static unsigned int _ssl_locks_count = 0;
 static struct RPyOpaque_ThreadLock *_ssl_locks;
 
 static unsigned long _ssl_thread_id_function(void) {
-#ifdef _WIN32
-    return (unsigned long)GetCurrentThreadId();
-#else
-    return (unsigned long)pthread_self();
-#endif
+    return RPyThreadGetIdent();
 }
 
 static void _ssl_thread_locking_function(int mode, int n, const char *file,
@@ -69,11 +62,13 @@ int _PyPy_SSL_SetupThreads(void)
 }
 """
 
+from rpython.rlib import rthread
+
 eci = rthread.eci.merge(ExternalCompilationInfo(
     separate_module_sources=[separate_module_source],
     post_include_bits=[
-        "RPY_EXTERN int _PyPy_SSL_SetupThreads(void);"],
-    libraries = libraries,
+        "int _PyPy_SSL_SetupThreads(void);"],
+    export_symbols=['_PyPy_SSL_SetupThreads'],
 ))
 
 _PyPy_SSL_SetupThreads = rffi.llexternal('_PyPy_SSL_SetupThreads',

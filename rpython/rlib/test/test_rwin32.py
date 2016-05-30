@@ -58,9 +58,3 @@ def test_wenviron():
     for key, value in env.iteritems():
         assert type(key) is unicode
         assert type(value) is unicode
-
-def test_formaterror():
-    # choose one with formatting characters and newlines
-    msg = rwin32.FormatError(34)
-    assert '%2' in msg
-

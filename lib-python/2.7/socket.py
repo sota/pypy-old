@@ -65,6 +65,7 @@ else:
     from _ssl import SSLError as sslerror
     from _ssl import \
          RAND_add, \
+         RAND_egd, \
          RAND_status, \
          SSL_ERROR_ZERO_RETURN, \
          SSL_ERROR_WANT_READ, \
@@ -75,11 +76,6 @@ else:
          SSL_ERROR_WANT_CONNECT, \
          SSL_ERROR_EOF, \
          SSL_ERROR_INVALID_ERROR_CODE
-    try:
-        from _ssl import RAND_egd
-    except ImportError:
-        # LibreSSL does not provide RAND_egd
-        pass
 
 import os, sys, warnings
 
@@ -100,7 +96,6 @@ __all__.extend(os._get_exports_list(_socket))
 
 
 _realsocket = socket
-_type = type
 
 # WSA error codes
 if sys.platform.lower().startswith("win"):
@@ -149,34 +144,6 @@ def getfqdn(name=''):
             name = hostname
     return name
 
-class RefCountingWarning(UserWarning):
-    pass
-
-def _do_reuse_or_drop(socket, methname):
-    try:
-        method = getattr(socket, methname)
-    except (AttributeError, TypeError):
-        warnings.warn("""'%s' object has no _reuse/_drop methods
-{{
-    You make use (or a library you are using makes use) of the internal
-    classes '_socketobject' and '_fileobject' in socket.py, initializing
-    them with custom objects.  On PyPy, these custom objects need two
-    extra methods, _reuse() and _drop(), that maintain an explicit
-    reference counter.  When _drop() has been called as many times as
-    _reuse(), then the object should be freed.
-
-    Without these methods, you get the warning here.  This is to
-    prevent the following situation: if your (or the library's) code
-    relies on reference counting for prompt closing, then on PyPy, the
-    __del__ method will be called later than on CPython.  You can
-    easily end up in a situation where you open and close a lot of
-    (high-level) '_socketobject' or '_fileobject', but the (low-level)
-    custom objects will accumulate before their __del__ are called.
-    You quickly risk running out of file descriptors, for example.
-}}""" % (socket.__class__.__name__,), RefCountingWarning, stacklevel=3)
-    else:
-        method()
-
 
 _socketmethods = (
     'bind', 'connect', 'connect_ex', 'fileno', 'listen',
@@ -197,8 +164,6 @@ class _closedsocket(object):
     # All _delegate_methods must also be initialized here.
     send = recv = recv_into = sendto = recvfrom = recvfrom_into = _dummy
     __getattr__ = _dummy
-    def _drop(self):
-        pass
 
 # Wrapper around platform socket objects. This implements
 # a platform-independent dup() functionality. The
@@ -208,34 +173,31 @@ class _socketobject(object):
 
     __doc__ = _realsocket.__doc__
 
-    __slots__ = ["_sock", "__weakref__"]
-
     def __init__(self, family=AF_INET, type=SOCK_STREAM, proto=0, _sock=None):
         if _sock is None:
             _sock = _realsocket(family, type, proto)
-        else:
-            _do_reuse_or_drop(_sock, '_reuse')
-
         self._sock = _sock
+        self._io_refs = 0
+        self._closed = False
 
     def send(self, data, flags=0):
-        return self._sock.send(data, flags)
+        return self._sock.send(data, flags=flags)
     send.__doc__ = _realsocket.send.__doc__
 
     def recv(self, buffersize, flags=0):
-        return self._sock.recv(buffersize, flags)
+        return self._sock.recv(buffersize, flags=flags)
     recv.__doc__ = _realsocket.recv.__doc__
 
     def recv_into(self, buffer, nbytes=0, flags=0):
-        return self._sock.recv_into(buffer, nbytes, flags)
+        return self._sock.recv_into(buffer, nbytes=nbytes, flags=flags)
     recv_into.__doc__ = _realsocket.recv_into.__doc__
 
     def recvfrom(self, buffersize, flags=0):
-        return self._sock.recvfrom(buffersize, flags)
+        return self._sock.recvfrom(buffersize, flags=flags)
     recvfrom.__doc__ = _realsocket.recvfrom.__doc__
 
     def recvfrom_into(self, buffer, nbytes=0, flags=0):
-        return self._sock.recvfrom_into(buffer, nbytes, flags)
+        return self._sock.recvfrom_into(buffer, nbytes=nbytes, flags=flags)
     recvfrom_into.__doc__ = _realsocket.recvfrom_into.__doc__
 
     def sendto(self, data, param2, param3=None):
@@ -246,16 +208,13 @@ class _socketobject(object):
     sendto.__doc__ = _realsocket.sendto.__doc__
 
     def close(self):
-        s = self._sock
+        # This function should not reference any globals. See issue #808164.
         self._sock = _closedsocket()
-        _do_reuse_or_drop(s, '_drop')
     close.__doc__ = _realsocket.close.__doc__
 
     def accept(self):
         sock, addr = self._sock.accept()
-        sockobj = _socketobject(_sock=sock)
-        _do_reuse_or_drop(sock, '_drop') # already a copy in the _socketobject()
-        return sockobj, addr
+        return _socketobject(_sock=sock), addr
     accept.__doc__ = _realsocket.accept.__doc__
 
     def dup(self):
@@ -269,7 +228,24 @@ class _socketobject(object):
 
         Return a regular file object corresponding to the socket.  The mode
         and bufsize arguments are as for the built-in open() function."""
-        return _fileobject(self._sock, mode, bufsize)
+        self._io_refs += 1
+        return _fileobject(self, mode, bufsize)
+
+    def _decref_socketios(self):
+        if self._io_refs > 0:
+            self._io_refs -= 1
+        if self._closed:
+            self.close()
+
+    def _real_close(self):
+        # This function should not reference any globals. See issue #808164.
+        self._sock.close()
+
+    def close(self):
+        # This function should not reference any globals. See issue #808164.
+        self._closed = True
+        if self._io_refs <= 0:
+            self._real_close()
 
     family = property(lambda self: self._sock.family, doc="the socket family")
     type = property(lambda self: self._sock.type, doc="the socket type")
@@ -310,7 +286,6 @@ class _fileobject(object):
                  "_close"]
 
     def __init__(self, sock, mode='rb', bufsize=-1, close=False):
-        _do_reuse_or_drop(sock, '_reuse')
         self._sock = sock
         self.mode = mode # Not actually used in this version
         if bufsize < 0:
@@ -345,13 +320,12 @@ class _fileobject(object):
             if self._sock:
                 self.flush()
         finally:
-            s = self._sock
-            self._sock = None
-            if s is not None:
+            if self._sock:
                 if self._close:
-                    s.close()
+                    self._sock.close()
                 else:
-                    _do_reuse_or_drop(s, '_drop')
+                    self._sock._decref_socketios()
+            self._sock = None
 
     def __del__(self):
         try:
@@ -390,8 +364,8 @@ class _fileobject(object):
         self._wbuf.append(data)
         self._wbuf_len += len(data)
         if (self._wbufsize == 0 or
-            (self._wbufsize == 1 and '\n' in data) or
-            (self._wbufsize > 1 and self._wbuf_len >= self._wbufsize)):
+            self._wbufsize == 1 and '\n' in data or
+            self._wbuf_len >= self._wbufsize):
             self.flush()
 
     def writelines(self, list):

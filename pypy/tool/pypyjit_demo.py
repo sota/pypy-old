@@ -1,31 +1,29 @@
+import pypyjit
+pypyjit.set_param(threshold=200)
 
-import time
-l = []
+kwargs = {"z": 1}
 
-for i in range(100):
-    print i
-    t0 = time.time()
-    exec """
-def k(a, b, c):
-    pass
+def f(*args, **kwargs):
+    result = g(1, *args, **kwargs)
+    return result + 2
 
-def g(a, b, c):
-    k(a, b + 1, c + 2)
-    k(a, b + 1, c + 2)
-    k(a, b + 1, c + 2)
-    k(a, b + 1, c + 2)
-    k(a, b + 1, c + 2)
+def g(x, y, z=2):
+    return x - y + z
 
-def f(i):
-    g(i, i + 1, i + 2)
-    g(i, i + 1, i + 2)
-    g(i, i + 1, i + 2)
-    g(i, i + 1, i + 2)
-    g(i, i + 1, i + 2)
-    g(i, i + 1, i + 2)
-for i in range(1000):
-    f(i)
-"""
-    l.append(time.time() - t0)
+def main():
+    res = 0
+    i = 0
+    while i < 10000:
+        res = f(res, z=i)
+        g(1, res, **kwargs)
+        i += 1
+    return res
 
-print l
+
+try:
+    print main()
+
+except Exception, e:
+    print "Exception: ", type(e)
+    print e
+

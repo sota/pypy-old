@@ -1,6 +1,5 @@
 from __future__ import with_statement
 
-import py
 from pypy.interpreter.function import Function
 from pypy.interpreter.gateway import BuiltinCode
 from pypy.module.math.test import test_direct
@@ -8,7 +7,7 @@ from pypy.module.math.test import test_direct
 
 class AppTestMath:
     spaceconfig = {
-        "usemodules": ['math', 'struct', 'itertools', 'time', 'binascii'],
+        "usemodules": ['math', 'struct', 'itertools', 'rctime', 'binascii'],
     }
 
     def setup_class(cls):
@@ -97,10 +96,6 @@ class AppTestMath:
             ([2.**n - 2.**(n+50) + 2.**(n+52) for n in range(-1074, 972, 2)] +
              [-2.**1022],
              float.fromhex('0x1.5555555555555p+970')),
-            # infinity and nans
-            ([float("inf")], float("inf")),
-            ([float("-inf")], float("-inf")),
-            ([float("nan")], float("nan")),
             ]
 
         for i, (vals, expected) in enumerate(test_values):
@@ -112,8 +107,7 @@ class AppTestMath:
             except ValueError:
                 py.test.fail("test %d failed: got ValueError, expected %r "
                           "for math.fsum(%.100r)" % (i, expected, vals))
-            assert actual == expected or (
-                math.isnan(actual) and math.isnan(expected))
+            assert actual == expected
 
     def test_factorial(self):
         import math

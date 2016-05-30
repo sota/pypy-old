@@ -1,12 +1,11 @@
 import py
-py.test.skip("XXX FIX ME OR KILL ME")
-
 from rpython.jit.metainterp.history import (AbstractFailDescr,
                                          AbstractDescr,
                                          BasicFailDescr,
                                          BoxInt, Box, BoxPtr,
                                          ConstInt, ConstPtr,
-                                         Const, BoxFloat, ConstFloat)
+                                         BoxObj, Const,
+                                         ConstObj, BoxFloat, ConstFloat)
 from rpython.jit.metainterp.history import JitCellToken
 from rpython.jit.metainterp.resoperation import ResOperation, rop
 from rpython.rtyper.test.test_llinterp import interpret

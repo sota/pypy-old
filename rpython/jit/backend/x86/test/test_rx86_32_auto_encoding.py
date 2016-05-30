@@ -33,12 +33,6 @@ class CodeCheckerMixin(object):
     def done(self):
         assert len(self.expected) == self.index
 
-    def stack_frame_size_delta(self, delta):
-        pass   # ignored
-
-    def check_stack_size_at_ret(self):
-        pass   # ignored
-
 def hexdump(s):
     return ' '.join(["%02X" % ord(c) for c in s])
 
@@ -189,21 +183,19 @@ class TestRx86_32(object):
         g = open(inputname, 'w')
         g.write('\x09.string "%s"\n' % BEGIN_TAG)
         #
-        if instrname == 'MOVDQ':
-            if self.WORD == 8:
-                instrname = 'MOVQ'
-            else:
-                instrname = 'MOVD'
+        if instrname == 'MOVD' and self.WORD == 8:
+            instrname = 'MOVQ'
             if argmodes == 'xb':
                 py.test.skip('"as" uses an undocumented alternate encoding??')
-            if argmodes == 'xx' and self.WORD != 8:
-                instrname = 'MOVQ'
         #
         for args in args_lists:
             suffix = ""
+    ##        all = instr.as_all_suffixes
+    ##        for m, extra in args:
+    ##            if m in (i386.MODRM, i386.MODRM8) or all:
+    ##                suffix = suffixes[sizes[m]] + suffix
             if (argmodes and not self.is_xmm_insn
-                         and not instrname.startswith('FSTP')
-                         and not instrname.startswith('FLD')):
+                         and not instrname.startswith('FSTP')):
                 suffix = suffixes[self.WORD]
             # Special case: On 64-bit CPUs, rx86 assumes 64-bit integer
             # operands when converting to/from floating point, so we need to
@@ -325,21 +317,9 @@ class TestRx86_32(object):
                 # CALL_j is actually relative, so tricky to test
                 (instrname == 'CALL' and argmodes == 'j') or
                 # SET_ir must be tested manually
-                (instrname == 'SET' and argmodes == 'ir') or
-                # MULTIBYTE_NOPs can't easily be tested the same way
-                (instrname == 'MULTIBYTE')
+                (instrname == 'SET' and argmodes == 'ir')
         )
 
-    def should_skip_instruction_bit32(self, instrname, argmodes):
-        if self.WORD != 8:
-            # those are tested in the 64 bit test case
-            return (
-                # the test suite uses 64 bit registers instead of 32 bit...
-                (instrname == 'PEXTRQ') or
-                (instrname == 'PINSRQ')
-            )
-
-        return False
 
 
     def complete_test(self, methname):
@@ -348,8 +328,7 @@ class TestRx86_32(object):
         else:
             instrname, argmodes = methname, ''
 
-        if self.should_skip_instruction(instrname, argmodes) or \
-           self.should_skip_instruction_bit32(instrname, argmodes):
+        if self.should_skip_instruction(instrname, argmodes):
             print "Skipping %s" % methname
             return
 
@@ -382,21 +361,6 @@ class TestRx86_32(object):
             instr_suffix = suffixes[self.WORD] + ' *'
         else:
             instr_suffix = None
-
-        if instrname.find('EXTR') != -1 or \
-           instrname.find('INSR') != -1 or \
-           instrname.find('INSERT') != -1 or \
-           instrname.find('EXTRACT') != -1 or \
-           instrname.find('SRLDQ') != -1 or \
-           instrname.find('SHUF') != -1 or \
-           instrname.find('PBLEND') != -1 or \
-           instrname.find('CMPP') != -1:
-            realargmodes = []
-            for mode in argmodes:
-                if mode == 'i':
-                    mode = 'i8'
-                realargmodes.append(mode)
-            argmodes = realargmodes
 
         print "Testing %s with argmodes=%r" % (instrname, argmodes)
         self.methname = methname

@@ -1,8 +1,12 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <errno.h>
-#include "src/precommondefs.h"
 
+#ifdef _WIN32
+#define DLLEXPORT __declspec(dllexport)
+#else
+#define DLLEXPORT
+#endif
 
 static char _testfunc0(char a, char b)
 {
@@ -176,7 +180,7 @@ static int _testfunc23(char *p)
     return -42;
 }
 
-RPY_EXPORTED void *gettestfunc(int num)
+DLLEXPORT void *gettestfunc(int num)
 {
     void *f;
     switch (num) {

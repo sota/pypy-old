@@ -1395,6 +1395,18 @@ def PyCallIter_Check(space, op):
     """
     raise NotImplementedError
 
+@cpython_api([rffi.CWCHARP, Py_ssize_t, rffi.INT_real], PyObject)
+def PyLong_FromUnicode(space, u, length, base):
+    """Convert a sequence of Unicode digits to a Python long integer value.  The first
+    parameter, u, points to the first character of the Unicode string, length
+    gives the number of characters, and base is the radix for the conversion.  The
+    radix must be in the range [2, 36]; if it is out of range, ValueError
+    will be raised.
+
+    This function used an int for length. This might require
+    changes in your code for properly supporting 64-bit systems."""
+    raise NotImplementedError
+
 @cpython_api([PyObject, rffi.CCHARP], rffi.INT_real, error=-1)
 def PyMapping_DelItemString(space, o, key):
     """Remove the mapping for object key from the object o. Return -1 on
@@ -1514,6 +1526,25 @@ def PyModule_AddIntMacro(space, module, macro):
 def PyModule_AddStringMacro(space, module, macro):
     """Add a string constant to module.
     """
+    raise NotImplementedError
+
+@cpython_api([PyObjectP, PyObjectP], rffi.INT_real, error=-1)
+def PyNumber_Coerce(space, p1, p2):
+    """This function takes the addresses of two variables of type PyObject*.  If
+    the objects pointed to by *p1 and *p2 have the same type, increment their
+    reference count and return 0 (success). If the objects can be converted to a
+    common numeric type, replace *p1 and *p2 by their converted value (with
+    'new' reference counts), and return 0. If no conversion is possible, or if
+    some other error occurs, return -1 (failure) and don't increment the
+    reference counts.  The call PyNumber_Coerce(&o1, &o2) is equivalent to the
+    Python statement o1, o2 = coerce(o1, o2)."""
+    raise NotImplementedError
+
+@cpython_api([PyObjectP, PyObjectP], rffi.INT_real, error=-1)
+def PyNumber_CoerceEx(space, p1, p2):
+    """This function is similar to PyNumber_Coerce(), except that it returns
+    1 when the conversion is not possible and when no error is raised.
+    Reference counts are still not increased in this case."""
     raise NotImplementedError
 
 @cpython_api([PyObject, rffi.INT_real], PyObject)

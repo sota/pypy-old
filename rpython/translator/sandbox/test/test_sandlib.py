@@ -104,17 +104,17 @@ def test_socketio():
     class SocketProc(VirtualizedSocketProc, SimpleIOSandboxedProc):
         def build_virtual_root(self):
             pass
-
+    
     def entry_point(argv):
         fd = os.open("tcp://python.org:80", os.O_RDONLY, 0777)
         os.write(fd, 'GET /\n')
-        print os.read(fd, 50)
+        print os.read(fd, 30)
         return 0
     exe = compile(entry_point)
 
     proc = SocketProc([exe])
     output, error = proc.communicate("")
-    assert output.startswith('HTTP/1.1 301 Moved Permanently')
+    assert output.startswith('<!DOCTYPE')
 
 def test_oserror():
     def entry_point(argv):
@@ -249,9 +249,6 @@ def test_lseek():
     assert error == ""
 
 def test_getuid():
-    if not hasattr(os, 'getuid'):
-        py.test.skip("posix only")
-
     def entry_point(argv):
         import os
         print "uid is %s" % os.getuid()

@@ -1,4 +1,5 @@
-import pytest
+
+import unittest
 from pypy.interpreter import eval
 from pypy.interpreter.function import Function, Method, descr_function_get
 from pypy.interpreter.pycode import PyCode
@@ -106,12 +107,6 @@ class AppTestFunctionIntrospection:
             __name__ = "bar"
             assert f.__module__ == "foo"''' in {}
 
-    def test_set_name(self):
-        def f(): pass
-        f.__name__ = 'g'
-        assert f.func_name == 'g'
-        raises(TypeError, "f.__name__ = u'g'")
-
 
 class AppTestFunction:
     def test_simple_call(self):
@@ -186,7 +181,6 @@ class AppTestFunction:
         raises(
             TypeError, func, 42, {'arg1': 23})
 
-    @pytest.mark.skipif("config.option.runappdirect")
     def test_kwargs_nondict_mapping(self):
         class Mapping:
             def keys(self):
@@ -257,14 +251,6 @@ class AppTestFunction:
         meth = func.__get__(obj, object)
         assert meth() == obj
 
-    def test_none_get_interaction(self):
-        skip("XXX issue #2083")
-        assert type(None).__repr__(None) == 'None'
-
-    def test_none_get_interaction_2(self):
-        f = None.__repr__
-        assert f() == 'None'
-
     def test_no_get_builtin(self):
         assert not hasattr(dir, '__get__')
         class A(object):
@@ -292,7 +278,6 @@ class AppTestFunction:
         raises(TypeError, len, s, some_unknown_keyword=s)
         raises(TypeError, len, s, s, some_unknown_keyword=s)
 
-    @pytest.mark.skipif("config.option.runappdirect")
     def test_call_error_message(self):
         try:
             len()
@@ -334,7 +319,6 @@ class AppTestFunction:
         f = lambda: 42
         assert f.func_doc is None
 
-    @pytest.mark.skipif("config.option.runappdirect")
     def test_setstate_called_with_wrong_args(self):
         f = lambda: 42
         # not sure what it should raise, since CPython doesn't have setstate
@@ -560,37 +544,6 @@ class AppTestMethod:
         assert A().m == X()
         assert X() == A().m
 
-    @pytest.mark.skipif("config.option.runappdirect")
-    def test_method_identity(self):
-        class A(object):
-            def m(self):
-                pass
-            def n(self):
-                pass
-
-        class B(A):
-            pass
-
-        class X(object):
-            def __eq__(self, other):
-                return True
-
-        a = A()
-        a2 = A()
-        assert a.m is a.m
-        assert id(a.m) == id(a.m)
-        assert a.m is not a.n
-        assert id(a.m) != id(a.n)
-        assert a.m is not a2.m
-        assert id(a.m) != id(a2.m)
-
-        assert A.m is A.m
-        assert id(A.m) == id(A.m)
-        assert A.m is not A.n
-        assert id(A.m) != id(A.n)
-        assert A.m is not B.m
-        assert id(A.m) != id(B.m)
-
 
 class TestMethod:
     def setup_method(self, method):
@@ -683,11 +636,11 @@ def f%s:
             assert fn.code.fast_natural_arity == i|PyCode.FLATPYCALL
             if i < 5:
 
-                def bomb(*args):
-                    assert False, "shortcutting should have avoided this"
+                 def bomb(*args):
+                     assert False, "shortcutting should have avoided this"
 
-                code.funcrun = bomb
-                code.funcrun_obj = bomb
+                 code.funcrun = bomb
+                 code.funcrun_obj = bomb
 
             args_w = map(space.wrap, range(i))
             w_res = space.call_function(fn, *args_w)

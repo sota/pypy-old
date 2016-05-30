@@ -35,8 +35,8 @@ for optnum in range(len(allopts)):
         def raises(self, e, fn, *args):
             try:
                 fn(*args)
-            except Exception, e:
-                return e
+            except e:
+                pass
 
     opt = allopts[optnum]
     exec "TestNo%sLLtype = TestLLtype" % (opt[0].upper() + opt[1:])

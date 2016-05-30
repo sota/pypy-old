@@ -11,7 +11,6 @@ class AppTestBinascii(object):
         assert self.binascii.a2b_uu("") == "\x00" * 0x20
         #
         for input, expected in [
-            ("!,_", "3"),
             (" ", ""),
             ("!", "\x00"),
             ("!6", "X"),
@@ -29,7 +28,6 @@ class AppTestBinascii(object):
             ('(WAXR6UBA3#', "\xde\x1e2[X\xa1L0"),
             (')WAXR6UBA3#Q', "\xde\x1e2[X\xa1L<@"),
             ('*WAXR6UBA3#Q!5', "\xde\x1e2[X\xa1L<AT"),
-            ('!,_', '\x33'),
             ]:
             assert self.binascii.a2b_uu(input) == expected
             assert self.binascii.a2b_uu(input + ' ') == expected

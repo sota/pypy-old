@@ -37,10 +37,7 @@ saferepr()
 import sys as _sys
 import warnings
 
-try:
-    from cStringIO import StringIO as _StringIO
-except ImportError:
-    from StringIO import StringIO as _StringIO
+from cStringIO import StringIO as _StringIO
 
 __all__ = ["pprint","pformat","isreadable","isrecursive","saferepr",
            "PrettyPrinter"]
@@ -185,18 +182,25 @@ class PrettyPrinter:
             if issubclass(typ, list):
                 write('[')
                 endchar = ']'
-            elif issubclass(typ, tuple):
+            elif issubclass(typ, set):
+                if not length:
+                    write('set()')
+                    return
+                write('set([')
+                endchar = '])'
+                object = _sorted(object)
+                indent += 4
+            elif issubclass(typ, frozenset):
+                if not length:
+                    write('frozenset()')
+                    return
+                write('frozenset([')
+                endchar = '])'
+                object = _sorted(object)
+                indent += 10
+            else:
                 write('(')
                 endchar = ')'
-            else:
-                if not length:
-                    write(rep)
-                    return
-                write(typ.__name__)
-                write('([')
-                endchar = '])'
-                indent += len(typ.__name__) + 1
-                object = _sorted(object)
             if self._indent_per_level > 1 and sepLines:
                 write((self._indent_per_level - 1) * ' ')
             if length:

@@ -11,8 +11,8 @@ def pytest_addhooks(pluginmanager):
 
 def pytest_namespace():
     """return dict of name->object to be made globally available in
-    the pytest namespace.  This hook is called before command line options
-    are parsed.
+    the py.test/pytest namespace.  This hook is called before command
+    line options are parsed.
     """
 
 def pytest_cmdline_parse(pluginmanager, args):
@@ -20,31 +20,11 @@ def pytest_cmdline_parse(pluginmanager, args):
 pytest_cmdline_parse.firstresult = True
 
 def pytest_cmdline_preparse(config, args):
-    """(deprecated) modify command line arguments before option parsing. """
+    """modify command line arguments before option parsing. """
 
 def pytest_addoption(parser):
-    """register argparse-style options and ini-style config values.
-
-    This function must be implemented in a :ref:`plugin <pluginorder>` and is
-    called once at the beginning of a test run.
-
-    :arg parser: To add command line options, call
-        :py:func:`parser.addoption(...) <_pytest.config.Parser.addoption>`.
-        To add ini-file values call :py:func:`parser.addini(...)
-        <_pytest.config.Parser.addini>`.
-
-    Options can later be accessed through the
-    :py:class:`config <_pytest.config.Config>` object, respectively:
-
-    - :py:func:`config.getoption(name) <_pytest.config.Config.getoption>` to
-      retrieve the value of a command line option.
-
-    - :py:func:`config.getini(name) <_pytest.config.Config.getini>` to retrieve
-      a value read from an ini-style file.
-
-    The config object is passed around on many internal objects via the ``.config``
-    attribute or can be retrieved as the ``pytestconfig`` fixture or accessed
-    via (deprecated) ``pytest.config``.
+    """add optparse-style options and ini-style config values via calls
+    to ``parser.addoption`` and ``parser.addini(...)``.
     """
 
 def pytest_cmdline_main(config):
@@ -52,12 +32,8 @@ def pytest_cmdline_main(config):
     implementation will invoke the configure hooks and runtest_mainloop. """
 pytest_cmdline_main.firstresult = True
 
-def pytest_load_initial_conftests(args, early_config, parser):
-    """ implements loading initial conftests.
-    """
-
 def pytest_configure(config):
-    """ called after command line options have been parsed
+    """ called after command line options have been parsed.
         and all plugins and initial conftest files been loaded.
     """
 
@@ -217,7 +193,7 @@ def pytest_assertrepr_compare(config, op, left, right):
 # hooks for influencing reporting (invoked from _pytest_terminal)
 # -------------------------------------------------------------------------
 
-def pytest_report_header(config, startdir):
+def pytest_report_header(config):
     """ return a string to be displayed as header info for terminal reporting."""
 
 def pytest_report_teststatus(report):
@@ -225,7 +201,7 @@ def pytest_report_teststatus(report):
 pytest_report_teststatus.firstresult = True
 
 def pytest_terminal_summary(terminalreporter):
-    """ add additional section in terminal summary reporting.  """
+    """ add additional section in terminal summary reporting. """
 
 # -------------------------------------------------------------------------
 # doctest hooks
@@ -240,20 +216,13 @@ pytest_doctest_prepare_content.firstresult = True
 # -------------------------------------------------------------------------
 
 def pytest_plugin_registered(plugin, manager):
-    """ a new pytest plugin got registered. """
+    """ a new py lib plugin got registered. """
 
-def pytest_internalerror(excrepr, excinfo):
+def pytest_plugin_unregistered(plugin):
+    """ a py lib plugin got unregistered. """
+
+def pytest_internalerror(excrepr):
     """ called for internal errors. """
 
 def pytest_keyboard_interrupt(excinfo):
     """ called for keyboard interrupt. """
-
-def pytest_exception_interact(node, call, report):
-    """ (experimental, new in 2.4) called when
-    an exception was raised which can potentially be
-    interactively handled.
-
-    This hook is only called if an exception was raised
-    that is not an internal exception like "skip.Exception".
-    """
-

@@ -321,7 +321,8 @@ PyTypeObject PyCapsule_Type = {
     PyCapsule_Type__doc__	/*tp_doc*/
 };
 
-PyTypeObject *_Py_get_capsule_type(void)
+void init_capsule()
 {
-    return &PyCapsule_Type;
+    PyType_Ready(&PyCapsule_Type);
 }
+

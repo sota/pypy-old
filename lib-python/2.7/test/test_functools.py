@@ -43,9 +43,13 @@ class TestPartial(unittest.TestCase):
         self.assertEqual(p.args, (1, 2))
         self.assertEqual(p.keywords, dict(a=10, b=20))
         # attributes should not be writable
-        self.assertRaises((TypeError, AttributeError), setattr, p, 'func', map)
-        self.assertRaises((TypeError, AttributeError), setattr, p, 'args', (1, 2))
-        self.assertRaises((TypeError, AttributeError), setattr, p, 'keywords', dict(a=1, b=2))
+        if not isinstance(self.thetype, type):
+            return
+        if not test_support.check_impl_detail():
+            return
+        self.assertRaises(TypeError, setattr, p, 'func', map)
+        self.assertRaises(TypeError, setattr, p, 'args', (1, 2))
+        self.assertRaises(TypeError, setattr, p, 'keywords', dict(a=1, b=2))
 
         p = self.thetype(hex)
         try:
@@ -89,11 +93,9 @@ class TestPartial(unittest.TestCase):
         # exercise special code paths for no keyword args in
         # either the partial object or the caller
         p = self.thetype(capture)
-        self.assertEqual(p.keywords, {})
         self.assertEqual(p(), ((), {}))
         self.assertEqual(p(a=1), ((), {'a':1}))
         p = self.thetype(capture, a=1)
-        self.assertEqual(p.keywords, {'a':1})
         self.assertEqual(p(), ((), {'a':1}))
         self.assertEqual(p(b=2), ((), {'a':1, 'b':2}))
         # keyword args in the call override those in the partial object
@@ -149,27 +151,8 @@ class TestPartial(unittest.TestCase):
     def test_pickle(self):
         f = self.thetype(signature, 'asdf', bar=True)
         f.add_something_to__dict__ = True
-        for proto in range(pickle.HIGHEST_PROTOCOL + 1):
-            f_copy = pickle.loads(pickle.dumps(f, proto))
-            self.assertEqual(signature(f), signature(f_copy))
-
-    # Issue 6083: Reference counting bug
-    @unittest.skipUnless(test_support.check_impl_detail(), "ref counting")
-    def test_setstate_refcount(self):
-        class BadSequence:
-            def __len__(self):
-                return 4
-            def __getitem__(self, key):
-                if key == 0:
-                    return max
-                elif key == 1:
-                    return tuple(range(1000000))
-                elif key in (2, 3):
-                    return {}
-                raise IndexError
-
-        f = self.thetype(object)
-        self.assertRaises(SystemError, f.__setstate__, BadSequence())
+        f_copy = pickle.loads(pickle.dumps(f))
+        self.assertEqual(signature(f), signature(f_copy))
 
 class PartialSubclass(functools.partial):
     pass
@@ -183,10 +166,7 @@ class TestPythonPartial(TestPartial):
     thetype = PythonPartial
 
     # the python version isn't picklable
-    test_pickle = test_setstate_refcount = None
-
-    # the python version isn't a type
-    test_attributes = None
+    def test_pickle(self): pass
 
 class TestUpdateWrapper(unittest.TestCase):
 
@@ -255,7 +235,6 @@ class TestUpdateWrapper(unittest.TestCase):
         self.assertEqual(wrapper.attr, 'This is a different test')
         self.assertEqual(wrapper.dict_attr, f.dict_attr)
 
-    @test_support.requires_docstrings
     def test_builtin_update(self):
         # Test for bug #1576241
         def wrapper():
@@ -282,7 +261,7 @@ class TestWraps(TestUpdateWrapper):
         self.assertEqual(wrapper.__name__, 'f')
         self.assertEqual(wrapper.attr, 'This is also a test')
 
-    @unittest.skipIf(sys.flags.optimize >= 2,
+    @unittest.skipIf(not sys.flags.optimize <= 1,
                      "Docstrings are omitted with -O2 and above")
     def test_default_update_doc(self):
         wrapper = self._default_update()

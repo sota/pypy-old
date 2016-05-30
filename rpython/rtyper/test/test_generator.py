@@ -1,9 +1,9 @@
 import py
 
-from rpython.rtyper.test.tool import BaseRtypingTest
+from rpython.rtyper.test.tool import BaseRtypingTest, LLRtypeMixin, OORtypeMixin
 
 
-class TestGenerator(BaseRtypingTest):
+class BaseTestGenerator(BaseRtypingTest):
 
     def test_simple_explicit(self):
         def g(a, b, c):
@@ -76,31 +76,6 @@ class TestGenerator(BaseRtypingTest):
         res = self.interpret(f, [])
         assert res == 358
 
-    @py.test.mark.xfail
-    def test_different_exception(self):
-        def h(c):
-            if c == 8:
-                raise ValueError
-        def g(c):
-            try:
-                h(c)
-            except Exception, e:
-                if isinstance(e, ValueError):
-                    raise
-                raise StopIteration
-            yield c
-
-        def f(x):
-            try:
-                for x in g(x):
-                    pass
-            except ValueError:
-                return -5
-            return 5
-        assert f(8) == -5
-        res = self.interpret(f, [8])
-        assert res == -5
-
     def test_iterating_generator(self):
         def f():
             yield 1
@@ -113,3 +88,12 @@ class TestGenerator(BaseRtypingTest):
             return s
         res = self.interpret(g, [])
         assert res == 6
+
+
+class TestLLtype(BaseTestGenerator, LLRtypeMixin):
+    pass
+
+
+class TestOOtype(BaseTestGenerator, OORtypeMixin):
+    def test_iterating_generator(self):
+        py.test.skip("Iterators aren't supported on OOtype yet")

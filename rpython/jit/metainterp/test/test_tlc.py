@@ -1,8 +1,9 @@
 import py
+from rpython.rtyper.module.support import LLSupport
 
 from rpython.jit.tl import tlc
 
-from rpython.jit.metainterp.test.support import LLJitMixin
+from rpython.jit.metainterp.test.support import OOJitMixin, LLJitMixin
 
 
 class TLCTests:

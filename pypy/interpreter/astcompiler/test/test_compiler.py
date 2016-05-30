@@ -1,4 +1,4 @@
-import py, sys
+import py
 from pypy.interpreter.astcompiler import codegen, astbuilder, symtable, optimize
 from pypy.interpreter.pyparser import pyparse
 from pypy.interpreter.pyparser.test import expressions
@@ -759,73 +759,6 @@ class TestCompiler:
         """
         self.simple_test(source, 'l', [1, 2])
 
-    def test_unpack_wrong_stackeffect(self):
-        source = """if 1:
-        l = [1, 2]
-        a, b = l
-        a, b = l
-        a, b = l
-        a, b = l
-        a, b = l
-        a, b = l
-        """
-        code = compile_with_astcompiler(source, 'exec', self.space)
-        assert code.co_stacksize == 2
-
-    def test_stackeffect_bug3(self):
-        source = """if 1:
-        try: pass
-        finally: pass
-        try: pass
-        finally: pass
-        try: pass
-        finally: pass
-        try: pass
-        finally: pass
-        try: pass
-        finally: pass
-        try: pass
-        finally: pass
-        """
-        code = compile_with_astcompiler(source, 'exec', self.space)
-        assert code.co_stacksize == 3
-
-    def test_stackeffect_bug4(self):
-        source = """if 1:
-        with a: pass
-        with a: pass
-        with a: pass
-        with a: pass
-        with a: pass
-        with a: pass
-        """
-        code = compile_with_astcompiler(source, 'exec', self.space)
-        assert code.co_stacksize == 4
-
-    def test_stackeffect_bug5(self):
-        source = """if 1:
-        a[:]; a[:]; a[:]; a[:]; a[:]; a[:]
-        a[1:]; a[1:]; a[1:]; a[1:]; a[1:]; a[1:]
-        a[:2]; a[:2]; a[:2]; a[:2]; a[:2]; a[:2]
-        a[1:2]; a[1:2]; a[1:2]; a[1:2]; a[1:2]; a[1:2]
-        """
-        code = compile_with_astcompiler(source, 'exec', self.space)
-        assert code.co_stacksize == 3
-
-    def test_stackeffect_bug6(self):
-        source = """if 1:
-        {1}; {1}; {1}; {1}; {1}; {1}; {1}
-        """
-        code = compile_with_astcompiler(source, 'exec', self.space)
-        assert code.co_stacksize == 1
-
-    def test_stackeffect_bug7(self):
-        source = '''def f():
-            for i in a:
-                return
-        '''
-        code = compile_with_astcompiler(source, 'exec', self.space)
-
     def test_lambda(self):
         yield self.st, "y = lambda x: x", "y(4)", 4
 
@@ -879,68 +812,8 @@ class TestCompiler:
         """
         self.simple_test(source, 'ok', 1)
 
-    def test_remove_docstring(self):
-        source = '"module_docstring"\n' + """if 1:
-        def f1():
-            'docstring'
-        def f2():
-            'docstring'
-            return 'docstring'
-        def f3():
-            'foo'
-            return 'bar'
-        class C1():
-            'docstring'
-        class C2():
-            __doc__ = 'docstring'
-        class C3():
-            field = 'not docstring'
-        class C4():
-            'docstring'
-            field = 'docstring'
-        """
-        code_w = compile_with_astcompiler(source, 'exec', self.space)
-        code_w.remove_docstrings(self.space)
-        dict_w = self.space.newdict();
-        code_w.exec_code(self.space, dict_w, dict_w)
-
-        yield self.check, dict_w, "f1.__doc__", None
-        yield self.check, dict_w, "f2.__doc__", 'docstring'
-        yield self.check, dict_w, "f2()", 'docstring'
-        yield self.check, dict_w, "f3.__doc__", None
-        yield self.check, dict_w, "f3()", 'bar'
-        yield self.check, dict_w, "C1.__doc__", None
-        yield self.check, dict_w, "C2.__doc__", 'docstring'
-        yield self.check, dict_w, "C3.field", 'not docstring'
-        yield self.check, dict_w, "C4.field", 'docstring'
-        yield self.check, dict_w, "C4.__doc__", 'docstring'
-        yield self.check, dict_w, "C4.__doc__", 'docstring'
-        yield self.check, dict_w, "__doc__", None
-
-    def test_assert_skipping(self):
-        space = self.space
-        mod = space.getbuiltinmodule('__pypy__')
-        w_set_debug = space.getattr(mod, space.wrap('set_debug'))
-        space.call_function(w_set_debug, space.w_False)
-
-        source = """if 1:
-        assert False
-        """
-        try:
-            self.run(source)
-        finally:
-            space.call_function(w_set_debug, space.w_True)
-
-    def test_dont_fold_equal_code_objects(self):
-        yield self.st, "f=lambda:1;g=lambda:1.0;x=g()", 'type(x)', float
-        yield (self.st, "x=(lambda: (-0.0, 0.0), lambda: (0.0, -0.0))[1]()",
-                        'repr(x)', '(0.0, -0.0)')
-
 
 class AppTestCompiler:
-
-    def setup_class(cls):
-        cls.w_maxunicode = cls.space.wrap(sys.maxunicode)
 
     def test_docstring_not_loaded(self):
         import StringIO, dis, sys
@@ -956,47 +829,22 @@ class AppTestCompiler:
         assert "0 ('hi')" not in output.getvalue()
 
     def test_print_to(self):
-        exec """if 1:
-        from StringIO import StringIO
-        s = StringIO()
-        print >> s, "hi", "lovely!"
-        assert s.getvalue() == "hi lovely!\\n"
-        s = StringIO()
-        print >> s, "hi", "lovely!",
-        assert s.getvalue() == "hi lovely!"
-        """ in {}
+         exec """if 1:
+         from StringIO import StringIO
+         s = StringIO()
+         print >> s, "hi", "lovely!"
+         assert s.getvalue() == "hi lovely!\\n"
+         s = StringIO()
+         print >> s, "hi", "lovely!",
+         assert s.getvalue() == "hi lovely!"
+         """ in {}
 
     def test_assert_with_tuple_arg(self):
         try:
             assert False, (3,)
         except AssertionError, e:
             assert str(e) == "(3,)"
-
-    # BUILD_LIST_FROM_ARG is PyPy specific
-    @py.test.mark.skipif('config.option.runappdirect')
-    def test_build_list_from_arg_length_hint(self):
-        hint_called = [False]
-        class Foo(object):
-            def __length_hint__(self):
-                hint_called[0] = True
-                return 5
-            def __iter__(self):
-                for i in range(5):
-                    yield i
-        l = [a for a in Foo()]
-        assert hint_called[0]
-        assert l == list(range(5))
-
-    def test_unicode_in_source(self):
-        import sys
-        d = {}
-        exec '# -*- coding: utf-8 -*-\n\nu = u"\xf0\x9f\x92\x8b"' in d
-        if sys.maxunicode > 65535 and self.maxunicode > 65535:
-            expected_length = 1
-        else:
-            expected_length = 2
-        assert len(d['u']) == expected_length
-
+        
 
 class TestOptimizations:
     def count_instructions(self, source):
@@ -1125,30 +973,3 @@ class TestOptimizations:
         counts = self.count_instructions(source3)
         assert counts[ops.BUILD_LIST] == 1
         assert ops.BUILD_LIST_FROM_ARG not in counts
-
-    def test_folding_of_list_constants(self):
-        for source in (
-            # in/not in constants with BUILD_LIST should be folded to a tuple:
-            'a in [1,2,3]',
-            'a not in ["a","b","c"]',
-            'a in [None, 1, None]',
-            'a not in [(1, 2), 3, 4]',
-            ):
-            source = 'def f(): %s' % source
-            counts = self.count_instructions(source)
-            assert ops.BUILD_LIST not in counts
-            assert ops.LOAD_CONST in counts
-
-    def test_folding_of_set_constants(self):
-        for source in (
-            # in/not in constants with BUILD_SET should be folded to a frozenset:
-            'a in {1,2,3}',
-            'a not in {"a","b","c"}',
-            'a in {None, 1, None}',
-            'a not in {(1, 2), 3, 4}',
-            'a in {1, 2, 3, 3, 2, 1}',
-            ):
-            source = 'def f(): %s' % source
-            counts = self.count_instructions(source)
-            assert ops.BUILD_SET not in counts
-            assert ops.LOAD_CONST in counts

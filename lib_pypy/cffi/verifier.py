@@ -1,50 +1,12 @@
-#
-# DEPRECATED: implementation for ffi.verify()
-#
-import sys, os, binascii, shutil, io
-from . import __version_verifier_modules__
+import sys, os, binascii, imp, shutil
+from . import __version__
 from . import ffiplatform
-
-if sys.version_info >= (3, 3):
-    import importlib.machinery
-    def _extension_suffixes():
-        return importlib.machinery.EXTENSION_SUFFIXES[:]
-else:
-    import imp
-    def _extension_suffixes():
-        return [suffix for suffix, _, type in imp.get_suffixes()
-                if type == imp.C_EXTENSION]
-
-
-if sys.version_info >= (3,):
-    NativeIO = io.StringIO
-else:
-    class NativeIO(io.BytesIO):
-        def write(self, s):
-            if isinstance(s, unicode):
-                s = s.encode('ascii')
-            super(NativeIO, self).write(s)
-
-def _hack_at_distutils():
-    # Windows-only workaround for some configurations: see
-    # https://bugs.python.org/issue23246 (Python 2.7 with 
-    # a specific MS compiler suite download)
-    if sys.platform == "win32":
-        try:
-            import setuptools    # for side-effects, patches distutils
-        except ImportError:
-            pass
 
 
 class Verifier(object):
 
     def __init__(self, ffi, preamble, tmpdir=None, modulename=None,
-                 ext_package=None, tag='', force_generic_engine=False,
-                 source_extension='.c', flags=None, relative_to=None, **kwds):
-        if ffi._parser._uses_new_feature:
-            raise ffiplatform.VerificationError(
-                "feature not supported with ffi.verify(), but only "
-                "with ffi.set_source(): %s" % (ffi._parser._uses_new_feature,))
+                 ext_package=None, tag='', force_generic_engine=False, **kwds):
         self.ffi = ffi
         self.preamble = preamble
         if not modulename:
@@ -52,15 +14,14 @@ class Verifier(object):
         vengine_class = _locate_engine_class(ffi, force_generic_engine)
         self._vengine = vengine_class(self)
         self._vengine.patch_extension_kwds(kwds)
-        self.flags = flags
-        self.kwds = self.make_relative_to(kwds, relative_to)
+        self.kwds = kwds
         #
         if modulename:
             if tag:
                 raise TypeError("can't specify both 'modulename' and 'tag'")
         else:
-            key = '\x00'.join([sys.version[:3], __version_verifier_modules__,
-                               preamble, flattened_kwds] +
+            key = '\x00'.join([sys.version[:3], __version__, preamble,
+                               flattened_kwds] +
                               ffi._cdefsources)
             if sys.version_info >= (3,):
                 key = key.encode('utf-8')
@@ -70,9 +31,9 @@ class Verifier(object):
             k2 = k2.lstrip('0').rstrip('L')
             modulename = '_cffi_%s_%s%s%s' % (tag, self._vengine._class_key,
                                               k1, k2)
-        suffix = _get_so_suffixes()[0]
+        suffix = _get_so_suffix()
         self.tmpdir = tmpdir or _caller_dir_pycache()
-        self.sourcefilename = os.path.join(self.tmpdir, modulename + source_extension)
+        self.sourcefilename = os.path.join(self.tmpdir, modulename + '.c')
         self.modulefilename = os.path.join(self.tmpdir, modulename + suffix)
         self.ext_package = ext_package
         self._has_source = False
@@ -81,21 +42,18 @@ class Verifier(object):
     def write_source(self, file=None):
         """Write the C source code.  It is produced in 'self.sourcefilename',
         which can be tweaked beforehand."""
-        with self.ffi._lock:
-            if self._has_source and file is None:
-                raise ffiplatform.VerificationError(
-                    "source code already written")
-            self._write_source(file)
+        if self._has_source and file is None:
+            raise ffiplatform.VerificationError("source code already written")
+        self._write_source(file)
 
     def compile_module(self):
         """Write the C source code (if not done already) and compile it.
         This produces a dynamic link library in 'self.modulefilename'."""
-        with self.ffi._lock:
-            if self._has_module:
-                raise ffiplatform.VerificationError("module already compiled")
-            if not self._has_source:
-                self._write_source()
-            self._compile_module()
+        if self._has_module:
+            raise ffiplatform.VerificationError("module already compiled")
+        if not self._has_source:
+            self._write_source()
+        self._compile_module()
 
     def load_library(self):
         """Get a C module from this Verifier instance.
@@ -104,14 +62,11 @@ class Verifier(object):
         operations to the C module.  If necessary, the C code is written
         and compiled first.
         """
-        with self.ffi._lock:
+        if not self._has_module:
+            self._locate_module()
             if not self._has_module:
-                self._locate_module()
-                if not self._has_module:
-                    if not self._has_source:
-                        self._write_source()
-                    self._compile_module()
-            return self._load_library()
+                self.compile_module()
+        return self._load_library()
 
     def get_module_name(self):
         basename = os.path.basename(self.modulefilename)
@@ -125,31 +80,14 @@ class Verifier(object):
         return basename
 
     def get_extension(self):
-        _hack_at_distutils() # backward compatibility hack
         if not self._has_source:
-            with self.ffi._lock:
-                if not self._has_source:
-                    self._write_source()
+            self._write_source()
         sourcename = ffiplatform.maybe_relative_path(self.sourcefilename)
         modname = self.get_module_name()
         return ffiplatform.get_extension(sourcename, modname, **self.kwds)
 
     def generates_python_module(self):
         return self._vengine._gen_python_module
-
-    def make_relative_to(self, kwds, relative_to):
-        if relative_to and os.path.dirname(relative_to):
-            dirname = os.path.dirname(relative_to)
-            kwds = kwds.copy()
-            for key in ffiplatform.LIST_OF_FILE_NAMES:
-                if key in kwds:
-                    lst = kwds[key]
-                    if not isinstance(lst, (list, tuple)):
-                        raise TypeError("keyword '%s' should be a list or tuple"
-                                        % (key,))
-                    lst = [os.path.join(dirname, fn) for fn in lst]
-                    kwds[key] = lst
-        return kwds
 
     # ----------
 
@@ -164,44 +102,38 @@ class Verifier(object):
                 path = pkg.__path__
             else:
                 path = None
-            filename = self._vengine.find_module(self.get_module_name(), path,
-                                                 _get_so_suffixes())
-            if filename is None:
+            try:
+                f, filename, descr = imp.find_module(self.get_module_name(),
+                                                     path)
+            except ImportError:
                 return
+            if f is not None:
+                f.close()
+            if filename.lower().endswith('.py'):
+                # on PyPy, if there are both .py and .pypy-19.so files in
+                # the same directory, the .py file is returned.  That's the
+                # case after a setuptools installation.  We never want to
+                # load the .py file here...
+                filename = filename[:-3] + _get_so_suffix()
+                if not os.path.isfile(filename):
+                    return
             self.modulefilename = filename
         self._vengine.collect_types()
         self._has_module = True
 
-    def _write_source_to(self, file):
+    def _write_source(self, file=None):
+        must_close = (file is None)
+        if must_close:
+            _ensure_dir(self.sourcefilename)
+            file = open(self.sourcefilename, 'w')
         self._vengine._f = file
         try:
             self._vengine.write_source_to_f()
         finally:
             del self._vengine._f
-
-    def _write_source(self, file=None):
-        if file is not None:
-            self._write_source_to(file)
-        else:
-            # Write our source file to an in memory file.
-            f = NativeIO()
-            self._write_source_to(f)
-            source_data = f.getvalue()
-
-            # Determine if this matches the current file
-            if os.path.exists(self.sourcefilename):
-                with open(self.sourcefilename, "r") as fp:
-                    needs_written = not (fp.read() == source_data)
-            else:
-                needs_written = True
-
-            # Actually write the file out if it doesn't match
-            if needs_written:
-                _ensure_dir(self.sourcefilename)
-                with open(self.sourcefilename, "w") as fp:
-                    fp.write(source_data)
-
-            # Set this flag
+            if must_close:
+                file.close()
+        if must_close:
             self._has_source = True
 
     def _compile_module(self):
@@ -219,10 +151,7 @@ class Verifier(object):
 
     def _load_library(self):
         assert self._has_module
-        if self.flags is not None:
-            return self._vengine.load_library(self.flags)
-        else:
-            return self._vengine.load_library()
+        return self._vengine.load_library()
 
 # ____________________________________________________________
 
@@ -255,9 +184,6 @@ _TMPDIR = None
 def _caller_dir_pycache():
     if _TMPDIR:
         return _TMPDIR
-    result = os.environ.get('CFFI_TMPDIR')
-    if result:
-        return result
     filename = sys._getframe(2).f_code.co_filename
     return os.path.abspath(os.path.join(os.path.dirname(filename),
                            '__pycache__'))
@@ -278,7 +204,7 @@ def cleanup_tmpdir(tmpdir=None, keep_so=False):
     if keep_so:
         suffix = '.c'   # only remove .c files
     else:
-        suffix = _get_so_suffixes()[0].lower()
+        suffix = _get_so_suffix().lower()
     for fn in filelist:
         if fn.lower().startswith('_cffi_') and (
                 fn.lower().endswith(suffix) or fn.lower().endswith('.c')):
@@ -298,16 +224,15 @@ def cleanup_tmpdir(tmpdir=None, keep_so=False):
         except OSError:
             pass
 
-def _get_so_suffixes():
-    suffixes = _extension_suffixes()
-    if not suffixes:
-        # bah, no C_EXTENSION available.  Occurs on pypy without cpyext
-        if sys.platform == 'win32':
-            suffixes = [".pyd"]
-        else:
-            suffixes = [".so"]
-
-    return suffixes
+def _get_so_suffix():
+    for suffix, mode, type in imp.get_suffixes():
+        if type == imp.C_EXTENSION:
+            return suffix
+    # bah, no C_EXTENSION available.  Occurs on pypy without cpyext
+    if sys.platform == 'win32':
+        return ".pyd"
+    else:
+        return ".so"
 
 def _ensure_dir(filename):
     try:

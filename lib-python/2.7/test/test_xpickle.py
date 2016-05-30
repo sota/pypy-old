@@ -56,7 +56,7 @@ class DumpPickle_LoadCPickle(AbstractPickleTests):
         # Ignore fast
         return cPickle.loads(buf)
 
-def have_python_version(name, cache={}):
+def have_python_version(name):
     """Check whether the given name is a valid Python binary and has
     test.test_support.
 
@@ -68,9 +68,7 @@ def have_python_version(name, cache={}):
     Returns:
         True if the name is valid, False otherwise.
     """
-    if name not in cache:
-        cache[name] = os.system(name + ' -c "import test.test_support"') == 0
-    return cache[name]
+    return os.system(name + " -c 'import test.test_support'") == 0
 
 
 class AbstractCompatTests(AbstractPickleTests):
@@ -83,9 +81,6 @@ class AbstractCompatTests(AbstractPickleTests):
         self.assertTrue(self.python)
         self.assertTrue(self.module)
         self.assertTrue(self.error)
-        test_support.requires("xpickle")
-        if not have_python_version(self.python):
-            self.skipTest('%s not available' % self.python)
 
     def send_to_worker(self, python, obj, proto):
         """Bounce a pickled object through another version of Python.
@@ -124,9 +119,14 @@ class AbstractCompatTests(AbstractPickleTests):
 
     # These tests are disabled because they require some special setup
     # on the worker that's hard to keep in sync.
-    test_global_ext1 = None
-    test_global_ext2 = None
-    test_global_ext4 = None
+    def test_global_ext1(self):
+        pass
+
+    def test_global_ext2(self):
+        pass
+
+    def test_global_ext4(self):
+        pass
 
     # This is a cut-down version of pickletester's test_float. Backwards
     # compatibility for the values in for_bin_protos was explicitly broken in
@@ -151,36 +151,48 @@ class AbstractCompatTests(AbstractPickleTests):
                 self.assertEqual(value, got)
 
     # Backwards compatibility was explicitly broken in r67934 to fix a bug.
-    test_unicode_high_plane = None
+    def test_unicode_high_plane(self):
+        pass
 
     # This tests a fix that's in 2.7 only
-    test_dynamic_class = None
+    def test_dynamic_class(self):
+        pass
 
-    # This is a cut-down version of pickletester's test_unicode. Backwards
-    # compatibility was explicitly broken in r67934 to fix a bug.
-    def test_unicode(self):
-        if not test_support.have_unicode:
-            # Python 2.5 has no unittest.skipUnless
-            self.skipTest('no unicode support')
-        endcases = [u'', u'<\\u>', u'<\\%c>' % 0x1234, u'<\n>', u'<\\>']
-        for proto in pickletester.protocols:
-            for u in endcases:
-                p = self.dumps(u, proto)
-                u2 = self.loads(p)
-                self.assertEqual(u2, u)
+    if test_support.have_unicode:
+        # This is a cut-down version of pickletester's test_unicode. Backwards
+        # compatibility was explicitly broken in r67934 to fix a bug.
+        def test_unicode(self):
+            endcases = [u'', u'<\\u>', u'<\\\u1234>', u'<\n>', u'<\\>']
+            for proto in pickletester.protocols:
+                for u in endcases:
+                    p = self.dumps(u, proto)
+                    u2 = self.loads(p)
+                    self.assertEqual(u2, u)
+
+
+def run_compat_test(python_name):
+    return (test_support.is_resource_enabled("xpickle") and
+            have_python_version(python_name))
 
 
 # Test backwards compatibility with Python 2.4.
-class CPicklePython24Compat(AbstractCompatTests):
+if not run_compat_test("python2.4"):
+    class CPicklePython24Compat(unittest.TestCase):
+        pass
+else:
+    class CPicklePython24Compat(AbstractCompatTests):
 
-    module = cPickle
-    python = "python2.4"
-    error = cPickle.BadPickleGet
+        module = cPickle
+        python = "python2.4"
+        error = cPickle.BadPickleGet
 
-    # Disable these tests for Python 2.4. Making them pass would require
-    # nontrivially monkeypatching the pickletester module in the worker.
-    test_reduce_calls_base = None
-    test_reduce_ex_calls_base = None
+        # Disable these tests for Python 2.4. Making them pass would require
+        # nontrivially monkeypatching the pickletester module in the worker.
+        def test_reduce_calls_base(self):
+            pass
+
+        def test_reduce_ex_calls_base(self):
+            pass
 
 class PicklePython24Compat(CPicklePython24Compat):
 
@@ -189,11 +201,15 @@ class PicklePython24Compat(CPicklePython24Compat):
 
 
 # Test backwards compatibility with Python 2.5.
-class CPicklePython25Compat(AbstractCompatTests):
+if not run_compat_test("python2.5"):
+    class CPicklePython25Compat(unittest.TestCase):
+        pass
+else:
+    class CPicklePython25Compat(AbstractCompatTests):
 
-    module = cPickle
-    python = "python2.5"
-    error = cPickle.BadPickleGet
+        module = cPickle
+        python = "python2.5"
+        error = cPickle.BadPickleGet
 
 class PicklePython25Compat(CPicklePython25Compat):
 
@@ -202,25 +218,17 @@ class PicklePython25Compat(CPicklePython25Compat):
 
 
 # Test backwards compatibility with Python 2.6.
-class CPicklePython26Compat(AbstractCompatTests):
+if not run_compat_test("python2.6"):
+    class CPicklePython26Compat(unittest.TestCase):
+        pass
+else:
+    class CPicklePython26Compat(AbstractCompatTests):
 
-    module = cPickle
-    python = "python2.6"
-    error = cPickle.BadPickleGet
+        module = cPickle
+        python = "python2.6"
+        error = cPickle.BadPickleGet
 
 class PicklePython26Compat(CPicklePython26Compat):
-
-    module = pickle
-    error = KeyError
-
-
-class CPicklePython27Compat(AbstractCompatTests):
-
-    module = cPickle
-    python = "python2.7"
-    error = cPickle.BadPickleGet
-
-class PicklePython27Compat(CPicklePython27Compat):
 
     module = pickle
     error = KeyError
@@ -233,17 +241,20 @@ def worker_main(in_stream, out_stream):
 
 
 def test_main():
+    if not test_support.is_resource_enabled("xpickle"):
+        print >>sys.stderr, "test_xpickle -- skipping backwards compat tests."
+        print >>sys.stderr, "Use 'regrtest.py -u xpickle' to run them."
+        sys.stderr.flush()
+
     test_support.run_unittest(
         DumpCPickle_LoadPickle,
         DumpPickle_LoadCPickle,
         CPicklePython24Compat,
         CPicklePython25Compat,
         CPicklePython26Compat,
-        CPicklePython27Compat,
         PicklePython24Compat,
         PicklePython25Compat,
         PicklePython26Compat,
-        PicklePython27Compat,
     )
 
 if __name__ == "__main__":

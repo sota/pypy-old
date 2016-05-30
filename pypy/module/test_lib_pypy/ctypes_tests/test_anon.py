@@ -56,4 +56,3 @@ class TestAnon(BaseCTypesTestChecker):
         assert Y._.offset == sizeof(c_int)
         assert Y.y.offset == sizeof(c_int) * 2
 
-        assert Y._names_ == ['x', 'a', 'b', 'y']

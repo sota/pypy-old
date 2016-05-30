@@ -2,6 +2,8 @@
 Enums.
 """
 
+from rpython.rlib.objectmodel import keepalive_until_here
+
 from pypy.module._cffi_backend import misc
 from pypy.module._cffi_backend.ctypeprim import (W_CTypePrimitiveSigned,
     W_CTypePrimitiveUnsigned)
@@ -11,6 +13,7 @@ class _Mixin_Enum(object):
     _mixin_ = True
 
     def __init__(self, space, name, size, align, enumerators, enumvalues):
+        name = "enum " + name
         self._super.__init__(self, space, size, name, len(name), align)
         self.enumerators2values = {}   # str -> int
         self.enumvalues2erators = {}   # int -> str
@@ -45,8 +48,8 @@ class _Mixin_Enum(object):
             return '%s: %s' % (value, s)
 
     def string(self, cdataobj, maxlen):
-        with cdataobj as ptr:
-            value = self._get_value(ptr)
+        value = self._get_value(cdataobj._cdata)
+        keepalive_until_here(cdataobj)
         try:
             s = self.enumvalues2erators[value]
         except KeyError:

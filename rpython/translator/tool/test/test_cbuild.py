@@ -74,7 +74,7 @@ class TestEci:
     def test_make_shared_lib(self):
         eci = ExternalCompilationInfo(
             separate_module_sources = ['''
-            RPY_EXTERN int get()
+            int get()
             {
                 return 42;
             }
@@ -82,6 +82,7 @@ class TestEci:
             {
                 return 43;
             }'''],
+            export_symbols = ['get']
         )
         neweci = eci.compile_shared_lib()
         assert len(neweci.libraries) == 1
@@ -125,18 +126,6 @@ class TestEci:
         py.test.raises(ImportError,
                        ExternalCompilationInfo.from_config_tool,
                        'dxowqbncpqympqhe-config')
-
-    def test_from_pkg_config(self):
-        try:
-            cmd = ['pkg-config', 'ncurses', '--exists']
-            popen = Popen(cmd)
-            result = popen.wait()
-        except OSError:
-            result = -1
-        if result != 0:
-            py.test.skip("failed: %r" % (' '.join(cmd),))
-        eci = ExternalCompilationInfo.from_pkg_config('ncurses')
-        assert 'ncurses' in eci.libraries
 
     def test_platforms(self):
         from rpython.translator.platform import Platform

@@ -11,27 +11,24 @@ class AppTestFork(GenericTestThread):
 
         if not hasattr(os, 'fork'):
             skip("No fork on this platform")
-        if not self.runappdirect:
-            skip("Not reliable before translation")
 
         def busy_thread():
-            print 'sleep'
             while run:
                 time.sleep(0)
             done.append(None)
 
-        for i in range(150):
+        for i in range(1):
             run = True
             done = []
             try:
-                print 'sleep'
                 thread.start_new(busy_thread, ())
+                print 'sleep'
 
                 pid = os.fork()
                 if pid == 0:
                     os._exit(0)
                 else:
-                    self.timeout_killer(pid, 10)
+                    self.timeout_killer(pid, 5)
                     exitcode = os.waitpid(pid, 0)[1]
                     assert exitcode == 0 # if 9, process was killed by timer!
             finally:
@@ -57,7 +54,7 @@ class AppTestFork(GenericTestThread):
                 thread.start_new_thread(lambda: None, ())
                 os._exit(0)
             else:
-                self.timeout_killer(pid, 10)
+                self.timeout_killer(pid, 5)
                 exitcode = os.waitpid(pid, 0)[1]
                 assert exitcode == 0 # if 9, process was killed by timer!
 
@@ -76,7 +73,7 @@ class AppTestFork(GenericTestThread):
                 signal.signal(signal.SIGUSR1, signal.SIG_IGN)
                 os._exit(42)
             else:
-                self.timeout_killer(pid, 10)
+                self.timeout_killer(pid, 5)
                 exitcode = os.waitpid(pid, 0)[1]
                 feedback.append(exitcode)
 

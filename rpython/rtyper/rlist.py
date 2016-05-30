@@ -1,17 +1,15 @@
 from rpython.annotator import model as annmodel
 from rpython.flowspace.model import Constant
 from rpython.rlib import rgc, jit, types
-from rpython.rtyper.debug import ll_assert
-from rpython.rlib.objectmodel import malloc_zero_filled, enforceargs, specialize
+from rpython.rlib.debug import ll_assert
+from rpython.rlib.objectmodel import malloc_zero_filled
 from rpython.rlib.signature import signature
 from rpython.rlib.rarithmetic import ovfcheck, widen, r_uint, intmask
-from rpython.rlib.rarithmetic import int_force_ge_zero
 from rpython.rtyper.annlowlevel import ADTInterface
 from rpython.rtyper.error import TyperError
 from rpython.rtyper.lltypesystem.lltype import typeOf, Ptr, Void, Signed, Bool
 from rpython.rtyper.lltypesystem.lltype import nullptr, Char, UniChar, Number
-from rpython.rtyper.rmodel import Repr, IteratorRepr
-from rpython.rtyper.rint import IntegerRepr
+from rpython.rtyper.rmodel import Repr, IteratorRepr, IntegerRepr
 from rpython.rtyper.rstr import AbstractStringRepr, AbstractCharRepr
 from rpython.tool.pairtype import pairtype, pair
 
@@ -25,11 +23,11 @@ ADTIFixedList = ADTInterface(None, {
 ADTIList = ADTInterface(ADTIFixedList, {
     # grow the length if needed, overallocating a bit
     '_ll_resize_ge':   (['self', Signed        ], Void),
-    # shrink the length; if reallocating, don't keep any overallocation
+    # shrink the length, keeping it overallocated if useful
     '_ll_resize_le':   (['self', Signed        ], Void),
-    # resize to exactly the given size; no overallocation
+    # resize to exactly the given size
     '_ll_resize':      (['self', Signed        ], Void),
-    # give a hint about the size; does overallocation if growing
+    # realloc the underlying list
     '_ll_resize_hint': (['self', Signed        ], Void),
 })
 
@@ -43,22 +41,23 @@ class __extend__(annmodel.SomeList):
         listitem = self.listdef.listitem
         s_value = listitem.s_value
         if (listitem.range_step is not None and not listitem.mutated and
-                not isinstance(s_value, annmodel.SomeImpossibleValue)):
-            from rpython.rtyper.lltypesystem.rrange import RangeRepr
-            return RangeRepr(listitem.range_step)
+            not isinstance(s_value, annmodel.SomeImpossibleValue)):
+            return rtyper.type_system.rrange.RangeRepr(listitem.range_step)
         else:
             # cannot do the rtyper.getrepr() call immediately, for the case
             # of recursive structures -- i.e. if the listdef contains itself
-            from rpython.rtyper.lltypesystem.rlist import ListRepr, FixedSizeListRepr
+            rlist = rtyper.type_system.rlist
             item_repr = lambda: rtyper.getrepr(listitem.s_value)
+            known_maxlength = getattr(self, 'known_maxlength', False)
             if self.listdef.listitem.resized:
-                return ListRepr(rtyper, item_repr, listitem)
+                return rlist.ListRepr(rtyper, item_repr, listitem, known_maxlength)
             else:
-                return FixedSizeListRepr(rtyper, item_repr, listitem)
+                return rlist.FixedSizeListRepr(rtyper, item_repr, listitem)
 
     def rtyper_makekey(self):
         self.listdef.listitem.dont_change_any_more = True
-        return self.__class__, self.listdef.listitem
+        known_maxlength = getattr(self, 'known_maxlength', False)
+        return self.__class__, self.listdef.listitem, known_maxlength
 
 
 class AbstractBaseListRepr(Repr):
@@ -131,7 +130,7 @@ class AbstractBaseListRepr(Repr):
             ll_func = ll_len_foldable
         return hop.gendirectcall(ll_func, v_lst)
 
-    def rtype_bool(self, hop):
+    def rtype_is_true(self, hop):
         v_lst, = hop.inputargs(self)
         if hop.args_s[0].listdef.listitem.resized:
             ll_func = ll_list_is_true
@@ -250,26 +249,35 @@ class __extend__(pairtype(AbstractBaseListRepr, IntegerRepr)):
         v_lst, v_index = hop.inputargs(r_lst, Signed)
         if checkidx:
             hop.exception_is_here()
-            spec = dum_checkidx
         else:
-            spec = dum_nocheck
             hop.exception_cannot_occur()
-        if hop.args_s[0].listdef.listitem.mutated:
-            basegetitem = ll_getitem_fast
+        if hop.args_s[0].listdef.listitem.mutated or checkidx:
+            if hop.args_s[1].nonneg:
+                llfn = ll_getitem_nonneg
+            else:
+                llfn = ll_getitem
+            if checkidx:
+                spec = dum_checkidx
+            else:
+                spec = dum_nocheck
+            c_func_marker = hop.inputconst(Void, spec)
+            v_res = hop.gendirectcall(llfn, c_func_marker, v_lst, v_index)
         else:
-            basegetitem = ll_getitem_foldable_nonneg
-
-        if hop.args_s[1].nonneg:
-            llfn = ll_getitem_nonneg
-        else:
-            llfn = ll_getitem
-        c_func_marker = hop.inputconst(Void, spec)
-        c_basegetitem = hop.inputconst(Void, basegetitem)
-        v_res = hop.gendirectcall(llfn, c_func_marker, c_basegetitem, v_lst, v_index)
+            # this is the 'foldable' version, which is not used when
+            # we check for IndexError
+            if hop.args_s[1].nonneg:
+                llfn = ll_getitem_foldable_nonneg
+            else:
+                llfn = ll_getitem_foldable
+            v_res = hop.gendirectcall(llfn, v_lst, v_index)
         return r_lst.recast(hop.llops, v_res)
+
+    rtype_getitem_key = rtype_getitem
 
     def rtype_getitem_idx((r_lst, r_int), hop):
         return pair(r_lst, r_int).rtype_getitem(hop, checkidx=True)
+
+    rtype_getitem_idx_key = rtype_getitem_idx
 
     def rtype_setitem((r_lst, r_int), hop):
         if hop.has_implicit_exception(IndexError):
@@ -290,11 +298,6 @@ class __extend__(pairtype(AbstractBaseListRepr, IntegerRepr)):
         v_lst, v_factor = hop.inputargs(r_lst, Signed)
         return hop.gendirectcall(ll_mul, cRESLIST, v_lst, v_factor)
 
-class __extend__(pairtype(IntegerRepr, AbstractBaseListRepr)):
-    def rtype_mul((r_int, r_lst), hop):
-        cRESLIST = hop.inputconst(Void, hop.r_result.LIST)
-        v_factor, v_lst = hop.inputargs(Signed, r_lst)
-        return hop.gendirectcall(ll_mul, cRESLIST, v_lst, v_factor)
 
 class __extend__(pairtype(AbstractListRepr, IntegerRepr)):
 
@@ -325,6 +328,15 @@ class __extend__(pairtype(AbstractBaseListRepr, AbstractBaseListRepr)):
             return NotImplemented
         return v
 
+##    # TODO: move it to lltypesystem
+##    def rtype_is_((r_lst1, r_lst2), hop):
+##        if r_lst1.lowleveltype != r_lst2.lowleveltype:
+##            # obscure logic, the is can be true only if both are None
+##            v_lst1, v_lst2 = hop.inputargs(r_lst1, r_lst2)
+##            return hop.gendirectcall(ll_both_none, v_lst1, v_lst2)
+
+##        return pairtype(Repr, Repr).rtype_is_(pair(r_lst1, r_lst2), hop)
+
     def rtype_eq((r_lst1, r_lst2), hop):
         assert r_lst1.item_repr == r_lst2.item_repr
         v_lst1, v_lst2 = hop.inputargs(r_lst1, r_lst2)
@@ -338,12 +350,12 @@ class __extend__(pairtype(AbstractBaseListRepr, AbstractBaseListRepr)):
 
 
 def rtype_newlist(hop, v_sizehint=None):
-    from rpython.rtyper.lltypesystem.rlist import newlist
     nb_args = hop.nb_args
     r_list = hop.r_result
     r_listitem = r_list.item_repr
     items_v = [hop.inputarg(r_listitem, arg=i) for i in range(nb_args)]
-    return newlist(hop.llops, r_list, items_v, v_sizehint=v_sizehint)
+    return hop.rtyper.type_system.rlist.newlist(hop.llops, r_list, items_v,
+                                                v_sizehint=v_sizehint)
 
 def rtype_alloc_and_set(hop):
     r_list = hop.r_result
@@ -381,10 +393,10 @@ class __extend__(pairtype(AbstractListRepr, AbstractStringRepr)):
         return v_lst1
 
     def rtype_extend_with_str_slice((r_lst1, r_str2), hop):
-        from rpython.rtyper.lltypesystem.rstr import string_repr
         if r_lst1.item_repr.lowleveltype not in (Char, UniChar):
             raise TyperError('"lst += string" only supported with a list '
                              'of chars or unichars')
+        string_repr = r_lst1.rtyper.type_system.rstr.string_repr
         v_lst1 = hop.inputarg(r_lst1, arg=0)
         v_str2 = hop.inputarg(string_repr, arg=3)
         kind, vlist = hop.decompose_slice_args()
@@ -397,10 +409,10 @@ class __extend__(pairtype(AbstractListRepr, AbstractStringRepr)):
 class __extend__(pairtype(AbstractListRepr, AbstractCharRepr)):
 
     def rtype_extend_with_char_count((r_lst1, r_chr2), hop):
-        from rpython.rtyper.lltypesystem.rstr import char_repr
         if r_lst1.item_repr.lowleveltype not in (Char, UniChar):
             raise TyperError('"lst += string" only supported with a list '
                              'of chars or unichars')
+        char_repr = r_lst1.rtyper.type_system.rstr.char_repr
         v_lst1, v_chr, v_count = hop.inputargs(r_lst1, char_repr, Signed)
         hop.gendirectcall(ll_extend_with_char_count, v_lst1, v_chr, v_count)
         return v_lst1
@@ -470,9 +482,12 @@ class AbstractListIteratorRepr(IteratorRepr):
 #  done with it.  So in the sequel we don't bother checking for overflow
 #  when we compute "ll_length() + 1".
 
-
-def _ll_zero_or_null(item):
-    # Check if 'item' is zero/null, or not.
+@jit.look_inside_iff(lambda LIST, count, item: jit.isconstant(count) and count < 15)
+@jit.oopspec("newlist(count, item)")
+def ll_alloc_and_set(LIST, count, item):
+    if count < 0:
+        count = 0
+    l = LIST.ll_newlist(count)
     T = typeOf(item)
     if T is Char or T is UniChar:
         check = ord(item)
@@ -480,64 +495,19 @@ def _ll_zero_or_null(item):
         check = widen(item)
     else:
         check = item
-    return not check
-
-@specialize.memo()
-def _null_of_type(T):
-    return T._defl()
-
-def ll_alloc_and_set(LIST, count, item):
-    count = int_force_ge_zero(count)
-    if jit.we_are_jitted():
-        return _ll_alloc_and_set_jit(LIST, count, item)
-    else:
-        return _ll_alloc_and_set_nojit(LIST, count, item)
-
-def _ll_alloc_and_set_nojit(LIST, count, item):
-    l = LIST.ll_newlist(count)
-    if malloc_zero_filled and _ll_zero_or_null(item):
-        return l
-    i = 0
-    while i < count:
-        l.ll_setitem_fast(i, item)
-        i += 1
-    return l
-
-def _ll_alloc_and_set_jit(LIST, count, item):
-    if _ll_zero_or_null(item):
-        # 'item' is zero/null.  Do the list allocation with the
-        # function _ll_alloc_and_clear(), which the JIT knows about.
-        return _ll_alloc_and_clear(LIST, count)
-    else:
-        # 'item' is not zero/null.  Do the list allocation with the
-        # function _ll_alloc_and_set_nonnull().  That function has
-        # a JIT marker to unroll it, but only if the 'count' is
-        # a not-too-large constant.
-        return _ll_alloc_and_set_nonnull(LIST, count, item)
-
-@jit.oopspec("newlist_clear(count)")
-def _ll_alloc_and_clear(LIST, count):
-    l = LIST.ll_newlist(count)
-    if malloc_zero_filled:
-        return l
-    zeroitem = _null_of_type(LIST.ITEM)
-    i = 0
-    while i < count:
-        l.ll_setitem_fast(i, zeroitem)
-        i += 1
-    return l
-
-@jit.look_inside_iff(lambda LIST, count, item: jit.isconstant(count) and count < 137)
-def _ll_alloc_and_set_nonnull(LIST, count, item):
-    l = LIST.ll_newlist(count)
-    i = 0
-    while i < count:
-        l.ll_setitem_fast(i, item)
-        i += 1
+    # as long as malloc is known to zero the allocated memory avoid zeroing
+    # twice
+    if (not malloc_zero_filled) or check:
+        i = 0
+        while i < count:
+            l.ll_setitem_fast(i, item)
+            i += 1
     return l
 
 
-# return a nullptr() if lst is a list of pointers it, else None.
+# return a nullptr() if lst is a list of pointers it, else None.  Note
+# that if we are using ootypesystem there are not pointers, so we
+# always return None.
 def ll_null_item(lst):
     LIST = typeOf(lst)
     if isinstance(LIST, Ptr):
@@ -548,15 +518,25 @@ def ll_null_item(lst):
 
 def listItemType(lst):
     LIST = typeOf(lst)
-    return LIST.TO.ITEM
+    if isinstance(LIST, Ptr):    # lltype
+        LIST = LIST.TO
+    return LIST.ITEM
 
 
 @signature(types.any(), types.any(), types.int(), types.int(), types.int(), returns=types.none())
 def ll_arraycopy(source, dest, source_start, dest_start, length):
     SRCTYPE = typeOf(source)
-    # lltype
-    rgc.ll_arraycopy(source.ll_items(), dest.ll_items(),
-                     source_start, dest_start, length)
+    if isinstance(SRCTYPE, Ptr):
+        # lltype
+        rgc.ll_arraycopy(source.ll_items(), dest.ll_items(),
+                         source_start, dest_start, length)
+    else:
+        # ootype -- XXX improve the case of array->array copy?
+        i = 0
+        while i < length:
+            item = source.ll_getitem_fast(source_start + i)
+            dest.ll_setitem_fast(dest_start + i, item)
+            i += 1
 
 
 def ll_copy(RESLIST, l):
@@ -697,16 +677,16 @@ def ll_reverse(l):
         i += 1
         length_1_i -= 1
 
-def ll_getitem_nonneg(func, basegetitem, l, index):
+def ll_getitem_nonneg(func, l, index):
     ll_assert(index >= 0, "unexpectedly negative list getitem index")
     if func is dum_checkidx:
         if index >= l.ll_length():
             raise IndexError
-    return basegetitem(l, index)
+    return l.ll_getitem_fast(index)
 ll_getitem_nonneg._always_inline_ = True
 # no oopspec -- the function is inlined by the JIT
 
-def ll_getitem(func, basegetitem, l, index):
+def ll_getitem(func, l, index):
     if func is dum_checkidx:
         length = l.ll_length()    # common case: 0 <= index < length
         if r_uint(index) >= r_uint(length):
@@ -723,17 +703,20 @@ def ll_getitem(func, basegetitem, l, index):
         if index < 0:
             index += l.ll_length()
             ll_assert(index >= 0, "negative list getitem index out of bound")
-    return basegetitem(l, index)
-# no oopspec -- the function is inlined by the JIT
-
-def ll_getitem_fast(l, index):
     return l.ll_getitem_fast(index)
-ll_getitem_fast._always_inline_ = True
+# no oopspec -- the function is inlined by the JIT
 
 def ll_getitem_foldable_nonneg(l, index):
     ll_assert(index >= 0, "unexpectedly negative list getitem index")
     return l.ll_getitem_fast(index)
 ll_getitem_foldable_nonneg.oopspec = 'list.getitem_foldable(l, index)'
+
+def ll_getitem_foldable(l, index):
+    if index < 0:
+        index += l.ll_length()
+    return ll_getitem_foldable_nonneg(l, index)
+ll_getitem_foldable._always_inline_ = True
+# no oopspec -- the function is inlined by the JIT
 
 def ll_setitem_nonneg(func, l, index, newitem):
     ll_assert(index >= 0, "unexpectedly negative list setitem index")
@@ -759,7 +742,6 @@ def ll_setitem(func, l, index, newitem):
     l.ll_setitem_fast(index, newitem)
 # no oopspec -- the function is inlined by the JIT
 
-@enforceargs(None, None, int)
 def ll_delitem_nonneg(func, l, index):
     ll_assert(index >= 0, "unexpectedly negative list delitem index")
     length = l.ll_length()
@@ -965,39 +947,20 @@ def ll_listdelslice_startstop(l, start, stop):
 ll_listdelslice_startstop.oopspec = 'list.delslice_startstop(l, start, stop)'
 
 def ll_listsetslice(l1, start, stop, l2):
-    len1 = l1.ll_length()
-    len2 = l2.ll_length()
+    count = l2.ll_length()
     ll_assert(start >= 0, "l[start:x] = l with unexpectedly negative start")
-    ll_assert(start <= len1, "l[start:x] = l with start > len(l)")
-    ll_assert(stop <= len1, "stop cannot be past the end of l1")
-    if len2 == stop - start:
-        ll_arraycopy(l2, l1, 0, start, len2)
-    elif len2 < stop - start:
-        ll_arraycopy(l2, l1, 0, start, len2)
-        ll_arraycopy(l1, l1, stop, start + len2, len1 - stop)
-        l1._ll_resize_le(len1 + len2 - (stop - start))
-    else: # len2 > stop - start:
-        try:
-            newlength = ovfcheck(len1 + len2)
-        except OverflowError:
-            raise MemoryError
-        l1._ll_resize_ge(newlength)
-        ll_arraycopy(l1, l1, stop, start + len2, len1 - stop)
-        ll_arraycopy(l2, l1, 0, start, len2)
+    ll_assert(start <= l1.ll_length(), "l[start:x] = l with start > len(l)")
+    ll_assert(stop <= l1.ll_length(), "stop cannot be past the end of l1")
+    ll_assert(count == stop - start,
+                 "setslice cannot resize lists in RPython")
+    # XXX ...but it would be easy enough to support if really needed
+    ll_arraycopy(l2, l1, 0, start, count)
 
 
 # ____________________________________________________________
 #
 #  Comparison.
 
-def listeq_unroll_case(l1, l2, eqfn):
-    if jit.isvirtual(l1) and l1.ll_length() < 10:
-        return True
-    if jit.isvirtual(l2) and l2.ll_length() < 10:
-        return True
-    return False
-
-@jit.look_inside_iff(listeq_unroll_case)
 def ll_listeq(l1, l2, eqfn):
     if not l1 and not l2:
         return True
@@ -1070,8 +1033,7 @@ def ll_inplace_mul(l, factor):
     return res
 ll_inplace_mul.oopspec = 'list.inplace_mul(l, factor)'
 
-@jit.look_inside_iff(lambda _, l, factor: jit.isvirtual(l) and
-                     jit.isconstant(factor) and factor < 10)
+
 def ll_mul(RESLIST, l, factor):
     length = l.ll_length()
     if factor < 0:

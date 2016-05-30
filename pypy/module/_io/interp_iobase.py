@@ -1,12 +1,11 @@
-from errno import EINTR
 from pypy.interpreter.baseobjspace import W_Root
-from pypy.interpreter.error import OperationError, oefmt
 from pypy.interpreter.typedef import (
     TypeDef, GetSetProperty, generic_new_descr, descr_get_dict, descr_set_dict,
     make_weakref_descr)
 from pypy.interpreter.gateway import interp2app
+from pypy.interpreter.error import OperationError, operationerrfmt
 from rpython.rlib.rstring import StringBuilder
-from rpython.rlib import rweakref, rweaklist
+from rpython.rlib import rweakref
 
 
 DEFAULT_BUFFER_SIZE = 8192
@@ -16,22 +15,6 @@ def convert_size(space, w_size):
         return -1
     else:
         return space.int_w(w_size)
-
-def trap_eintr(space, error):
-    # Return True if an EnvironmentError with errno == EINTR is set
-    if not error.match(space, space.w_EnvironmentError):
-        return False
-    try:
-        w_value = error.get_w_value(space)
-        w_errno = space.getattr(w_value, space.wrap("errno"))
-        return space.eq_w(w_errno, space.wrap(EINTR))
-    except OperationError:
-        return False
-
-def unsupported(space, message):
-    w_exc = space.getattr(space.getbuiltinmodule('_io'),
-                          space.wrap('UnsupportedOperation'))
-    return OperationError(w_exc, space.wrap(message))
 
 # May be called with any object
 def check_readable_w(space, w_obj):
@@ -56,15 +39,15 @@ def check_seekable_w(space, w_obj):
 
 
 class W_IOBase(W_Root):
-    def __init__(self, space, add_to_autoflusher=True):
+    def __init__(self, space):
         # XXX: IOBase thinks it has to maintain its own internal state in
         # `__IOBase_closed` and call flush() by itself, but it is redundant
         # with whatever behaviour a non-trivial derived class will implement.
         self.space = space
         self.w_dict = space.newdict()
         self.__IOBase_closed = False
-        if add_to_autoflusher:
-            get_autoflusher(space).add(self)
+        self.streamholder = None # needed by AutoFlusher
+        get_autoflusher(space).add(self)
 
     def getdict(self, space):
         return self.w_dict
@@ -103,18 +86,12 @@ class W_IOBase(W_Root):
         # attribute as returned by whatever subclass.
         return self.__IOBase_closed
 
-    def _unsupportedoperation(self, space, message):
-        raise unsupported(space, message)
-
     def _check_closed(self, space, message=None):
         if message is None:
             message = "I/O operation on closed file"
         if self._closed(space):
             raise OperationError(
                 space.w_ValueError, space.wrap(message))
-
-    def check_closed_w(self, space):
-        self._check_closed(space)
 
     def closed_get_w(self, space):
         return space.newbool(self.__IOBase_closed)
@@ -126,6 +103,7 @@ class W_IOBase(W_Root):
             space.call_method(self, "flush")
         finally:
             self.__IOBase_closed = True
+            get_autoflusher(space).remove(self)
 
     def flush_w(self, space):
         if self._CLOSED():
@@ -133,17 +111,8 @@ class W_IOBase(W_Root):
                 space.w_ValueError,
                 space.wrap("I/O operation on closed file"))
 
-    def seek_w(self, space, w_offset, w_whence=None):
-        self._unsupportedoperation(space, "seek")
-
     def tell_w(self, space):
         return space.call_method(self, "seek", space.wrap(0), space.wrap(1))
-
-    def truncate_w(self, space, w_size=None):
-        self._unsupportedoperation(space, "truncate")
-
-    def fileno_w(self, space):
-        self._unsupportedoperation(space, "fileno")
 
     def enter_w(self, space):
         self._check_closed(space)
@@ -190,16 +159,12 @@ class W_IOBase(W_Root):
             nreadahead = 1
 
             if has_peek:
-                try:
-                    w_readahead = space.call_method(self, "peek", space.wrap(1))
-                except OperationError, e:
-                    if trap_eintr(space, e):
-                        continue
-                    raise
+                w_readahead = space.call_method(self, "peek", space.wrap(1))
                 if not space.isinstance_w(w_readahead, space.w_str):
-                    raise oefmt(space.w_IOError,
-                                "peek() should have returned a bytes object, "
-                                "not '%T'", w_readahead)
+                    raise operationerrfmt(
+                        space.w_IOError,
+                        "peek() should have returned a bytes object, "
+                        "not '%s'", space.type(w_readahead).getname(space))
                 length = space.len_w(w_readahead)
                 if length > 0:
                     n = 0
@@ -220,16 +185,12 @@ class W_IOBase(W_Root):
                                 break
                     nreadahead = n
 
-            try:
-                w_read = space.call_method(self, "read", space.wrap(nreadahead))
-            except OperationError, e:
-                if trap_eintr(space, e):
-                    continue
-                raise
+            w_read = space.call_method(self, "read", space.wrap(nreadahead))
             if not space.isinstance_w(w_read, space.w_str):
-                raise oefmt(space.w_IOError,
-                            "peek() should have returned a bytes object, not "
-                            "'%T'", w_read)
+                raise operationerrfmt(
+                    space.w_IOError,
+                    "peek() should have returned a bytes object, "
+                    "not '%s'", space.type(w_read).getname(space))
             read = space.str_w(w_read)
             if not read:
                 break
@@ -276,18 +237,10 @@ class W_IOBase(W_Root):
                 if not e.match(space, space.w_StopIteration):
                     raise
                 break  # done
-            while True:
-                try:
-                    space.call_method(self, "write", w_line)
-                except OperationError, e:
-                    if trap_eintr(space, e):
-                        continue
-                    raise
-                else:
-                    break
+            space.call_method(self, "write", w_line)
 
 W_IOBase.typedef = TypeDef(
-    '_io._IOBase',
+    '_IOBase',
     __new__ = generic_new_descr(W_IOBase),
     __enter__ = interp2app(W_IOBase.enter_w),
     __exit__ = interp2app(W_IOBase.exit_w),
@@ -295,19 +248,14 @@ W_IOBase.typedef = TypeDef(
     next = interp2app(W_IOBase.next_w),
     close = interp2app(W_IOBase.close_w),
     flush = interp2app(W_IOBase.flush_w),
-    seek = interp2app(W_IOBase.seek_w),
     tell = interp2app(W_IOBase.tell_w),
-    truncate = interp2app(W_IOBase.truncate_w),
-    fileno = interp2app(W_IOBase.fileno_w),
     isatty = interp2app(W_IOBase.isatty_w),
     readable = interp2app(W_IOBase.readable_w),
     writable = interp2app(W_IOBase.writable_w),
     seekable = interp2app(W_IOBase.seekable_w),
-
     _checkReadable = interp2app(check_readable_w),
     _checkWritable = interp2app(check_writable_w),
     _checkSeekable = interp2app(check_seekable_w),
-    _checkClosed = interp2app(W_IOBase.check_closed_w),
     closed = GetSetProperty(W_IOBase.closed_get_w),
     __dict__ = GetSetProperty(descr_get_dict, descr_set_dict, cls=W_IOBase),
     __weakref__ = make_weakref_descr(W_IOBase),
@@ -336,13 +284,8 @@ class W_RawIOBase(W_IOBase):
     def readall_w(self, space):
         builder = StringBuilder()
         while True:
-            try:
-                w_data = space.call_method(self, "read",
-                                           space.wrap(DEFAULT_BUFFER_SIZE))
-            except OperationError, e:
-                if trap_eintr(space, e):
-                    continue
-                raise
+            w_data = space.call_method(self, "read",
+                                       space.wrap(DEFAULT_BUFFER_SIZE))
             if space.is_w(w_data, space.w_None):
                 if not builder.getlength():
                     return w_data
@@ -358,7 +301,7 @@ class W_RawIOBase(W_IOBase):
         return space.wrap(builder.build())
 
 W_RawIOBase.typedef = TypeDef(
-    '_io._RawIOBase', W_IOBase.typedef,
+    '_RawIOBase', W_IOBase.typedef,
     __new__ = generic_new_descr(W_RawIOBase),
 
     read = interp2app(W_RawIOBase.read_w),
@@ -370,37 +313,55 @@ W_RawIOBase.typedef = TypeDef(
 # functions to make sure that all streams are flushed on exit
 # ------------------------------------------------------------
 
+class StreamHolder(object):
+    def __init__(self, w_iobase):
+        self.w_iobase_ref = rweakref.ref(w_iobase)
+        w_iobase.autoflusher = self
 
-class AutoFlusher(rweaklist.RWeakListMixin):
+    def autoflush(self, space):
+        w_iobase = self.w_iobase_ref()
+        if w_iobase is not None:
+            try:
+                space.call_method(w_iobase, 'flush')
+            except OperationError:
+                # Silencing all errors is bad, but getting randomly
+                # interrupted here is equally as bad, and potentially
+                # more frequent (because of shutdown issues).
+                pass 
+
+
+class AutoFlusher(object):
     def __init__(self, space):
-        self.initialize()
+        self.streams = {}
 
     def add(self, w_iobase):
+        assert w_iobase.streamholder is None
         if rweakref.has_weakref_support():
-            self.add_handle(w_iobase)
+            holder = StreamHolder(w_iobase)
+            w_iobase.streamholder = holder
+            self.streams[holder] = None
         #else:
         #   no support for weakrefs, so ignore and we
         #   will not get autoflushing
 
+    def remove(self, w_iobase):
+        holder = w_iobase.streamholder
+        if holder is not None:
+            try:
+                del self.streams[holder]
+            except KeyError:
+                # this can happen in daemon threads
+                pass
+
     def flush_all(self, space):
-        while True:
-            handles = self.get_all_handles()
-            self.initialize()  # reset the state here
-            progress = False
-            for wr in handles:
-                w_iobase = wr()
-                if w_iobase is None:
-                    continue
-                progress = True
+        while self.streams:
+            for streamholder in self.streams.keys():
                 try:
-                    space.call_method(w_iobase, 'flush')
-                except OperationError:
-                    # Silencing all errors is bad, but getting randomly
-                    # interrupted here is equally as bad, and potentially
-                    # more frequent (because of shutdown issues).
-                    pass
-            if not progress:
-                break
+                    del self.streams[streamholder]
+                except KeyError:
+                    pass    # key was removed in the meantime
+                else:
+                    streamholder.autoflush(space)
 
 def get_autoflusher(space):
     return space.fromcache(AutoFlusher)

@@ -127,10 +127,8 @@ r_gcroot_constant = re.compile(r";\tmov\t.+, .+_constant_always_one_")
 def check_computegcmaptable(format, path):
     if format == 'msvc':
         r_globallabel = re.compile(r"([\w]+)::")
-    elif format == 'darwin' or format == 'darwin64':
-        py.test.skip("disabled on OS/X's terribly old gcc")
     else:
-        r_globallabel = re.compile(r"([\w.]+)=[.]+")
+        r_globallabel = re.compile(r"([\w]+)=[.]+")
     print
     print path.dirpath().basename + '/' + path.basename
     lines = path.readlines()
@@ -159,8 +157,7 @@ def check_computegcmaptable(format, path):
                 expectedlines.insert(i-2, 'PUBLIC\t%s\n' % (label,))
                 expectedlines.insert(i-1, '%s::\n' % (label,))
             else:
-                expectedlines.insert(i-3, '\t.globl\t%s\n' % (label,))
-                expectedlines.insert(i-2, '\t.hidden\t%s\n' % (label,))
+                expectedlines.insert(i-2, '\t.globl\t%s\n' % (label,))
                 expectedlines.insert(i-1, '%s=.+%d\n' % (label,
                                                          tracker.OFFSET_LABELS))
         if format == 'msvc' and r_gcroot_constant.match(line):

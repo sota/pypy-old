@@ -24,7 +24,7 @@ class AppTestUnicodeObject(AppTestCpythonExtensionBase):
                  if(PyUnicode_GetSize(s) == 11) {
                      result = 1;
                  }
-                 if(s->ob_type->tp_basicsize != sizeof(void*)*5)
+                 if(s->ob_type->tp_basicsize != sizeof(void*)*4)
                      result = 0;
                  Py_DECREF(s);
                  return PyBool_FromLong(result);
@@ -91,7 +91,6 @@ class TestUnicode(BaseApiTest):
         invalid = rffi.str2charp('invalid')
         utf_8 = rffi.str2charp('utf-8')
         prev_encoding = rffi.str2charp(space.unwrap(w_default_encoding))
-        self.raises(space, api, TypeError, api.PyUnicode_SetDefaultEncoding, lltype.nullptr(rffi.CCHARP.TO))
         assert api.PyUnicode_SetDefaultEncoding(invalid) == -1
         assert api.PyErr_Occurred() is space.w_LookupError
         api.PyErr_Clear()
@@ -317,14 +316,12 @@ class TestUnicode(BaseApiTest):
         rffi.free_charp(b_text)
         rffi.free_charp(b_encoding)
 
-    def test_decode_null_encoding(self, space, api):
-        null_charp = lltype.nullptr(rffi.CCHARP.TO)
-        u_text = u'abcdefg'
-        s_text = space.str_w(api.PyUnicode_AsEncodedString(space.wrap(u_text), null_charp, null_charp))
-        b_text = rffi.str2charp(s_text)
-        assert space.unwrap(api.PyUnicode_Decode(b_text, len(s_text), null_charp, null_charp)) == u_text
-        self.raises(space, api, TypeError, api.PyUnicode_FromEncodedObject, space.wrap(u_text), null_charp, None)
-        rffi.free_charp(b_text)
+    def test_leak(self):
+        size = 50
+        raw_buf, gc_buf = rffi.alloc_buffer(size)
+        for i in range(size): raw_buf[i] = 'a'
+        str = rffi.str_from_buffer(raw_buf, gc_buf, size, size)
+        rffi.keep_buffer_alive_until_here(raw_buf, gc_buf)
 
     def test_mbcs(self, space, api):
         if sys.platform != 'win32':
@@ -435,8 +432,8 @@ class TestUnicode(BaseApiTest):
 
     def test_copy(self, space, api):
         w_x = space.wrap(u"abcd\u0660")
-        count1 = space.int_w(space.len(w_x))
-        target_chunk = lltype.malloc(rffi.CWCHARP.TO, count1, flavor='raw')
+        target_chunk, _ = rffi.alloc_unicodebuffer(space.int_w(space.len(w_x)))
+        #lltype.malloc(Py_UNICODE, space.int_w(space.len(w_x)), flavor='raw')
 
         x_chunk = api.PyUnicode_AS_UNICODE(w_x)
         api.Py_UNICODE_COPY(target_chunk, x_chunk, 4)

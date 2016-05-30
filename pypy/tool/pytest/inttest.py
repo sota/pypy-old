@@ -19,13 +19,10 @@ def check_keyboard_interrupt(e):
         pass
 
 
-marker = py.test.mark.interplevel
-
-
 class IntTestFunction(py.test.collect.Function):
     def __init__(self, *args, **kwargs):
         super(IntTestFunction, self).__init__(*args, **kwargs)
-        self._request.applymarker(marker)
+        self.keywords['interplevel'] = True
 
     def runtest(self):
         try:
@@ -50,3 +47,11 @@ class IntInstanceCollector(py.test.collect.Instance):
 
 class IntClassCollector(PyPyClassCollector):
     Instance = IntInstanceCollector
+
+    def _haskeyword(self, keyword):
+        return (keyword == 'interplevel' or 
+                super(IntClassCollector, self)._haskeyword(keyword))
+
+    def _keywords(self):
+        return super(IntClassCollector, self)._keywords() + ['interplevel']
+

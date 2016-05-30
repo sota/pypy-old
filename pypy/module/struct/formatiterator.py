@@ -3,11 +3,12 @@ from rpython.rlib.objectmodel import specialize
 from rpython.rlib.rstring import StringBuilder
 from rpython.rlib.rstruct.error import StructError
 from rpython.rlib.rstruct.formatiterator import FormatIterator
-
+from rpython.rlib.rstruct.standardfmttable import PACK_ACCEPTS_BROKEN_INPUT
 from pypy.interpreter.error import OperationError
 
 
 class PackFormatIterator(FormatIterator):
+
     def __init__(self, space, args_w, size):
         self.space = space
         self.args_w = args_w
@@ -44,51 +45,69 @@ class PackFormatIterator(FormatIterator):
         self.args_index += 1
         return w_obj
 
-    def accept_int_arg(self):
-        return self._accept_integral("int_w")
+    if PACK_ACCEPTS_BROKEN_INPUT:
+        # permissive version - accepts float arguments too
 
-    def accept_uint_arg(self):
-        return self._accept_integral("uint_w")
+        def accept_int_arg(self):
+            return self._accept_integral("int_w")
 
-    def accept_longlong_arg(self):
-        return self._accept_integral("r_longlong_w")
+        def accept_uint_arg(self):
+            return self._accept_integral("uint_w")
 
-    def accept_ulonglong_arg(self):
-        return self._accept_integral("r_ulonglong_w")
+        def accept_longlong_arg(self):
+            return self._accept_integral("r_longlong_w")
 
-    @specialize.arg(1)
-    def _accept_integral(self, meth):
-        space = self.space
-        w_obj = self.accept_obj_arg()
-        if (space.isinstance_w(w_obj, space.w_int) or
-            space.isinstance_w(w_obj, space.w_long)):
-            w_index = w_obj
-        else:
-            w_index = None
-            if space.lookup(w_obj, '__index__'):
-                try:
-                    w_index = space.index(w_obj)
-                except OperationError, e:
-                    if not e.match(space, space.w_TypeError):
-                        raise
-                    pass
-            if w_index is None and space.lookup(w_obj, '__int__'):
-                if space.isinstance_w(w_obj, space.w_float):
-                    msg = "integer argument expected, got float"
-                else:
-                    msg = "integer argument expected, got non-integer" \
-                          " (implicit conversion using __int__ is deprecated)"
-                space.warn(space.wrap(msg), space.w_DeprecationWarning)
-                w_index = space.int(w_obj)   # wrapped float -> wrapped int or long
-            if w_index is None:
-                raise StructError("cannot convert argument to integer")
-        method = getattr(space, meth)
-        try:
-            return method(w_index)
-        except OperationError as e:
-            if e.match(self.space, self.space.w_OverflowError):
-                raise StructError("argument out of range")
-            raise
+        def accept_ulonglong_arg(self):
+            return self._accept_integral("r_ulonglong_w")
+
+        @specialize.arg(1)
+        def _accept_integral(self, meth):
+            space = self.space
+            w_obj = self.accept_obj_arg()
+            if (space.isinstance_w(w_obj, space.w_int) or
+                space.isinstance_w(w_obj, space.w_long)):
+                w_index = w_obj
+            else:
+                w_index = None
+                w_index_method = space.lookup(w_obj, "__index__")
+                if w_index_method is not None:
+                    try:
+                        w_index = space.index(w_obj)
+                    except OperationError, e:
+                        if not e.match(space, space.w_TypeError):
+                            raise
+                        pass
+                if w_index is None:
+                    w_index = self._maybe_float(w_obj)
+            return getattr(space, meth)(w_index)
+
+        def _maybe_float(self, w_obj):
+            space = self.space
+            if space.isinstance_w(w_obj, space.w_float):
+                msg = "struct: integer argument expected, got float"
+            else:
+                msg = "integer argument expected, got non-integer"
+            space.warn(space.wrap(msg), space.w_DeprecationWarning)
+            return space.int(w_obj)   # wrapped float -> wrapped int or long
+
+    else:
+        # strict version
+
+        def accept_int_arg(self):
+            w_obj = self.accept_obj_arg()
+            return self.space.int_w(w_obj)
+
+        def accept_uint_arg(self):
+            w_obj = self.accept_obj_arg()
+            return self.space.uint_w(w_obj)
+
+        def accept_longlong_arg(self):
+            w_obj = self.accept_obj_arg()
+            return self.space.r_longlong_w(w_obj)
+
+        def accept_ulonglong_arg(self):
+            w_obj = self.accept_obj_arg()
+            return self.space.r_ulonglong_w(w_obj)
 
     def accept_bool_arg(self):
         w_obj = self.accept_obj_arg()
@@ -104,20 +123,15 @@ class PackFormatIterator(FormatIterator):
 
     def accept_float_arg(self):
         w_obj = self.accept_obj_arg()
-        try:
-            return self.space.float_w(w_obj)
-        except OperationError as e:
-            if e.match(self.space, self.space.w_TypeError):
-                raise StructError("required argument is not a float")
-            raise
+        return self.space.float_w(w_obj)
 
 
 class UnpackFormatIterator(FormatIterator):
-    def __init__(self, space, buf):
+
+    def __init__(self, space, input):
         self.space = space
-        self.buf = buf
-        self.length = buf.getlength()
-        self.pos = 0
+        self.input = input
+        self.inputpos = 0
         self.result_w = []     # list of wrapped objects
 
     # See above comment on operate.
@@ -132,30 +146,20 @@ class UnpackFormatIterator(FormatIterator):
     _operate_is_specialized_ = True
 
     def align(self, mask):
-        self.pos = (self.pos + mask) & ~mask
+        self.inputpos = (self.inputpos + mask) & ~mask
 
     def finished(self):
-        if self.pos != self.length:
+        if self.inputpos != len(self.input):
             raise StructError("unpack str size too long for format")
 
     def read(self, count):
-        end = self.pos + count
-        if end > self.length:
+        end = self.inputpos + count
+        if end > len(self.input):
             raise StructError("unpack str size too short for format")
-        s = self.buf.getslice(self.pos, end, 1, count)
-        self.pos = end
+        s = self.input[self.inputpos : end]
+        self.inputpos = end
         return s
 
     @specialize.argtype(1)
     def appendobj(self, value):
         self.result_w.append(self.space.wrap(value))
-
-    def get_pos(self):
-        return self.pos
-
-    def get_buffer_as_string_maybe(self):
-        string, pos = self.buf.as_str_and_offset_maybe()
-        return string, pos+self.pos
-
-    def skip(self, size):
-        self.read(size) # XXX, could avoid taking the slice

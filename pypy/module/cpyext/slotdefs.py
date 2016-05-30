@@ -4,19 +4,19 @@ import re
 
 from rpython.rtyper.lltypesystem import rffi, lltype
 from pypy.module.cpyext.api import (
-    cpython_api, generic_cpy_call, PyObject, Py_ssize_t, Py_TPFLAGS_CHECKTYPES)
+    cpython_api, generic_cpy_call, PyObject, Py_ssize_t)
 from pypy.module.cpyext.typeobjectdefs import (
     unaryfunc, wrapperfunc, ternaryfunc, PyTypeObjectPtr, binaryfunc,
     getattrfunc, getattrofunc, setattrofunc, lenfunc, ssizeargfunc, inquiry,
     ssizessizeargfunc, ssizeobjargproc, iternextfunc, initproc, richcmpfunc,
     cmpfunc, hashfunc, descrgetfunc, descrsetfunc, objobjproc, objobjargproc,
     readbufferproc)
-from pypy.module.cpyext.pyobject import from_ref, make_ref, Py_DecRef
+from pypy.module.cpyext.pyobject import from_ref
 from pypy.module.cpyext.pyerrors import PyErr_Occurred
 from pypy.module.cpyext.state import State
-from pypy.interpreter.error import OperationError, oefmt
+from pypy.interpreter.error import OperationError, operationerrfmt
+from pypy.interpreter.buffer import Buffer as W_Buffer
 from pypy.interpreter.argument import Arguments
-from rpython.rlib.buffer import Buffer
 from rpython.rlib.unroll import unrolling_iterable
 from rpython.rlib.objectmodel import specialize
 from rpython.tool.sourcetools import func_renamer
@@ -31,16 +31,16 @@ Py_GT = 4
 Py_GE = 5
 
 
-def check_num_args(space, w_ob, n):
-    from pypy.module.cpyext.tupleobject import PyTuple_CheckExact
-    if not PyTuple_CheckExact(space, w_ob):
+def check_num_args(space, ob, n):
+    from pypy.module.cpyext.tupleobject import PyTuple_CheckExact, \
+            PyTuple_GET_SIZE
+    if not PyTuple_CheckExact(space, ob):
         raise OperationError(space.w_SystemError,
             space.wrap("PyArg_UnpackTuple() argument list is not a tuple"))
-    if n == space.len_w(w_ob):
+    if n == PyTuple_GET_SIZE(space, ob):
         return
-    raise oefmt(space.w_TypeError,
-                "expected %d arguments, got %d",
-                n, space.len_w(w_ob))
+    raise operationerrfmt(space.w_TypeError,
+        "expected %d arguments, got %d", n, PyTuple_GET_SIZE(space, ob))
 
 def wrap_init(space, w_self, w_args, func, w_kwargs):
     func_init = rffi.cast(initproc, func)
@@ -59,30 +59,6 @@ def wrap_binaryfunc(space, w_self, w_args, func):
     check_num_args(space, w_args, 1)
     args_w = space.fixedview(w_args)
     return generic_cpy_call(space, func_binary, w_self, args_w[0])
-
-def wrap_binaryfunc_l(space, w_self, w_args, func):
-    func_binary = rffi.cast(binaryfunc, func)
-    check_num_args(space, w_args, 1)
-    args_w = space.fixedview(w_args)
-    ref = make_ref(space, w_self)
-    if (not ref.c_ob_type.c_tp_flags & Py_TPFLAGS_CHECKTYPES and
-        not space.is_true(space.issubtype(space.type(args_w[0]),
-                                         space.type(w_self)))):
-        return space.w_NotImplemented
-    Py_DecRef(space, ref)
-    return generic_cpy_call(space, func_binary, w_self, args_w[0])
-
-def wrap_binaryfunc_r(space, w_self, w_args, func):
-    func_binary = rffi.cast(binaryfunc, func)
-    check_num_args(space, w_args, 1)
-    args_w = space.fixedview(w_args)
-    ref = make_ref(space, w_self)
-    if (not ref.c_ob_type.c_tp_flags & Py_TPFLAGS_CHECKTYPES and
-        not space.is_true(space.issubtype(space.type(args_w[0]),
-                                         space.type(w_self)))):
-        return space.w_NotImplemented
-    Py_DecRef(space, ref)
-    return generic_cpy_call(space, func_binary, args_w[0], w_self)
 
 def wrap_inquirypred(space, w_self, w_args, func):
     func_inquiry = rffi.cast(inquiry, func)
@@ -137,8 +113,9 @@ def wrap_descr_get(space, w_self, w_args, func):
     elif len(args_w) == 2:
         w_obj, w_type = args_w
     else:
-        raise oefmt(space.w_TypeError,
-                    "expected 1 or 2 arguments, got %d", len(args_w))
+        raise operationerrfmt(
+            space.w_TypeError,
+            "expected 1 or 2 arguments, got %d", len(args_w))
     if w_obj is space.w_None:
         w_obj = None
     if w_type is space.w_None:
@@ -251,24 +228,19 @@ def wrap_hashfunc(space, w_self, w_args, func):
     check_num_args(space, w_args, 0)
     return space.wrap(generic_cpy_call(space, func_target, w_self))
 
-class CPyBuffer(Buffer):
+class CPyBuffer(W_Buffer):
     # Similar to Py_buffer
-    _immutable_ = True
 
     def __init__(self, ptr, size, w_obj):
         self.ptr = ptr
         self.size = size
         self.w_obj = w_obj # kept alive
-        self.readonly = True
 
     def getlength(self):
         return self.size
 
     def getitem(self, index):
         return self.ptr[index]
-
-    def get_raw_address(self):
-        return rffi.cast(rffi.CCHARP, self.ptr)
 
 def wrap_getreadbuffer(space, w_self, w_args, func):
     func_target = rffi.cast(readbufferproc, func)
@@ -277,7 +249,7 @@ def wrap_getreadbuffer(space, w_self, w_args, func):
         size = generic_cpy_call(space, func_target, w_self, index, ptr)
         if size < 0:
             space.fromcache(State).check_and_raise_exception(always=True)
-        return space.newbuffer(CPyBuffer(ptr[0], size, w_self))
+        return space.wrap(CPyBuffer(ptr[0], size, w_self))
 
 def get_richcmp_func(OP_CONST):
     def inner(space, w_self, w_args, func):
@@ -302,13 +274,15 @@ def wrap_cmpfunc(space, w_self, w_args, func):
 
     if not space.is_true(space.issubtype(space.type(w_self),
                                          space.type(w_other))):
-        raise oefmt(space.w_TypeError,
-                    "%T.__cmp__(x,y) requires y to be a '%T', not a '%T'",
-                    w_self, w_self, w_other)
+        raise OperationError(space.w_TypeError, space.wrap(
+            "%s.__cmp__(x,y) requires y to be a '%s', not a '%s'" %
+            (space.type(w_self).getname(space),
+             space.type(w_self).getname(space),
+             space.type(w_other).getname(space))))
 
     return space.wrap(generic_cpy_call(space, func_target, w_self, w_other))
 
-@cpython_api([PyTypeObjectPtr, PyObject, PyObject], PyObject, header=None)
+@cpython_api([PyTypeObjectPtr, PyObject, PyObject], PyObject, external=False)
 def slot_tp_new(space, type, w_args, w_kwds):
     from pypy.module.cpyext.tupleobject import PyTuple_Check
     pyo = rffi.cast(PyObject, type)
@@ -319,30 +293,30 @@ def slot_tp_new(space, type, w_args, w_kwds):
     w_args_new = space.newtuple(args_w)
     return space.call(w_func, w_args_new, w_kwds)
 
-@cpython_api([PyObject, PyObject, PyObject], rffi.INT_real, error=-1, header=None)
+@cpython_api([PyObject, PyObject, PyObject], rffi.INT_real, error=-1, external=False)
 def slot_tp_init(space, w_self, w_args, w_kwds):
     w_descr = space.lookup(w_self, '__init__')
     args = Arguments.frompacked(space, w_args, w_kwds)
     space.get_and_call_args(w_descr, w_self, args)
     return 0
 
-@cpython_api([PyObject, PyObject, PyObject], PyObject, header=None)
+@cpython_api([PyObject, PyObject, PyObject], PyObject, external=False)
 def slot_tp_call(space, w_self, w_args, w_kwds):
     return space.call(w_self, w_args, w_kwds)
 
-@cpython_api([PyObject], PyObject, header=None)
+@cpython_api([PyObject], PyObject, external=False)
 def slot_tp_str(space, w_self):
     return space.str(w_self)
 
-@cpython_api([PyObject], PyObject, header=None)
+@cpython_api([PyObject], PyObject, external=False)
 def slot_nb_int(space, w_self):
     return space.int(w_self)
 
-@cpython_api([PyObject], PyObject, header=None)
+@cpython_api([PyObject], PyObject, external=False)
 def slot_tp_iter(space, w_self):
     return space.iter(w_self)
 
-@cpython_api([PyObject], PyObject, header=None)
+@cpython_api([PyObject], PyObject, external=False)
 def slot_tp_iternext(space, w_self):
     return space.next(w_self)
 
@@ -370,7 +344,7 @@ def build_slot_tp_function(space, typedef, name):
             return
 
         @cpython_api([PyObject, PyObject, PyObject], rffi.INT_real,
-                     error=-1) # XXX should be header=None
+                     error=-1, external=True) # XXX should not be exported
         @func_renamer("cpyext_tp_setattro_%s" % (typedef.name,))
         def slot_tp_setattro(space, w_self, w_name, w_value):
             if w_value is not None:
@@ -379,16 +353,6 @@ def build_slot_tp_function(space, typedef, name):
                 space.call_function(delattr_fn, w_self, w_name)
             return 0
         api_func = slot_tp_setattro.api_func
-    elif name == 'tp_getattro':
-        getattr_fn = w_type.getdictvalue(space, '__getattribute__')
-        if getattr_fn is None:
-            return
-
-        @cpython_api([PyObject, PyObject], PyObject)
-        @func_renamer("cpyext_tp_getattro_%s" % (typedef.name,))
-        def slot_tp_getattro(space, w_self, w_name):
-            return space.call_function(getattr_fn, w_self, w_name)
-        api_func = slot_tp_getattro.api_func
     else:
         return
 

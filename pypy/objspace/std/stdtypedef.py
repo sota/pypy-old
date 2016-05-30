@@ -1,7 +1,8 @@
-from pypy.interpreter import gateway, baseobjspace
-from pypy.interpreter.error import OperationError, oefmt
-from pypy.interpreter.typedef import TypeDef, GetSetProperty, \
-    descr_get_dict, descr_set_dict, descr_del_dict
+from pypy.interpreter import gateway, baseobjspace, argument
+from pypy.interpreter.error import OperationError, operationerrfmt
+from pypy.interpreter.typedef import TypeDef, GetSetProperty, Member
+from pypy.interpreter.typedef import descr_get_dict, descr_set_dict
+from pypy.interpreter.typedef import descr_del_dict
 from pypy.interpreter.baseobjspace import SpaceCache
 from pypy.objspace.std import model
 from pypy.objspace.std.model import StdObjSpaceMultiMethod
@@ -93,8 +94,6 @@ class TypeCache(SpaceCache):
                               overridetypedef=overridetypedef)
         if typedef is not overridetypedef:
             w_type.w_doc = space.wrap(typedef.doc)
-        if hasattr(typedef, 'flag_sequence_bug_compat'):
-            w_type.flag_sequence_bug_compat = typedef.flag_sequence_bug_compat
         w_type.lazyloaders = lazyloaders
         return w_type
 
@@ -148,12 +147,21 @@ def _gettypeerrormsg(nbargs):
     else:
         plural = ''
     return "unsupported operand type%s for %%s: %s" % (
-        plural, ', '.join(["'%T'"] * nbargs))
+        plural, ', '.join(["'%s'"] * nbargs))
 _gettypeerrormsg._annspecialcase_ = 'specialize:memo'
 
+def _gettypenames(space, *args_w):
+    if args_w:
+        typename = space.type(args_w[-1]).getname(space)
+        return _gettypenames(space, *args_w[:-1]) + (typename,)
+    return ()
+_gettypenames._always_inline_ = True
+
 def gettypeerror(space, operatorsymbol, *args_w):
-    return oefmt(space.w_TypeError, _gettypeerrormsg(len(args_w)),
-                 operatorsymbol, *args_w)
+    msg = _gettypeerrormsg(len(args_w))
+    type_names = _gettypenames(space, *args_w)
+    return operationerrfmt(space.w_TypeError, msg,
+                           operatorsymbol, *type_names)
 
 def make_perform_trampoline(prefix, exprargs, expr, miniglobals,  multimethod, selfindex=0,
                             allow_NotImplemented_results=False):

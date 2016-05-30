@@ -45,7 +45,7 @@ class AssemblerLocation(object):
     def is_stack(self):
         return False
 
-    def is_core_reg(self):
+    def is_reg(self):
         return False
 
     def get_position(self):
@@ -89,8 +89,8 @@ class RawEspLoc(AssemblerLocation):
     _location_code = 's'
 
     def __init__(self, value, type):
-        assert value >= 0     # accessing values < 0 is forbidden on x86-32.
-        self.value = value    # (on x86-64 we could allow values down to -128)
+        assert value >= 0
+        self.value = value
         self.type = type
 
     def _getregkey(self):
@@ -151,8 +151,6 @@ class RegLoc(AssemblerLocation):
 
     def lowest8bits(self):
         assert not self.is_xmm
-        if WORD == 4:
-            assert 0 <= self.value < 4
         return RegLoc(rx86.low_byte(self.value), False)
 
     def higher8bits(self):
@@ -171,7 +169,7 @@ class RegLoc(AssemblerLocation):
     def is_float(self):
         return self.is_xmm
 
-    def is_core_reg(self):
+    def is_reg(self):
         return True
 
 class ImmediateAssemblerLocation(AssemblerLocation):
@@ -372,8 +370,8 @@ _missing_binary_insn._dont_inline_ = True
 class LocationCodeBuilder(object):
     _mixin_ = True
 
-    _reuse_scratch_register = False   # for now, this is always False
-    _scratch_register_known = False   # for now, this is always False
+    _reuse_scratch_register = False
+    _scratch_register_known = False
     _scratch_register_value = 0
 
     def _binaryop(name):
@@ -381,9 +379,6 @@ class LocationCodeBuilder(object):
         def insn_with_64_bit_immediate(self, loc1, loc2):
             # These are the worst cases:
             val2 = loc2.value_i()
-            if name == 'MOV' and isinstance(loc1, RegLoc):
-                self.MOV_ri(loc1.value, val2)
-                return
             code1 = loc1.location_code()
             if code1 == 'j':
                 checkvalue = loc1.value_j()
@@ -405,6 +400,8 @@ class LocationCodeBuilder(object):
             else:
                 # For this case, we should not need the scratch register more than here.
                 self._load_scratch(val2)
+                if name == 'MOV' and loc1 is X86_64_SCRATCH_REG:
+                    return     # don't need a dummy "MOV r11, r11"
                 INSN(self, loc1, X86_64_SCRATCH_REG)
 
         def invoke(self, codes, val1, val2):
@@ -491,22 +488,12 @@ class LocationCodeBuilder(object):
             for possible_code in unrolling_location_codes:
                 if code == possible_code:
                     val = getattr(loc, "value_" + possible_code)()
-                    # Faking out of certain operations for x86_64
-                    fits32 = rx86.fits_in_32bits
-                    if possible_code == 'i' and not fits32(val):
-                        self._load_scratch(val)    # for 'PUSH(imm)'
+                    if self.WORD == 8 and possible_code == 'i' and not rx86.fits_in_32bits(val):
+                        self._load_scratch(val)
                         _rx86_getattr(self, name + "_r")(X86_64_SCRATCH_REG.value)
-                        return
-                    if possible_code == 'j' and not fits32(val):
-                        val = self._addr_as_reg_offset(val)
-                        _rx86_getattr(self, name + "_m")(val)
-                        return
-                    if possible_code == 'm' and not fits32(val[1]):
-                        val = self._fix_static_offset_64_m(val)
-                    if possible_code == 'a' and not fits32(val[3]):
-                        val = self._fix_static_offset_64_a(val)
-                    methname = name + "_" + possible_code
-                    _rx86_getattr(self, methname)(val)
+                    else:
+                        methname = name + "_" + possible_code
+                        _rx86_getattr(self, methname)(val)
 
         return func_with_new_name(INSN, "INSN_" + name)
 
@@ -517,7 +504,6 @@ class LocationCodeBuilder(object):
                 if code == possible_code:
                     val = getattr(loc, "value_" + possible_code)()
                     if possible_code == 'i':
-                        # This is for CALL or JMP only.
                         if self.WORD == 4:
                             _rx86_getattr(self, name + "_l")(val)
                             self.add_pending_relocation()
@@ -590,7 +576,6 @@ class LocationCodeBuilder(object):
         self.MOV_ri(X86_64_SCRATCH_REG.value, value)
 
     def begin_reuse_scratch_register(self):
-        # --NEVER CALLED (only from a specific test)--
         # Flag the beginning of a block where it is okay to reuse the value
         # of the scratch register. In theory we shouldn't have to do this if
         # we were careful to mark all possible targets of a jump or call, and
@@ -602,27 +587,6 @@ class LocationCodeBuilder(object):
         self._reuse_scratch_register = False
         self._scratch_register_known = False
 
-    def _vector_size_choose(name):
-        def invoke(self, suffix, val1, val2):
-            methname = name + suffix
-            _rx86_getattr(self, methname)(val1, val2)
-        invoke._annspecialcase_ = 'specialize:arg(1)'
-
-        possible_instr_unrolled = unrolling_iterable([(1,'B_xx'),(2,'W_xx'),(4,'D_xx'),(8,'Q_xx')])
-
-        def INSN(self, loc1, loc2, size):
-            code1 = loc1.location_code()
-            code2 = loc2.location_code()
-            assert code1 == code2 == 'x'
-            val1 = loc1.value_x()
-            val2 = loc2.value_x()
-            for s,suffix in possible_instr_unrolled:
-                if s == size:
-                    invoke(self, suffix, val1, val2)
-                    break
-
-        return INSN
-
     AND = _binaryop('AND')
     OR  = _binaryop('OR')
     OR8 = _binaryop('OR8')
@@ -632,11 +596,9 @@ class LocationCodeBuilder(object):
     SHR = _binaryop('SHR')
     SAR = _binaryop('SAR')
     TEST = _binaryop('TEST')
-    PTEST = _binaryop('PTEST')
     TEST8 = _binaryop('TEST8')
     BTS = _binaryop('BTS')
 
-    INC = _unaryop('INC')
     ADD = _binaryop('ADD')
     SUB = _binaryop('SUB')
     IMUL = _binaryop('IMUL')
@@ -644,11 +606,6 @@ class LocationCodeBuilder(object):
 
     CMP = _binaryop('CMP')
     CMP16 = _binaryop('CMP16')
-    PCMPEQQ = _binaryop('PCMPEQQ')
-    PCMPEQD = _binaryop('PCMPEQD')
-    PCMPEQW = _binaryop('PCMPEQW')
-    PCMPEQB = _binaryop('PCMPEQB')
-    PCMPEQ = _vector_size_choose('PCMPEQ')
     MOV = _binaryop('MOV')
     MOV8 = _binaryop('MOV8')
     MOV16 = _binaryop('MOV16')
@@ -669,84 +626,31 @@ class LocationCodeBuilder(object):
     LEA = _binaryop('LEA')
 
     MOVSD = _binaryop('MOVSD')
-    MOVSS = _binaryop('MOVSS')
     MOVAPD = _binaryop('MOVAPD')
-    MOVAPS = _binaryop('MOVAPS')
-    MOVDQA = _binaryop('MOVDQA')
-    MOVDQU = _binaryop('MOVDQU')
-    MOVUPD = _binaryop('MOVUPD')
-    MOVUPS = _binaryop('MOVUPS')
     ADDSD = _binaryop('ADDSD')
+    ADDPD = _binaryop('ADDPD')
     SUBSD = _binaryop('SUBSD')
     MULSD = _binaryop('MULSD')
     DIVSD = _binaryop('DIVSD')
-
-    # packed
-    ADDPD = _binaryop('ADDPD')
-    ADDPS = _binaryop('ADDPS')
-    SUBPD = _binaryop('SUBPD')
-    SUBPS = _binaryop('SUBPS')
-    MULPD = _binaryop('MULPD')
-    MULPS = _binaryop('MULPS')
-    DIVPD = _binaryop('DIVPD')
-    DIVPS = _binaryop('DIVPS')
-
     UCOMISD = _binaryop('UCOMISD')
     CVTSI2SD = _binaryop('CVTSI2SD')
     CVTTSD2SI = _binaryop('CVTTSD2SI')
     CVTSD2SS = _binaryop('CVTSD2SS')
     CVTSS2SD = _binaryop('CVTSS2SD')
-    CVTPD2PS = _binaryop('CVTPD2PS')
-    CVTPS2PD = _binaryop('CVTPS2PD')
-    CVTPD2DQ = _binaryop('CVTPD2DQ')
-    CVTDQ2PD = _binaryop('CVTDQ2PD')
     
     SQRTSD = _binaryop('SQRTSD')
 
     ANDPD = _binaryop('ANDPD')
-    ANDPS = _binaryop('ANDPS')
     XORPD = _binaryop('XORPD')
-    XORPS = _binaryop('XORPS')
 
     PADDQ = _binaryop('PADDQ')
-    PADDD = _binaryop('PADDD')
-    PHADDD = _binaryop('PHADDD')
-    PADDW = _binaryop('PADDW')
-    PADDB = _binaryop('PADDB')
-
     PSUBQ = _binaryop('PSUBQ')
-    PSUBD = _binaryop('PSUBD')
-    PSUBW = _binaryop('PSUBW')
-    PSUBB = _binaryop('PSUBB')
-
-    PMULDQ = _binaryop('PMULDQ')
-    PMULLD = _binaryop('PMULLD')
-    PMULLW = _binaryop('PMULLW')
-
     PAND  = _binaryop('PAND')
     POR   = _binaryop('POR')
     PXOR  = _binaryop('PXOR')
-    PSRLDQ = _binaryop('PSRLDQ')
+    PCMPEQD = _binaryop('PCMPEQD')
 
-    MOVDQ = _binaryop('MOVDQ')
-    MOVD32 = _binaryop('MOVD32')
-    MOVUPS = _binaryop('MOVUPS')
-    MOVDDUP = _binaryop('MOVDDUP')
-
-    UNPCKHPD = _binaryop('UNPCKHPD')
-    UNPCKLPD = _binaryop('UNPCKLPD')
-    UNPCKHPS = _binaryop('UNPCKHPS')
-    UNPCKLPS = _binaryop('UNPCKLPS')
-
-    PUNPCKLQDQ = _binaryop('PUNPCKLQDQ')
-    PUNPCKHQDQ = _binaryop('PUNPCKHQDQ')
-    PUNPCKLDQ = _binaryop('PUNPCKLDQ')
-    PUNPCKHDQ = _binaryop('PUNPCKHDQ')
-
-    PSHUFB = _binaryop('PSHUFB')
-
-    HADDPD = _binaryop('HADDPD')
-    HADDPS = _binaryop('HADDPS')
+    MOVD = _binaryop('MOVD')
 
     CALL = _relative_unaryop('CALL')
     JMP = _relative_unaryop('JMP')

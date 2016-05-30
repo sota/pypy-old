@@ -5,8 +5,7 @@ Packing and unpacking of floats in the IEEE 32-bit and 64-bit formats.
 import math
 
 from rpython.rlib import rarithmetic, rfloat, objectmodel, jit
-from rpython.rtyper.lltypesystem.rffi import r_ulonglong, r_longlong, LONGLONG, ULONGLONG, cast
-from rpython.rlib.longlong2float import longlong2float, float2longlong
+from rpython.rlib.rarithmetic import r_ulonglong
 
 def round_to_nearest(x):
     """Python 3 style round:  round a float x to the nearest int, but
@@ -61,20 +60,7 @@ def float_unpack(Q, size):
 
     if exp == MAX_EXP - MIN_EXP + 2:
         # nan or infinity
-        if mant == 0:
-            result = rfloat.INFINITY
-        else:
-            # preserve at most 52 bits of mant value, but pad w/zeros
-            exp = r_ulonglong(0x7ff) << 52
-            sign = r_ulonglong(sign) << 63
-            if MANT_DIG < 53:
-                mant = r_ulonglong(mant) << (53 - MANT_DIG) 
-            if mant == 0:
-                result = rfloat.NAN
-            else:
-                uint = exp | mant | sign
-                result =  longlong2float(cast(LONGLONG, uint))
-            return result
+        result = rfloat.NAN if mant else rfloat.INFINITY
     elif exp == 0:
         # subnormal or zero
         result = math.ldexp(mant, MIN_EXP - MANT_DIG)
@@ -86,7 +72,7 @@ def float_unpack(Q, size):
 
 def float_unpack80(QQ, size):
     '''Unpack a (mant, exp) tuple of r_ulonglong in 80-bit extended format
-    into a python float (a double)
+    into a long double float
     '''
     if size == 10 or size == 12 or size == 16:
         MIN_EXP = -16381
@@ -114,17 +100,7 @@ def float_unpack80(QQ, size):
 
     if exp == MAX_EXP - MIN_EXP + 2:
         # nan or infinity
-        if mant == 0:
-            result = rfloat.INFINITY
-        else:
-            exp = r_ulonglong(0x7ff) << 52
-            mant = r_ulonglong(mant) >> size + 1
-            if mant == 0:
-                result = rfloat.NAN
-            else:
-                uint = exp | r_ulonglong(mant) | r_ulonglong(sign)
-                result =  longlong2float(cast(LONGLONG, uint))
-            return result
+        result = rfloat.NAN if mant &((one << MANT_DIG - 1) - 1) else rfloat.INFINITY
     else:
         # normal
         result = math.ldexp(mant, exp + MIN_EXP - MANT_DIG - 1)
@@ -152,19 +128,13 @@ def float_pack(x, size):
         raise ValueError("invalid size value")
 
     sign = rfloat.copysign(1.0, x) < 0.0
-    if rfloat.isinf(x):
-        mant = r_ulonglong(0)
-        exp = MAX_EXP - MIN_EXP + 2
-    elif rfloat.isnan(x):
-        asint = cast(ULONGLONG, float2longlong(x))
-        sign = asint >> 63
-        # shift off lower bits, perhaps losing data
-        mant = asint & ((r_ulonglong(1) << 52) - 1)
-        if MANT_DIG < 53:
-            mant = mant >> (53 - MANT_DIG)
-        if mant == 0:
-            mant = r_ulonglong(1) << (MANT_DIG - 1) - 1
-        exp = MAX_EXP - MIN_EXP + 2
+    if not rfloat.isfinite(x):
+        if rfloat.isinf(x):
+            mant = r_ulonglong(0)
+            exp = MAX_EXP - MIN_EXP + 2
+        else:  # rfloat.isnan(x):
+            mant = r_ulonglong(1) << (MANT_DIG-2) # other values possible
+            exp = MAX_EXP - MIN_EXP + 2
     elif x == 0.0:
         mant = r_ulonglong(0)
         exp = 0
@@ -193,11 +163,11 @@ def float_pack(x, size):
         # Raise on overflow (in some circumstances, may want to return
         # infinity instead).
         if exp >= MAX_EXP - MIN_EXP + 2:
-            raise OverflowError("float too large to pack in this format")
+             raise OverflowError("float too large to pack in this format")
 
     # check constraints
     if not objectmodel.we_are_translated():
-        assert 0 <= mant <= (1 << MANT_DIG) - 1
+        assert 0 <= mant < 1 << MANT_DIG - 1
         assert 0 <= exp <= MAX_EXP - MIN_EXP + 2
         assert 0 <= sign <= 1
     exp = r_ulonglong(exp)
@@ -217,16 +187,13 @@ def float_pack80(x, size):
         raise ValueError("invalid size value")
 
     sign = rfloat.copysign(1.0, x) < 0.0
-    if rfloat.isinf(x):
-        mant = r_ulonglong(0)
-        exp = MAX_EXP - MIN_EXP + 2
-    elif rfloat.isnan(x):  # rfloat.isnan(x):
-        asint = cast(ULONGLONG, float2longlong(x))
-        mant = asint & ((r_ulonglong(1) << 51) - 1)
-        if mant == 0:
-            mant = r_ulonglong(1) << (MANT_DIG - 1) - 1
-        sign = asint < 0
-        exp = MAX_EXP - MIN_EXP + 2
+    if not rfloat.isfinite(x):
+        if rfloat.isinf(x):
+            mant = r_ulonglong(0)
+            exp = MAX_EXP - MIN_EXP + 2
+        else:  # rfloat.isnan(x):
+            mant = (r_ulonglong(1) << (MANT_DIG-2)) - 1 # other values possible
+            exp = MAX_EXP - MIN_EXP + 2
     elif x == 0.0:
         mant = r_ulonglong(0)
         exp = 0
@@ -252,14 +219,14 @@ def float_pack80(x, size):
         # Raise on overflow (in some circumstances, may want to return
         # infinity instead).
         if exp >= MAX_EXP - MIN_EXP + 2:
-            raise OverflowError("float too large to pack in this format")
+             raise OverflowError("float too large to pack in this format")
 
-        mant = mant << 1
     # check constraints
     if not objectmodel.we_are_translated():
-        assert 0 <= mant <= (1 << MANT_DIG) - 1
+        assert 0 <= mant < 1 << MANT_DIG - 1
         assert 0 <= exp <= MAX_EXP - MIN_EXP + 2
         assert 0 <= sign <= 1
+    mant = mant << 1
     exp = r_ulonglong(exp)
     sign = r_ulonglong(sign)
     return (mant, (sign << BITS - MANT_DIG - 1) | exp)

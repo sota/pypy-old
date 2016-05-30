@@ -6,8 +6,7 @@ from rpython.jit.codewriter.jitcode import SwitchDictDescr, JitCode
 from rpython.jit.codewriter import heaptracker, longlong
 from rpython.rlib.objectmodel import ComputedIntSymbolic
 from rpython.flowspace.model import Constant
-from rpython.rtyper.lltypesystem import lltype, llmemory, rffi
-from rpython.rtyper import rclass
+from rpython.rtyper.lltypesystem import lltype, llmemory, rclass, rffi
 
 
 class AssemblerError(Exception):
@@ -216,11 +215,10 @@ class Assembler(object):
             self.code[pos  ] = chr(target & 0xFF)
             self.code[pos+1] = chr(target >> 8)
         for descr in self.switchdictdescrs:
-            as_dict = {}
+            descr.dict = {}
             for key, switchlabel in descr._labels:
                 target = self.label_positions[switchlabel.name]
-                as_dict[key] = target
-            descr.attach(as_dict)
+                descr.dict[key] = target
 
     def check_result(self):
         # Limitation of the number of registers, from the single-byte encoding
@@ -250,9 +248,7 @@ class Assembler(object):
             if isinstance(TYPE, lltype.FuncType):
                 name = value._obj._name
             elif TYPE == rclass.OBJECT_VTABLE:
-                if not value.name:    # this is really the "dummy" class
-                    return            #   pointer from some dict
-                name = ''.join(value.name.chars)
+                name = ''.join(value.name).rstrip('\x00')
             else:
                 return
             addr = llmemory.cast_ptr_to_adr(value)
@@ -295,7 +291,6 @@ USE_C_FORM = set([
     'int_sub',
     'jit_merge_point',
     'new_array',
-    'new_array_clear',
     'newstr',
     'setarrayitem_gc_i',
     'setarrayitem_gc_r',

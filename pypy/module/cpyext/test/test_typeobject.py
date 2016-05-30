@@ -14,12 +14,12 @@ class AppTestTypeObject(AppTestCpythonExtensionBase):
         assert 'foo' in sys.modules
         assert "copy" in dir(module.fooType)
         obj = module.new()
-        print(obj.foo)
+        print obj.foo
         assert obj.foo == 42
-        print("Obj has type", type(obj))
+        print "Obj has type", type(obj)
         assert type(obj) is module.fooType
-        print("type of obj has type", type(type(obj)))
-        print("type of type of obj has type", type(type(type(obj))))
+        print "type of obj has type", type(type(obj))
+        print "type of type of obj has type", type(type(type(obj)))
         assert module.fooType.__doc__ == "foo is for testing."
 
     def test_typeobject_method_descriptor(self):
@@ -33,10 +33,10 @@ class AppTestTypeObject(AppTestCpythonExtensionBase):
         assert "copy" in repr(module.fooType.copy)
         assert repr(module.fooType) == "<type 'foo.foo'>"
         assert repr(obj2) == "<Foo>"
-        assert repr(module.fooType.__call__) == "<slot wrapper '__call__' of 'foo.foo' objects>"
+        assert repr(module.fooType.__call__) == "<slot wrapper '__call__' of 'foo' objects>"
         assert obj2(foo=1, bar=2) == dict(foo=1, bar=2)
 
-        print(obj.foo)
+        print obj.foo
         assert obj.foo == 42
         assert obj.int_member == obj.foo
 
@@ -156,7 +156,7 @@ class AppTestTypeObject(AppTestCpythonExtensionBase):
             def __init__(self):
                 self.foobar = 32
                 super(UnicodeSubclass2, self).__init__()
-
+        
         newobj = UnicodeSubclass2()
         assert newobj.get_val() == 42
         assert newobj.foobar == 32
@@ -180,16 +180,12 @@ class AppTestTypeObject(AppTestCpythonExtensionBase):
         del x, y
 
     def test_sre(self):
-        import sys
-        for m in ['_sre', 'sre_compile', 'sre_constants', 'sre_parse', 're']:
-            # clear out these modules
-            try:
-                del sys.modules[m]
-            except KeyError:
-                pass
         module = self.import_module(name='_sre')
+        import sre_compile
+        sre_compile._sre = module
+        assert sre_compile.MAGIC == module.MAGIC
         import re
-        assert re.sre_compile._sre is module
+        import time
         s = u"Foo " * 1000 + u"Bar"
         prog = re.compile(ur"Foo.*Bar")
         assert prog.match(s)
@@ -362,23 +358,11 @@ class TestTypes(BaseApiTest):
         assert w_obj is None
         assert api.PyErr_Occurred() is None
 
-    def test_ndarray_ref(self, space, api):
-        w_obj = space.appexec([], """():
-            import _numpypy
-            return _numpypy.multiarray.dtype('int64').type(2)""")
-        ref = make_ref(space, w_obj)
-        api.Py_DecRef(ref)
-
 class AppTestSlots(AppTestCpythonExtensionBase):
     def test_some_slots(self):
         module = self.import_extension('foo', [
             ("test_type", "METH_O",
              '''
-                 /* "args->ob_type" is a strange way to get at 'type',
-                    which should have a different tp_getattro/tp_setattro
-                    than its tp_base, which is 'object'.
-                  */
-                  
                  if (!args->ob_type->tp_setattro)
                  {
                      PyErr_SetString(PyExc_ValueError, "missing tp_setattro");
@@ -387,22 +371,7 @@ class AppTestSlots(AppTestCpythonExtensionBase):
                  if (args->ob_type->tp_setattro ==
                      args->ob_type->tp_base->tp_setattro)
                  {
-                     /* Note that unlike CPython, in PyPy 'type.tp_setattro'
-                        is the same function as 'object.tp_setattro'.  This
-                        test used to check that it was not, but that was an
-                        artifact of the bootstrap logic only---in the final
-                        C sources I checked and they are indeed the same.
-                        So we ignore this problem here. */
-                 }
-                 if (!args->ob_type->tp_getattro)
-                 {
-                     PyErr_SetString(PyExc_ValueError, "missing tp_getattro");
-                     return NULL;
-                 }
-                 if (args->ob_type->tp_getattro ==
-                     args->ob_type->tp_base->tp_getattro)
-                 {
-                     PyErr_SetString(PyExc_ValueError, "recursive tp_getattro");
+                     PyErr_SetString(PyExc_ValueError, "recursive tp_setattro");
                      return NULL;
                  }
                  Py_RETURN_TRUE;
@@ -410,47 +379,6 @@ class AppTestSlots(AppTestCpythonExtensionBase):
              )
             ])
         assert module.test_type(type(None))
-
-    def test_tp_getattro(self):
-        module = self.import_extension('foo', [
-            ("test_tp_getattro", "METH_VARARGS",
-             '''
-                 PyObject *obj = PyTuple_GET_ITEM(args, 0);
-                 PyIntObject *value = PyTuple_GET_ITEM(args, 1);
-                 if (!obj->ob_type->tp_getattro)
-                 {
-                     PyErr_SetString(PyExc_ValueError, "missing tp_getattro");
-                     return NULL;
-                 }
-                 PyObject *name = PyString_FromString("attr1");
-                 PyIntObject *attr = obj->ob_type->tp_getattro(obj, name);
-                 if (attr->ob_ival != value->ob_ival)
-                 {
-                     PyErr_SetString(PyExc_ValueError,
-                                     "tp_getattro returned wrong value");
-                     return NULL;
-                 }
-                 Py_DECREF(name);
-                 Py_DECREF(attr);
-                 name = PyString_FromString("attr2");
-                 attr = obj->ob_type->tp_getattro(obj, name);
-                 if (attr == NULL && PyErr_ExceptionMatches(PyExc_AttributeError))
-                 {
-                     PyErr_Clear();
-                 } else {
-                     PyErr_SetString(PyExc_ValueError,
-                                     "tp_getattro should have raised");
-                     return NULL;
-                 }
-                 Py_DECREF(name);
-                 Py_RETURN_TRUE;
-             '''
-             )
-            ])
-        class C:
-            def __init__(self):
-                self.attr1 = 123
-        assert module.test_tp_getattro(C(), 123)
 
     def test_nb_int(self):
         module = self.import_extension('foo', [
@@ -597,7 +525,7 @@ class AppTestSlots(AppTestCpythonExtensionBase):
         assert type(it) is type(iter([]))
         assert module.tp_iternext(it) == 1
         raises(StopIteration, module.tp_iternext, it)
-
+        
     def test_bool(self):
         module = self.import_extension('foo', [
             ("newInt", "METH_VARARGS",
@@ -649,120 +577,3 @@ class AppTestSlots(AppTestCpythonExtensionBase):
         assert bool(module.newInt(1))
         assert bool(module.newInt(-1))
         raises(ValueError, bool, module.newInt(-42))
-
-    def test_binaryfunc(self):
-        module = self.import_extension('foo', [
-            ("newInt", "METH_VARARGS",
-             """
-                IntLikeObject *intObj;
-                long intval;
-
-                if (!PyArg_ParseTuple(args, "l", &intval))
-                    return NULL;
-
-                IntLike_Type.tp_as_number = &intlike_as_number;
-                IntLike_Type.tp_flags |= Py_TPFLAGS_CHECKTYPES;
-                intlike_as_number.nb_add = intlike_nb_add;
-                if (PyType_Ready(&IntLike_Type) < 0) return NULL;
-                intObj = PyObject_New(IntLikeObject, &IntLike_Type);
-                if (!intObj) {
-                    return NULL;
-                }
-
-                intObj->ival = intval;
-                return (PyObject *)intObj;
-             """),
-             ("newIntNoOp", "METH_VARARGS",
-             """
-                IntLikeObjectNoOp *intObjNoOp;
-                long intval;
-
-                if (!PyArg_ParseTuple(args, "l", &intval))
-                    return NULL;
-
-                IntLike_Type_NoOp.tp_flags |= Py_TPFLAGS_CHECKTYPES;
-                if (PyType_Ready(&IntLike_Type_NoOp) < 0) return NULL;
-                intObjNoOp = PyObject_New(IntLikeObjectNoOp, &IntLike_Type_NoOp);
-                if (!intObjNoOp) {
-                    return NULL;
-                }
-
-                intObjNoOp->ival = intval;
-                return (PyObject *)intObjNoOp;
-             """)],
-            """
-            typedef struct
-            {
-                PyObject_HEAD
-                long ival;
-            } IntLikeObject;
-
-            static PyObject * 
-            intlike_nb_add(PyObject *self, PyObject *other)
-            {
-                long val1 = ((IntLikeObject *)(self))->ival;
-                if (PyInt_Check(other)) {
-                  long val2 = PyInt_AsLong(other);
-                  return PyInt_FromLong(val1+val2);
-                }
-
-                long val2 = ((IntLikeObject *)(other))->ival;
-                return PyInt_FromLong(val1+val2);
-            }
-
-            PyTypeObject IntLike_Type = {
-                PyObject_HEAD_INIT(0)
-                /*ob_size*/             0,
-                /*tp_name*/             "IntLike",
-                /*tp_basicsize*/        sizeof(IntLikeObject),
-            };
-            static PyNumberMethods intlike_as_number;
-
-            typedef struct
-            {
-                PyObject_HEAD
-                long ival;
-            } IntLikeObjectNoOp;
-
-            PyTypeObject IntLike_Type_NoOp = {
-                PyObject_HEAD_INIT(0)
-                /*ob_size*/             0,
-                /*tp_name*/             "IntLikeNoOp",
-                /*tp_basicsize*/        sizeof(IntLikeObjectNoOp),
-            };
-            """)
-        a = module.newInt(1)
-        b = module.newInt(2)
-        c = 3
-        d = module.newIntNoOp(4)
-        assert (a + b) == 3
-        assert (b + c) == 5
-        assert (d + a) == 5
-
-    def test_tp_new_in_subclass_of_type(self):
-        skip("BROKEN")
-        module = self.import_module(name='foo3')
-        print('calling module.Type()...')
-        module.Type("X", (object,), {})
-
-    def test_app_subclass_of_c_type(self):
-        module = self.import_module(name='foo')
-        size = module.size_of_instances(module.fooType)
-        class f1(object):
-            pass
-        class f2(module.fooType):
-            pass
-        class bar(f1, f2):
-            pass
-        assert bar.__base__ is f2
-        assert module.size_of_instances(bar) == size
-
-    def test_app_cant_subclass_two_types(self):
-        module = self.import_module(name='foo')
-        try:
-            class bar(module.fooType, module.Property):
-                pass
-        except TypeError as e:
-            assert str(e) == 'instance layout conflicts in multiple inheritance'
-        else:
-            raise AssertionError("did not get TypeError!")

@@ -1,31 +1,28 @@
 import py
+from rpython.rtyper.ootypesystem import ootype
 from rpython.rtyper.lltypesystem import lltype
 from rpython.rtyper.test.test_llinterp import gengraph, interpret, interpret_raises
 
 class BaseRtypingTest(object):
+
     FLOAT_PRECISION = 8
 
-    @staticmethod
-    def gengraph(func, argtypes=[], viewbefore='auto', policy=None,
+    def gengraph(self, func, argtypes=[], viewbefore='auto', policy=None,
              backendopt=False, config=None):
-        return gengraph(func, argtypes, viewbefore, policy,
+        return gengraph(func, argtypes, viewbefore, policy, type_system=self.type_system,
                         backendopt=backendopt, config=config)
+    
+    def interpret(self, fn, args, **kwds):
+        return interpret(fn, args, type_system=self.type_system, **kwds)
 
-    @staticmethod
-    def interpret(fn, args, **kwds):
-        return interpret(fn, args, **kwds)
+    def interpret_raises(self, exc, fn, args, **kwds):
+        return interpret_raises(exc, fn, args, type_system=self.type_system, **kwds)
 
-    @staticmethod
-    def interpret_raises(exc, fn, args, **kwds):
-        return interpret_raises(exc, fn, args, **kwds)
-
-    @staticmethod
-    def float_eq(x, y):
+    def float_eq(self, x, y):
         return x == y
 
-    @classmethod
-    def float_eq_approx(cls, x, y):
-        maxError = 10**-cls.FLOAT_PRECISION
+    def float_eq_approx(self, x, y):
+        maxError = 10**-self.FLOAT_PRECISION
         if abs(x-y) < maxError:
             return True
 
@@ -36,66 +33,51 @@ class BaseRtypingTest(object):
 
         return relativeError < maxError
 
-    @staticmethod
-    def is_of_type(x, type_):
+    def is_of_type(self, x, type_):
         return type(x) is type_
 
-    @staticmethod
-    def _skip_llinterpreter(reason):
-        py.test.skip("lltypesystem doesn't support %s, yet" % reason)
+    def _skip_llinterpreter(self, reason, skipLL=True, skipOO=True):
+        if skipLL and self.type_system == 'lltype':
+            py.test.skip("lltypesystem doesn't support %s, yet" % reason)        
+        if skipOO and self.type_system == 'ootype':
+            py.test.skip("ootypesystem doesn't support %s, yet" % reason)    
 
-    @staticmethod
-    def ll_to_string(s):
+class LLRtypeMixin(object):
+    type_system = 'lltype'
+
+    def ll_to_string(self, s):
         if not s:
             return None
         return ''.join(s.chars)
 
-    @staticmethod
-    def ll_to_unicode(s):
+    def ll_to_unicode(self, s):
         return u''.join(s.chars)
 
-    @staticmethod
-    def string_to_ll(s):
-        from rpython.rtyper.lltypesystem.rstr import STR, mallocstr
-        if s is None:
-            return lltype.nullptr(STR)
-        p = mallocstr(len(s))
-        for i in range(len(s)):
-            p.chars[i] = s[i]
-        return p
+    def string_to_ll(self, s):
+        from rpython.rtyper.module.support import LLSupport        
+        return LLSupport.to_rstr(s)
 
-    @staticmethod
-    def unicode_to_ll(s):
-        from rpython.rtyper.lltypesystem.rstr import UNICODE, mallocunicode
-        if s is None:
-            return lltype.nullptr(UNICODE)
-        p = mallocunicode(len(s))
-        for i in range(len(s)):
-            p.chars[i] = s[i]
-        return p
+    def unicode_to_ll(self, s):
+        from rpython.rtyper.module.support import LLSupport        
+        return LLSupport.to_runicode(s)
 
-    @staticmethod
-    def ll_to_list(l):
+    def ll_to_list(self, l):
         r = []
         items = l.ll_items()
         for i in range(l.ll_length()):
             r.append(items[i])
         return r
 
-    @staticmethod
-    def ll_unpack_tuple(t, length):
+    def ll_unpack_tuple(self, t, length):
         return tuple([getattr(t, 'item%d' % i) for i in range(length)])
 
-    @staticmethod
-    def get_callable(fnptr):
+    def get_callable(self, fnptr):
         return fnptr._obj._callable
 
-    @staticmethod
-    def class_name(value):
-        return ''.join(value.super.typeptr.name.chars)
+    def class_name(self, value):
+        return "".join(value.super.typeptr.name)[:-1]
 
-    @staticmethod
-    def read_attr(value, attr_name):
+    def read_attr(self, value, attr_name):
         value = value._obj
         while value is not None:
             attr = getattr(value, "inst_" + attr_name, None)
@@ -105,7 +87,45 @@ class BaseRtypingTest(object):
                 return attr
         raise AttributeError()
 
-    @staticmethod
-    def is_of_instance_type(val):
+    def is_of_instance_type(self, val):
         T = lltype.typeOf(val)
         return isinstance(T, lltype.Ptr) and isinstance(T.TO, lltype.GcStruct)
+
+
+class OORtypeMixin(object):
+    type_system = 'ootype'
+
+    def ll_to_string(self, s):
+        return s._str
+
+    ll_to_unicode = ll_to_string
+
+    def string_to_ll(self, s):
+        from rpython.rtyper.module.support import OOSupport        
+        return OOSupport.to_rstr(s)
+
+    def unicode_to_ll(self, u):
+        from rpython.rtyper.module.support import OOSupport
+        return OOSupport.to_runicode(u)
+
+    def ll_to_list(self, l):
+        if hasattr(l, '_list'):
+            return l._list[:]
+        return l._array[:]
+
+    def ll_unpack_tuple(self, t, length):
+        return tuple([getattr(t, 'item%d' % i) for i in range(length)])
+
+    def get_callable(self, sm):
+        return sm._callable
+
+    def class_name(self, value):
+        return ootype.dynamicType(value)._name.split(".")[-1] 
+
+    def read_attr(self, value, attr):
+        value = ootype.oodowncast(ootype.dynamicType(value), value)
+        return getattr(value, "o" + attr)
+
+    def is_of_instance_type(self, val):
+        T = lltype.typeOf(val)
+        return isinstance(T, ootype.Instance)

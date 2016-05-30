@@ -1,4 +1,4 @@
-from rpython.jit.metainterp.history import AbstractDescr, ConstInt
+from rpython.jit.metainterp.history import AbstractDescr
 from rpython.jit.codewriter import heaptracker
 from rpython.rlib.objectmodel import we_are_translated
 
@@ -7,12 +7,12 @@ class JitCode(AbstractDescr):
     _empty_i = []
     _empty_r = []
     _empty_f = []
-    
+
     def __init__(self, name, fnaddr=None, calldescr=None, called_from=None):
         self.name = name
         self.fnaddr = fnaddr
         self.calldescr = calldescr
-        self.jitdriver_sd = None # None for non-portals
+        self.is_portal = False
         self._called_from = called_from   # debugging
         self._ssarepr     = None          # debugging
 
@@ -109,10 +109,6 @@ class MissingLiveness(Exception):
 class SwitchDictDescr(AbstractDescr):
     "Get a 'dict' attribute mapping integer values to bytecode positions."
 
-    def attach(self, as_dict):
-        self.dict = as_dict
-        self.const_keys_in_order = map(ConstInt, sorted(as_dict.keys()))
-
     def __repr__(self):
         dict = getattr(self, 'dict', '?')
         return '<SwitchDictDescr %s>' % (dict,)
@@ -141,14 +137,17 @@ class LiveVarsInfo(object):
     def get_register_index_f(self, index):
         return ord(self.live_f[index])
 
-    def enumerate_vars(self, callback_i, callback_r, callback_f, spec, index):
+    def enumerate_vars(self, callback_i, callback_r, callback_f, spec):
+        index = 0
         for i in range(self.get_register_count_i()):
-            index = callback_i(index, self.get_register_index_i(i))
+            callback_i(index, self.get_register_index_i(i))
+            index += 1
         for i in range(self.get_register_count_r()):
-            index = callback_r(index, self.get_register_index_r(i))
+            callback_r(index, self.get_register_index_r(i))
+            index += 1
         for i in range(self.get_register_count_f()):
-            index = callback_f(index, self.get_register_index_f(i))
-        return index
+            callback_f(index, self.get_register_index_f(i))
+            index += 1
     enumerate_vars._annspecialcase_ = 'specialize:arg(4)'
 
 _liveness_cache = {}

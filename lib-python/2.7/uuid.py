@@ -44,8 +44,6 @@ Typical usage:
     UUID('00010203-0405-0607-0809-0a0b0c0d0e0f')
 """
 
-import struct
-
 __author__ = 'Ka-Ping Yee <ping@zesty.ca>'
 
 RESERVED_NCS, RFC_4122, RESERVED_MICROSOFT, RESERVED_FUTURE = [
@@ -127,39 +125,25 @@ class UUID(object):
         overriding the given 'hex', 'bytes', 'bytes_le', 'fields', or 'int'.
         """
 
+        if [hex, bytes, bytes_le, fields, int].count(None) != 4:
+            raise TypeError('need one of hex, bytes, bytes_le, fields, or int')
         if hex is not None:
-            if (bytes is not None or bytes_le is not None or
-                    fields is not None or int is not None):
-                raise TypeError('if the hex argument is given, bytes,'
-                                ' bytes_le, fields,  and int need to be None')
             hex = hex.replace('urn:', '').replace('uuid:', '')
             hex = hex.strip('{}').replace('-', '')
             if len(hex) != 32:
                 raise ValueError('badly formed hexadecimal UUID string')
             int = long(hex, 16)
-        elif bytes_le is not None:
-            if bytes is not None or fields is not None or int is not None:
-                raise TypeError('if the bytes_le argument is given, bytes,'
-                                ' fields, and int need to be None')
+        if bytes_le is not None:
             if len(bytes_le) != 16:
                 raise ValueError('bytes_le is not a 16-char string')
             bytes = (bytes_le[3] + bytes_le[2] + bytes_le[1] + bytes_le[0] +
                      bytes_le[5] + bytes_le[4] + bytes_le[7] + bytes_le[6] +
                      bytes_le[8:])
-            int = (struct.unpack('>Q', bytes[:8])[0] << 64 |
-                   struct.unpack('>Q', bytes[8:])[0])
-        elif bytes is not None:
-            if fields is not None or int is not None:
-                raise TypeError('if the bytes argument is given, fields '
-                                'and int need to be None')
+        if bytes is not None:
             if len(bytes) != 16:
                 raise ValueError('bytes is not a 16-char string')
-            int = (struct.unpack('>Q', bytes[:8])[0] << 64 |
-                   struct.unpack('>Q', bytes[8:])[0])
-        elif fields is not None:
-            if int is not None:
-                raise TypeError('if the fields argument is given, int needs'
-                                ' to be None')
+            int = long(('%02x'*16) % tuple(map(ord, bytes)), 16)
+        if fields is not None:
             if len(fields) != 6:
                 raise ValueError('fields is not a 6-tuple')
             (time_low, time_mid, time_hi_version,
@@ -179,12 +163,9 @@ class UUID(object):
             clock_seq = (clock_seq_hi_variant << 8L) | clock_seq_low
             int = ((time_low << 96L) | (time_mid << 80L) |
                    (time_hi_version << 64L) | (clock_seq << 48L) | node)
-        elif int is not None:
+        if int is not None:
             if not 0 <= int < 1<<128L:
                 raise ValueError('int is out of range (need a 128-bit value)')
-        else:
-            raise TypeError('one of hex, bytes, bytes_le, fields,'
-                            ' or int need to be not None')
         if version is not None:
             if not 1 <= version <= 5:
                 raise ValueError('illegal version number')
@@ -194,7 +175,7 @@ class UUID(object):
             # Set the version number.
             int &= ~(0xf000 << 64L)
             int |= version << 76L
-        object.__setattr__(self, 'int', int)
+        self.__dict__['int'] = int
 
     def __cmp__(self, other):
         if isinstance(other, UUID):
@@ -310,98 +291,51 @@ class UUID(object):
 
     version = property(get_version)
 
-def _popen(command, args):
-    import os
-    path = os.environ.get("PATH", os.defpath).split(os.pathsep)
-    path.extend(('/sbin', '/usr/sbin'))
-    for dir in path:
-        executable = os.path.join(dir, command)
-        if (os.path.exists(executable) and
-            os.access(executable, os.F_OK | os.X_OK) and
-            not os.path.isdir(executable)):
-            break
-    else:
-        return None
-    # LC_ALL to ensure English output, 2>/dev/null to prevent output on
-    # stderr (Note: we don't have an example where the words we search for
-    # are actually localized, but in theory some system could do so.)
-    cmd = 'LC_ALL=C %s %s 2>/dev/null' % (executable, args)
-    return os.popen(cmd)
-
 def _find_mac(command, args, hw_identifiers, get_index):
-    try:
-        pipe = _popen(command, args)
-        if not pipe:
-            return
-        with pipe:
-            for line in pipe:
-                words = line.lower().rstrip().split()
-                for i in range(len(words)):
-                    if words[i] in hw_identifiers:
-                        try:
-                            word = words[get_index(i)]
-                            mac = int(word.replace(':', ''), 16)
-                            if mac:
-                                return mac
-                        except (ValueError, IndexError):
-                            # Virtual interfaces, such as those provided by
-                            # VPNs, do not have a colon-delimited MAC address
-                            # as expected, but a 16-byte HWAddr separated by
-                            # dashes. These should be ignored in favor of a
-                            # real MAC address
-                            pass
-    except IOError:
-        pass
+    import os
+    for dir in ['', '/sbin/', '/usr/sbin']:
+        executable = os.path.join(dir, command)
+        if not os.path.exists(executable):
+            continue
+
+        try:
+            # LC_ALL to get English output, 2>/dev/null to
+            # prevent output on stderr
+            cmd = 'LC_ALL=C %s %s 2>/dev/null' % (executable, args)
+            with os.popen(cmd) as pipe:
+                for line in pipe:
+                    words = line.lower().split()
+                    for i in range(len(words)):
+                        if words[i] in hw_identifiers:
+                            return int(
+                                words[get_index(i)].replace(':', ''), 16)
+        except IOError:
+            continue
+    return None
 
 def _ifconfig_getnode():
     """Get the hardware address on Unix by running ifconfig."""
+
     # This works on Linux ('' or '-a'), Tru64 ('-av'), but not all Unixes.
     for args in ('', '-a', '-av'):
         mac = _find_mac('ifconfig', args, ['hwaddr', 'ether'], lambda i: i+1)
         if mac:
             return mac
 
-def _arp_getnode():
-    """Get the hardware address on Unix by running arp."""
-    import os, socket
-    try:
-        ip_addr = socket.gethostbyname(socket.gethostname())
-    except EnvironmentError:
-        return None
+    import socket
+    ip_addr = socket.gethostbyname(socket.gethostname())
 
     # Try getting the MAC addr from arp based on our IP address (Solaris).
-    return _find_mac('arp', '-an', [ip_addr], lambda i: -1)
+    mac = _find_mac('arp', '-an', [ip_addr], lambda i: -1)
+    if mac:
+        return mac
 
-def _lanscan_getnode():
-    """Get the hardware address on Unix by running lanscan."""
     # This might work on HP-UX.
-    return _find_mac('lanscan', '-ai', ['lan0'], lambda i: 0)
+    mac = _find_mac('lanscan', '-ai', ['lan0'], lambda i: 0)
+    if mac:
+        return mac
 
-def _netstat_getnode():
-    """Get the hardware address on Unix by running netstat."""
-    # This might work on AIX, Tru64 UNIX and presumably on IRIX.
-    try:
-        pipe = _popen('netstat', '-ia')
-        if not pipe:
-            return
-        with pipe:
-            words = pipe.readline().rstrip().split()
-            try:
-                i = words.index('Address')
-            except ValueError:
-                return
-            for line in pipe:
-                try:
-                    words = line.rstrip().split()
-                    word = words[i]
-                    if len(word) == 17 and word.count(':') == 5:
-                        mac = int(word.replace(':', ''), 16)
-                        if mac:
-                            return mac
-                except (ValueError, IndexError):
-                    pass
-    except OSError:
-        pass
+    return None
 
 def _ipconfig_getnode():
     """Get the hardware address on Windows by running ipconfig.exe."""
@@ -419,11 +353,13 @@ def _ipconfig_getnode():
             pipe = os.popen(os.path.join(dir, 'ipconfig') + ' /all')
         except IOError:
             continue
-        with pipe:
+        else:
             for line in pipe:
                 value = line.split(':')[-1].strip().lower()
                 if re.match('([0-9a-f][0-9a-f]-){5}[0-9a-f][0-9a-f]', value):
                     return int(value.replace('-', ''), 16)
+        finally:
+            pipe.close()
 
 def _netbios_getnode():
     """Get the hardware address on Windows using NetBIOS calls.
@@ -476,8 +412,6 @@ try:
             _uuid_generate_time = lib.uuid_generate_time
             _uuid_generate_time.argtypes = [ctypes.c_char * 16]
             _uuid_generate_time.restype = None
-            if _uuid_generate_random is not None:
-                break  # found everything we were looking for
 
     # The uuid_generate_* functions are broken on MacOS X 10.5, as noted
     # in issue #8621 the function generates the same sequence of values
@@ -548,8 +482,7 @@ def getnode():
     if sys.platform == 'win32':
         getters = [_windll_getnode, _netbios_getnode, _ipconfig_getnode]
     else:
-        getters = [_unixdll_getnode, _ifconfig_getnode, _arp_getnode,
-                   _lanscan_getnode, _netstat_getnode]
+        getters = [_unixdll_getnode, _ifconfig_getnode]
 
     for getter in getters + [_random_getnode]:
         try:
@@ -604,8 +537,21 @@ def uuid3(namespace, name):
 
 def uuid4():
     """Generate a random UUID."""
-    import os
-    return UUID(bytes=os.urandom(16), version=4)
+
+    # When the system provides a version-4 UUID generator, use it.
+    if _uuid_generate_random:
+        _buffer = ctypes.create_string_buffer(16)
+        _uuid_generate_random(_buffer)
+        return UUID(bytes=_buffer.raw)
+
+    # Otherwise, get randomness from urandom or the 'random' module.
+    try:
+        import os
+        return UUID(bytes=os.urandom(16), version=4)
+    except:
+        import random
+        bytes = [chr(random.randrange(256)) for i in range(16)]
+        return UUID(bytes=bytes, version=4)
 
 def uuid5(namespace, name):
     """Generate a UUID from the SHA-1 hash of a namespace UUID and a name."""

@@ -11,7 +11,7 @@ Simple usage:
 
     import unittest
 
-    class IntegerArithmeticTestCase(unittest.TestCase):
+    class IntegerArithmenticTestCase(unittest.TestCase):
         def testAdd(self):  ## test method names begin 'test*'
             self.assertEqual((1 + 2), 3)
             self.assertEqual(0 + 1, 1)

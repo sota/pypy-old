@@ -1,7 +1,7 @@
 import py, os, errno
-from pypy.interpreter.error import (
-    OperationError, decompose_valuefmt, get_operrcls2, new_exception_class,
-    oefmt, wrap_oserror)
+from pypy.interpreter.error import OperationError, operationerrfmt
+from pypy.interpreter.error import decompose_valuefmt, get_operrcls2
+from pypy.interpreter.error import wrap_oserror, new_exception_class
 
 
 def test_decompose_valuefmt():
@@ -12,71 +12,29 @@ def test_decompose_valuefmt():
     assert (decompose_valuefmt("%s%d%%%s") ==
             (("", "", "%", ""), ('s', 'd', 's')))
 
-def test_get_operrcls2(space):
+def test_get_operrcls2():
     cls, strings = get_operrcls2('abc %s def %d')
     assert strings == ("abc ", " def ", "")
     assert issubclass(cls, OperationError)
     inst = cls("w_type", strings, "hello", 42)
-    assert inst._compute_value(space) == "abc hello def 42"
+    assert inst._compute_value() == "abc hello def 42"
     cls2, strings2 = get_operrcls2('a %s b %d c')
     assert cls2 is cls     # caching
     assert strings2 == ("a ", " b ", " c")
 
-def test_oefmt(space):
-    operr = oefmt("w_type", "abc %s def %d", "foo", 42)
+def test_operationerrfmt():
+    operr = operationerrfmt("w_type", "abc %s def %d", "foo", 42)
     assert isinstance(operr, OperationError)
     assert operr.w_type == "w_type"
     assert operr._w_value is None
-    assert operr._compute_value(space) == "abc foo def 42"
-    operr2 = oefmt("w_type2", "a %s b %d c", "bar", 43)
+    assert operr._compute_value() == "abc foo def 42"
+    operr2 = operationerrfmt("w_type2", "a %s b %d c", "bar", 43)
     assert operr2.__class__ is operr.__class__
-    operr3 = oefmt("w_type2", "a %s b %s c", "bar", "4b")
+    operr3 = operationerrfmt("w_type2", "a %s b %s c", "bar", "4b")
     assert operr3.__class__ is not operr.__class__
 
-def test_oefmt_noargs(space):
-    operr = oefmt(space.w_AttributeError, "no attribute 'foo'")
-    operr.normalize_exception(space)
-    val = operr.get_w_value(space)
-    assert space.isinstance_w(val, space.w_AttributeError)
-    w_repr = space.repr(val)
-    assert space.str_w(w_repr) == "AttributeError(\"no attribute 'foo'\",)"
-
-def test_oefmt_T(space):
-    operr = oefmt(space.w_AttributeError,
-                  "'%T' object has no attribute '%s'",
-                  space.wrap('foo'), 'foo')
-    assert operr._compute_value(space) == "'str' object has no attribute 'foo'"
-    operr = oefmt("w_type",
-                  "'%T' object has no attribute '%s'",
-                  space.wrap('foo'), 'foo')
-    assert operr._compute_value(space) == "'str' object has no attribute 'foo'"
-
-def test_oefmt_N(space):
-    operr = oefmt(space.w_AttributeError,
-                  "'%N' object has no attribute '%s'",
-                  space.type(space.wrap('foo')), 'foo')
-    assert operr._compute_value(space) == "'str' object has no attribute 'foo'"
-    operr = oefmt("w_type",
-                  "'%N' object has no attribute '%s'",
-                  space.type(space.wrap('foo')), 'foo')
-    assert operr._compute_value(space) == "'str' object has no attribute 'foo'"
-    operr = oefmt(space.w_AttributeError,
-                  "'%N' object has no attribute '%s'",
-                  space.wrap('foo'), 'foo')
-    assert operr._compute_value(space) == "'?' object has no attribute 'foo'"
-    operr = oefmt("w_type",
-                  "'%N' object has no attribute '%s'",
-                  space.wrap('foo'), 'foo')
-    assert operr._compute_value(space) == "'?' object has no attribute 'foo'"
-
-def test_oefmt_R(space):
-    operr = oefmt(space.w_ValueError,
-                  "illegal newline value: %R", space.wrap('foo'))
-    assert operr._compute_value(space) == "illegal newline value: 'foo'"
-    operr = oefmt(space.w_ValueError, "illegal newline value: %R",
-                  space.wrap("'PyLadies'"))
-    expected = "illegal newline value: \"'PyLadies'\""
-    assert operr._compute_value(space) == expected
+def test_operationerrfmt_empty():
+    py.test.raises(AssertionError, operationerrfmt, "w_type", "foobar")
 
 def test_errorstr(space):
     operr = OperationError(space.w_ValueError, space.wrap("message"))

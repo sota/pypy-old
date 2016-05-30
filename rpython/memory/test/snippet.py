@@ -47,33 +47,22 @@ class SemiSpaceGCTestDefines:
         class State:
             pass
         state = State()
-        def age_of(c):
-            return state.age[ord(c) - ord('a')]
-        def set_age_of(c, newvalue):
-            # NB. this used to be a dictionary, but setting into a dict
-            # consumes memory.  This has the effect that this test's
-            # __del__ methods can consume more memory and potentially
-            # cause another collection.  This would result in objects
-            # being unexpectedly destroyed at the same 'state.time'.
-            state.age[ord(c) - ord('a')] = newvalue
-
         class A:
             def __init__(self, key):
                 self.key = key
                 self.refs = []
             def __del__(self):
-                from rpython.rlib.debug import debug_print
-                debug_print("DEL:", self.key)
-                assert age_of(self.key) == -1
-                set_age_of(self.key, state.time)
+                assert state.age[self.key] == -1
+                state.age[self.key] = state.time
                 state.progress = True
 
         def build_example(input):
             state.time = 0
-            state.age = [-1] * len(letters)
+            state.age = {}
             vertices = {}
             for c in letters:
                 vertices[c] = A(c)
+                state.age[c] = -1
             for c, d in input:
                 vertices[c].refs.append(vertices[d])
 
@@ -83,8 +72,6 @@ class SemiSpaceGCTestDefines:
                 input, components, strict = examples[i]
                 build_example(input)
                 while state.time < len(letters):
-                    from rpython.rlib.debug import debug_print
-                    debug_print("STATE.TIME:", state.time)
                     state.progress = False
                     llop.gc__collect(lltype.Void)
                     if not state.progress:
@@ -93,16 +80,16 @@ class SemiSpaceGCTestDefines:
                 # summarize the finalization order
                 lst = []
                 for c in letters:
-                    lst.append('%s:%d' % (c, age_of(c)))
+                    lst.append('%s:%d' % (c, state.age[c]))
                 summary = ', '.join(lst)
 
                 # check that all instances have been finalized
-                if -1 in state.age:
+                if -1 in state.age.values():
                     return error(i, summary, "not all instances finalized")
                 # check that if a -> b and a and b are not in the same
                 # strong component, then a is finalized strictly before b
                 for c, d in strict:
-                    if age_of(c) >= age_of(d):
+                    if state.age[c] >= state.age[d]:
                         return error(i, summary,
                                      "%s should be finalized before %s"
                                      % (c, d))
@@ -111,7 +98,7 @@ class SemiSpaceGCTestDefines:
                 for component in components:
                     seen = {}
                     for c in component:
-                        age = age_of(c)
+                        age = state.age[c]
                         if age in seen:
                             d = seen[age]
                             return error(i, summary,

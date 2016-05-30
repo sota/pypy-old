@@ -13,7 +13,6 @@ class FakeCallDescr(AbstractDescr):
         self.ARGS = ARGS
         self.RESULT = RESULT
         self.effectinfo = effectinfo
-
     def get_extra_info(self):
         return self.effectinfo
 
@@ -23,9 +22,10 @@ class FakeFieldDescr(AbstractDescr):
         self.fieldname = fieldname
 
 class FakeSizeDescr(AbstractDescr):
-    def __init__(self, STRUCT, vtable=None):
+    def __init__(self, STRUCT):
         self.STRUCT = STRUCT
-        self.vtable = vtable
+    def as_vtable_size_descr(self):
+        return self
 
 class FakeArrayDescr(AbstractDescr):
     def __init__(self, ARRAY):
@@ -37,7 +37,7 @@ class FakeCPU:
 
     class tracker:
         pass
-
+    
     calldescrof = FakeCallDescr
     fielddescrof = FakeFieldDescr
     sizeof = FakeSizeDescr
@@ -76,11 +76,11 @@ def test_loop():
     assert jitcode.num_regs_i() == 2
     assert jitcode.num_regs_r() == 0
     assert jitcode.num_regs_f() == 0
-    assert jitcode._live_vars(0) == '%i0 %i1'
+    assert jitcode._live_vars(5) == '%i0 %i1'
     #
     from rpython.jit.codewriter.jitcode import MissingLiveness
     for i in range(len(jitcode.code)+1):
-        if i != 0:
+        if i != 5:
             py.test.raises(MissingLiveness, jitcode._live_vars, i)
 
 def test_call():
@@ -121,32 +121,20 @@ def test_integration():
     blackholeinterp.run()
     assert blackholeinterp.get_tmpreg_i() == 100+6+5+4+3
 
-
 def test_instantiate():
-    class A1:
-        id = 651
-
-    class A2(A1):
-        id = 652
-
-    class B1:
-        id = 661
-
-    class B2(B1):
-        id = 662
-
+    class A1:     id = 651
+    class A2(A1): id = 652
+    class B1:     id = 661
+    class B2(B1): id = 662
     def dont_look(n):
         return n + 1
-
-    classes = [
-        (A1, B1),
-        (A2, B2)
-    ]
-
     def f(n):
-        x, y = classes[n]
+        if n > 5:
+            x, y = A1, B1
+        else:
+            x, y = A2, B2
         return x().id + y().id + dont_look(n)
-    rtyper = support.annotate(f, [0])
+    rtyper = support.annotate(f, [35])
     maingraph = rtyper.annotator.translator.graphs[0]
     cw = CodeWriter(FakeCPU(rtyper), [FakeJitDriverSD(maingraph)])
     cw.find_all_graphs(FakePolicy())
@@ -161,9 +149,15 @@ def test_instantiate():
         else:
             assert 0, "missing instantiate_*_%s in:\n%r" % (expected,
                                                             names)
-    names = set([value for key, value in cw.assembler.list_of_addr2name])
+    #
+    print cw.assembler.list_of_addr2name
+    names = dict.fromkeys([value
+                           for key, value in cw.assembler.list_of_addr2name])
+    assert 'A1' in names
+    assert 'B1' in names
+    assert 'A2' in names
+    assert 'B2' in names
     assert 'dont_look' in names
-
 
 def test_instantiate_with_unreasonable_attr():
     # It is possible to have in real code the instantiate() function for
@@ -175,19 +169,17 @@ def test_instantiate_with_unreasonable_attr():
             name = graph.name
             return not (name.startswith('instantiate_') and
                         name.endswith('A2'))
-
     class A1:
         pass
-
     class A2(A1):
         pass
-
-    classes = [A1, A2]
-
     def f(n):
-        x = classes[n]
+        if n > 5:
+            x = A1
+        else:
+            x = A2
         x()
-    rtyper = support.annotate(f, [1])
+    rtyper = support.annotate(f, [35])
     maingraph = rtyper.annotator.translator.graphs[0]
     cw = CodeWriter(FakeCPU(rtyper), [FakeJitDriverSD(maingraph)])
     cw.find_all_graphs(MyFakePolicy())
@@ -196,7 +188,12 @@ def test_instantiate_with_unreasonable_attr():
     names = [jitcode.name for jitcode in cw.assembler.indirectcalltargets]
     assert len(names) == 1
     assert names[0].startswith('instantiate_') and names[0].endswith('A1')
-
+    #
+    print cw.assembler.list_of_addr2name
+    names = dict.fromkeys([value
+                           for key, value in cw.assembler.list_of_addr2name])
+    assert 'A1' in names
+    assert 'A2' in names
 
 def test_int_abs():
     def f(n):
@@ -212,7 +209,7 @@ def test_int_abs():
 
 def test_raw_malloc_and_access():
     TP = rffi.CArray(lltype.Signed)
-
+    
     def f(n):
         a = lltype.malloc(TP, n, flavor='raw')
         a[0] = n
@@ -231,3 +228,18 @@ def test_raw_malloc_and_access():
     assert 'setarrayitem_raw_i' in s
     assert 'getarrayitem_raw_i' in s
     assert 'residual_call_ir_v $<* fn _ll_1_raw_free__arrayPtr>' in s
+
+def test_newlist_negativ():
+    def f(n):
+        l = [0] * n
+        return len(l)
+
+    rtyper = support.annotate(f, [-1])
+    jitdriver_sd = FakeJitDriverSD(rtyper.annotator.translator.graphs[0])
+    cw = CodeWriter(FakeCPU(rtyper), [jitdriver_sd])
+    graphs = cw.find_all_graphs(FakePolicy())
+    backend_optimizations(rtyper.annotator.translator, graphs=graphs)
+    cw.make_jitcodes(verbose=True)
+    s = jitdriver_sd.mainjitcode.dump()
+    assert 'int_force_ge_zero' in s
+    assert 'new_array' in s

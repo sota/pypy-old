@@ -123,7 +123,7 @@ It is best to first set all parameters, perhaps possibly the
 compression type, and then write audio frames using writeframesraw.
 When all frames have been written, either call writeframes('') or
 close() to patch up the sizes in the header.
-Marks can be added anytime.  If there are any marks, you must call
+Marks can be added anytime.  If there are any marks, ypu must call
 close() after all frames have been written.
 The close() method is called automatically when the class instance
 is destroyed.
@@ -357,13 +357,10 @@ class Aifc_read:
         self._soundpos = 0
 
     def close(self):
-        decomp = self._decomp
-        try:
-            if decomp:
-                self._decomp = None
-                decomp.CloseDecompressor()
-        finally:
-            self._file.close()
+        if self._decomp:
+            self._decomp.CloseDecompressor()
+            self._decomp = None
+        self._file.close()
 
     def tell(self):
         return self._soundpos
@@ -483,30 +480,31 @@ class Aifc_read:
                         pass
                     else:
                         self._convert = self._adpcm2lin
-                        self._sampwidth = 2
+                        self._framesize = self._framesize // 4
                         return
                 # for ULAW and ALAW try Compression Library
                 try:
                     import cl
                 except ImportError:
-                    if self._comptype in ('ULAW', 'ulaw'):
+                    if self._comptype == 'ULAW':
                         try:
                             import audioop
                             self._convert = self._ulaw2lin
-                            self._sampwidth = 2
+                            self._framesize = self._framesize // 2
                             return
                         except ImportError:
                             pass
                     raise Error, 'cannot read compressed AIFF-C files'
-                if self._comptype in ('ULAW', 'ulaw'):
+                if self._comptype == 'ULAW':
                     scheme = cl.G711_ULAW
-                elif self._comptype in ('ALAW', 'alaw'):
+                    self._framesize = self._framesize // 2
+                elif self._comptype == 'ALAW':
                     scheme = cl.G711_ALAW
+                    self._framesize = self._framesize // 2
                 else:
                     raise Error, 'unsupported compression type'
                 self._decomp = cl.OpenDecompressor(scheme)
                 self._convert = self._decomp_data
-                self._sampwidth = 2
         else:
             self._comptype = 'NONE'
             self._compname = 'not compressed'
@@ -657,7 +655,7 @@ class Aifc_write:
     def setcomptype(self, comptype, compname):
         if self._nframeswritten:
             raise Error, 'cannot change parameters after starting to write'
-        if comptype not in ('NONE', 'ULAW', 'ulaw', 'ALAW', 'alaw', 'G722'):
+        if comptype not in ('NONE', 'ULAW', 'ALAW', 'G722'):
             raise Error, 'unsupported compression type'
         self._comptype = comptype
         self._compname = compname
@@ -677,7 +675,7 @@ class Aifc_write:
         nchannels, sampwidth, framerate, nframes, comptype, compname = info
         if self._nframeswritten:
             raise Error, 'cannot change parameters after starting to write'
-        if comptype not in ('NONE', 'ULAW', 'ulaw', 'ALAW', 'alaw', 'G722'):
+        if comptype not in ('NONE', 'ULAW', 'ALAW', 'G722'):
             raise Error, 'unsupported compression type'
         self.setnchannels(nchannels)
         self.setsampwidth(sampwidth)
@@ -734,28 +732,22 @@ class Aifc_write:
             self._patchheader()
 
     def close(self):
-        if self._file is None:
-            return
-        try:
-            self._ensure_header_written(0)
-            if self._datawritten & 1:
-                # quick pad to even size
-                self._file.write(chr(0))
-                self._datawritten = self._datawritten + 1
-            self._writemarkers()
-            if self._nframeswritten != self._nframes or \
-                  self._datalength != self._datawritten or \
-                  self._marklength:
-                self._patchheader()
-            if self._comp:
-                self._comp.CloseCompressor()
-                self._comp = None
-        finally:
-            # Prevent ref cycles
-            self._convert = None
-            f = self._file
-            self._file = None
-            f.close()
+        self._ensure_header_written(0)
+        if self._datawritten & 1:
+            # quick pad to even size
+            self._file.write(chr(0))
+            self._datawritten = self._datawritten + 1
+        self._writemarkers()
+        if self._nframeswritten != self._nframes or \
+              self._datalength != self._datawritten or \
+              self._marklength:
+            self._patchheader()
+        if self._comp:
+            self._comp.CloseCompressor()
+            self._comp = None
+        # Prevent ref cycles
+        self._convert = None
+        self._file.close()
 
     #
     # Internal methods.
@@ -781,7 +773,7 @@ class Aifc_write:
 
     def _ensure_header_written(self, datasize):
         if not self._nframeswritten:
-            if self._comptype in ('ULAW', 'ulaw', 'ALAW', 'alaw'):
+            if self._comptype in ('ULAW', 'ALAW'):
                 if not self._sampwidth:
                     self._sampwidth = 2
                 if self._sampwidth != 2:
@@ -806,7 +798,7 @@ class Aifc_write:
         try:
             import cl
         except ImportError:
-            if self._comptype in ('ULAW', 'ulaw'):
+            if self._comptype == 'ULAW':
                 try:
                     import audioop
                     self._convert = self._lin2ulaw
@@ -814,9 +806,9 @@ class Aifc_write:
                 except ImportError:
                     pass
             raise Error, 'cannot write compressed AIFF-C files'
-        if self._comptype in ('ULAW', 'ulaw'):
+        if self._comptype == 'ULAW':
             scheme = cl.G711_ULAW
-        elif self._comptype in ('ALAW', 'alaw'):
+        elif self._comptype == 'ALAW':
             scheme = cl.G711_ALAW
         else:
             raise Error, 'unsupported compression type'
@@ -847,7 +839,7 @@ class Aifc_write:
         if self._datalength & 1:
             self._datalength = self._datalength + 1
         if self._aifc:
-            if self._comptype in ('ULAW', 'ulaw', 'ALAW', 'alaw'):
+            if self._comptype in ('ULAW', 'ALAW'):
                 self._datalength = self._datalength // 2
                 if self._datalength & 1:
                     self._datalength = self._datalength + 1
@@ -855,10 +847,7 @@ class Aifc_write:
                 self._datalength = (self._datalength + 3) // 4
                 if self._datalength & 1:
                     self._datalength = self._datalength + 1
-        try:
-            self._form_length_pos = self._file.tell()
-        except (AttributeError, IOError):
-            self._form_length_pos = None
+        self._form_length_pos = self._file.tell()
         commlength = self._write_form_length(self._datalength)
         if self._aifc:
             self._file.write('AIFC')
@@ -870,20 +859,15 @@ class Aifc_write:
         self._file.write('COMM')
         _write_ulong(self._file, commlength)
         _write_short(self._file, self._nchannels)
-        if self._form_length_pos is not None:
-            self._nframes_pos = self._file.tell()
+        self._nframes_pos = self._file.tell()
         _write_ulong(self._file, self._nframes)
-        if self._comptype in ('ULAW', 'ulaw', 'ALAW', 'alaw', 'G722'):
-            _write_short(self._file, 8)
-        else:
-            _write_short(self._file, self._sampwidth * 8)
+        _write_short(self._file, self._sampwidth * 8)
         _write_float(self._file, self._framerate)
         if self._aifc:
             self._file.write(self._comptype)
             _write_string(self._file, self._compname)
         self._file.write('SSND')
-        if self._form_length_pos is not None:
-            self._ssnd_length_pos = self._file.tell()
+        self._ssnd_length_pos = self._file.tell()
         _write_ulong(self._file, self._datalength + 8)
         _write_ulong(self._file, 0)
         _write_ulong(self._file, 0)
@@ -963,27 +947,23 @@ if __name__ == '__main__':
         sys.argv.append('/usr/demos/data/audio/bach.aiff')
     fn = sys.argv[1]
     f = open(fn, 'r')
-    try:
-        print "Reading", fn
-        print "nchannels =", f.getnchannels()
-        print "nframes   =", f.getnframes()
-        print "sampwidth =", f.getsampwidth()
-        print "framerate =", f.getframerate()
-        print "comptype  =", f.getcomptype()
-        print "compname  =", f.getcompname()
-        if sys.argv[2:]:
-            gn = sys.argv[2]
-            print "Writing", gn
-            g = open(gn, 'w')
-            try:
-                g.setparams(f.getparams())
-                while 1:
-                    data = f.readframes(1024)
-                    if not data:
-                        break
-                    g.writeframes(data)
-            finally:
-                g.close()
-            print "Done."
-    finally:
+    print "Reading", fn
+    print "nchannels =", f.getnchannels()
+    print "nframes   =", f.getnframes()
+    print "sampwidth =", f.getsampwidth()
+    print "framerate =", f.getframerate()
+    print "comptype  =", f.getcomptype()
+    print "compname  =", f.getcompname()
+    if sys.argv[2:]:
+        gn = sys.argv[2]
+        print "Writing", gn
+        g = open(gn, 'w')
+        g.setparams(f.getparams())
+        while 1:
+            data = f.readframes(1024)
+            if not data:
+                break
+            g.writeframes(data)
+        g.close()
         f.close()
+        print "Done."

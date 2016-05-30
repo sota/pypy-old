@@ -6,7 +6,11 @@ class CPUTotalTracker(object):
     total_compiled_loops = 0
     total_compiled_bridges = 0
     total_freed_loops = 0
-    total_freed_bridges = 0
+    total_freed_bridges = 0    
+
+    # for heaptracker
+    # _all_size_descrs_with_vtable = None
+    _vtable_to_descr_dict = None
 
 class AbstractCPU(object):
     supports_floats = False
@@ -15,11 +19,8 @@ class AbstractCPU(object):
     # longlongs are supported by the JIT, but stored as doubles.
     # Boxes and Consts are BoxFloats and ConstFloats.
     supports_singlefloats = False
-    supports_guard_gc_type = False
 
     propagate_exception_descr = None
-
-    remove_gctypeptr = False
 
     def __init__(self):
         self.tracker = CPUTotalTracker()
@@ -50,21 +51,29 @@ class AbstractCPU(object):
         """
         return False
 
-    def compile_loop(self, inputargs, operations, looptoken, jd_id=0,
-                     unique_id=0, log=True, name='', logger=None):
+    def compile_loop(self, inputargs, operations, looptoken, log=True, name=''):
         """Assemble the given loop.
         Should create and attach a fresh CompiledLoopToken to
         looptoken.compiled_loop_token and stick extra attributes
         on it to point to the compiled loop in assembler.
-        Returns either None or an instance of rpython.rlib.jit.AsmInfo.
+
+        Optionally, return a ``ops_offset`` dictionary, which maps each operation
+        to its offset in the compiled code.  The ``ops_offset`` dictionary is then
+        used by the operation logger to print the offsets in the log.  The
+        offset representing the end of the last operation is stored in
+        ``ops_offset[None]``: note that this might not coincide with the end of
+        the loop, because usually in the loop footer there is code which does
+        not belong to any particular operation.
         """
         raise NotImplementedError
 
     def compile_bridge(self, faildescr, inputargs, operations,
-                       original_loop_token, log=True, logger=None):
+                       original_loop_token, log=True):
         """Assemble the bridge.
         The FailDescr is the descr of the original guard that failed.
-        Returns either None or an instance of rpython.rlib.jit.AsmInfo.
+
+        Optionally, return a ``ops_offset`` dictionary.  See the docstring of
+        ``compiled_loop`` for more information about it.
         """
         raise NotImplementedError
 
@@ -173,9 +182,13 @@ class AbstractCPU(object):
     def arraydescrof(self, A):
         raise NotImplementedError
 
-    def calldescrof(self, FUNC, ARGS, RESULT, extrainfo):
+    def calldescrof(self, FUNC, ARGS, RESULT):
         # FUNC is the original function type, but ARGS is a list of types
         # with Voids removed
+        raise NotImplementedError
+
+    def methdescrof(self, SELFTYPE, methname):
+        # must return a subclass of history.AbstractMethDescr
         raise NotImplementedError
 
     def typedescrof(self, TYPE):
@@ -254,6 +267,8 @@ class AbstractCPU(object):
 
     def bh_setfield_raw_i(self, struct, newvalue, fielddescr):
         raise NotImplementedError
+    def bh_setfield_raw_r(self, struct, newvalue, fielddescr):
+        raise NotImplementedError
     def bh_setfield_raw_f(self, struct, newvalue, fielddescr):
         raise NotImplementedError
 
@@ -282,6 +297,7 @@ class AbstractCPU(object):
         raise NotImplementedError
     def bh_copyunicodecontent(self, src, dst, srcstart, dststart, length):
         raise NotImplementedError
+
 
 class CompiledLoopToken(object):
     asmmemmgr_blocks = None

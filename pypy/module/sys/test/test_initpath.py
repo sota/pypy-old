@@ -16,12 +16,9 @@ def test_find_stdlib(tmpdir, monkeypatch):
     build_hierarchy(tmpdir)
     path, prefix = find_stdlib(None, str(pypy))
     assert prefix == tmpdir
-    # in executable is None look for stdlib based on the working directory
-    # see lib-python/2.7/test/test_sys.py:test_executable
-    _, prefix = find_stdlib(None, '')
-    cwd = os.path.dirname(os.path.realpath(__file__))
-    assert prefix is not None
-    assert cwd.startswith(str(prefix))
+    # shouldn't find stdlib if executable == '' even if parent dir has a stdlib
+    monkeypatch.chdir(tmpdir.join('bin'))
+    assert find_stdlib(None, '') == (None, None)
 
 @py.test.mark.skipif('not hasattr(os, "symlink")')
 def test_find_stdlib_follow_symlink(tmpdir):
@@ -57,7 +54,6 @@ def test_find_executable(tmpdir, monkeypatch):
     a.join('pypy').ensure(file=True)
     b.join('pypy').ensure(file=True)
     #
-    monkeypatch.setattr(os, 'access', lambda x, y: True)
     # if there is already a slash, don't do anything
     monkeypatch.chdir(tmpdir)
     assert find_executable('a/pypy') == a.join('pypy')
@@ -83,13 +79,9 @@ def test_find_executable(tmpdir, monkeypatch):
     # if pypy is found but it's not a file, ignore it
     c.join('pypy').ensure(dir=True)
     assert find_executable('pypy') == a.join('pypy')
-    # if pypy is found but it's not executable, ignore it
-    monkeypatch.setattr(os, 'access', lambda x, y: False)
-    assert find_executable('pypy') == ''
     #
-    monkeypatch.setattr(os, 'access', lambda x, y: True)
     monkeypatch.setattr(initpath, 'we_are_translated', lambda: True)
-    monkeypatch.setattr(initpath, '_WIN32', True)
+    monkeypatch.setattr(initpath, 'IS_WINDOWS', True)
     monkeypatch.setenv('PATH', str(a))
     a.join('pypy.exe').ensure(file=True)
     assert find_executable('pypy') == a.join('pypy.exe')

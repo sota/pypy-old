@@ -447,13 +447,13 @@ class BaseHTTPRequestHandler(SocketServer.StreamRequestHandler):
         specified as subsequent arguments (it's just like
         printf!).
 
-        The client ip address and current date/time are prefixed to every
-        message.
+        The client host and current date/time are prefixed to
+        every message.
 
         """
 
         sys.stderr.write("%s - - [%s] %s\n" %
-                         (self.client_address[0],
+                         (self.address_string(),
                           self.log_date_time_string(),
                           format%args))
 

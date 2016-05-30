@@ -1,4 +1,4 @@
-r"""HTTP/1.1 client library
+"""HTTP/1.1 client library
 
 <intro stuff goes here>
 <other stuff, too>
@@ -68,7 +68,6 @@ Req-sent-unread-response       _CS_REQ_SENT       <response_class>
 
 from array import array
 import os
-import re
 import socket
 from sys import py3kwarning
 from urlparse import urlsplit
@@ -216,42 +215,6 @@ MAXAMOUNT = 1048576
 # maximal line length when calling readline().
 _MAXLINE = 65536
 
-# maximum amount of headers accepted
-_MAXHEADERS = 100
-
-# Header name/value ABNF (http://tools.ietf.org/html/rfc7230#section-3.2)
-#
-# VCHAR          = %x21-7E
-# obs-text       = %x80-FF
-# header-field   = field-name ":" OWS field-value OWS
-# field-name     = token
-# field-value    = *( field-content / obs-fold )
-# field-content  = field-vchar [ 1*( SP / HTAB ) field-vchar ]
-# field-vchar    = VCHAR / obs-text
-#
-# obs-fold       = CRLF 1*( SP / HTAB )
-#                ; obsolete line folding
-#                ; see Section 3.2.4
-
-# token          = 1*tchar
-#
-# tchar          = "!" / "#" / "$" / "%" / "&" / "'" / "*"
-#                / "+" / "-" / "." / "^" / "_" / "`" / "|" / "~"
-#                / DIGIT / ALPHA
-#                ; any VCHAR, except delimiters
-#
-# VCHAR defined in http://tools.ietf.org/html/rfc5234#appendix-B.1
-
-# the patterns for both name and value are more leniant than RFC
-# definitions to allow for backwards compatibility
-_is_legal_header_name = re.compile(r'\A[^:\s][^:\r\n]*\Z').match
-_is_illegal_header_value = re.compile(r'\n(?![ \t])|\r(?![ \t\n])').search
-
-# We always set the Content-Length header for these methods because some
-# servers will otherwise respond with a 411
-_METHODS_EXPECTING_BODY = {'PATCH', 'POST', 'PUT'}
-
-
 class HTTPMessage(mimetools.Message):
 
     def addheader(self, key, value):
@@ -308,8 +271,6 @@ class HTTPMessage(mimetools.Message):
         elif self.seekable:
             tell = self.fp.tell
         while True:
-            if len(hlist) > _MAXHEADERS:
-                raise HTTPException("got more than %d headers" % _MAXHEADERS)
             if tell:
                 try:
                     startofline = tell()
@@ -345,11 +306,6 @@ class HTTPMessage(mimetools.Message):
                 # It's a legal header line, save it.
                 hlist.append(line)
                 self.addheader(headerseen, line[len(headerseen)+1:].strip())
-                continue
-            elif headerseen is not None:
-                # An empty header name. These aren't allowed in HTTP, but it's
-                # probably a benign mistake. Don't add the header, just keep
-                # going.
                 continue
             else:
                 # It's not a header line; throw it back and stop here.
@@ -406,9 +362,7 @@ class HTTPResponse:
 
     def _read_status(self):
         # Initialize with Simple-Response defaults
-        line = self.fp.readline(_MAXLINE + 1)
-        if len(line) > _MAXLINE:
-            raise LineTooLong("header line")
+        line = self.fp.readline()
         if self.debuglevel > 0:
             print "reply:", repr(line)
         if not line:
@@ -560,10 +514,9 @@ class HTTPResponse:
         return True
 
     def close(self):
-        fp = self.fp
-        if fp:
+        if self.fp:
+            self.fp.close()
             self.fp = None
-            fp.close()
 
     def isclosed(self):
         # NOTE: it is possible that we will not ever call self.close(). This
@@ -592,11 +545,7 @@ class HTTPResponse:
             if self.length is None:
                 s = self.fp.read()
             else:
-                try:
-                    s = self._safe_read(self.length)
-                except IncompleteRead:
-                    self.close()
-                    raise
+                s = self._safe_read(self.length)
                 self.length = 0
             self.close()        # we read everything
             return s
@@ -610,15 +559,10 @@ class HTTPResponse:
         # connection, and the user is reading more bytes than will be provided
         # (for example, reading in 1k chunks)
         s = self.fp.read(amt)
-        if not s and amt:
-            # Ideally, we would raise IncompleteRead if the content-length
-            # wasn't satisfied, but it might break compatibility.
-            self.close()
         if self.length is not None:
             self.length -= len(s)
             if not self.length:
                 self.close()
-
         return s
 
     def _read_chunked(self, amt):
@@ -745,33 +689,17 @@ class HTTPConnection:
         self._tunnel_host = None
         self._tunnel_port = None
         self._tunnel_headers = {}
+
+        self._set_hostport(host, port)
         if strict is not None:
             self.strict = strict
 
-        (self.host, self.port) = self._get_hostport(host, port)
-
-        # This is stored as an instance variable to allow unittests
-        # to replace with a suitable mock
-        self._create_connection = socket.create_connection
-
     def set_tunnel(self, host, port=None, headers=None):
-        """ Set up host and port for HTTP CONNECT tunnelling.
-
-        In a connection that uses HTTP Connect tunneling, the host passed to the
-        constructor is used as proxy server that relays all communication to the
-        endpoint passed to set_tunnel. This is done by sending a HTTP CONNECT
-        request to the proxy server when the connection is established.
-
-        This method must be called before the HTTP connection has been
-        established.
+        """ Sets up the host and the port for the HTTP CONNECT Tunnelling.
 
         The headers argument should be a mapping of extra HTTP headers
         to send with the CONNECT request.
         """
-        # Verify if this is required.
-        if self.sock:
-            raise RuntimeError("Can't setup tunnel for established connection.")
-
         self._tunnel_host = host
         self._tunnel_port = port
         if headers:
@@ -779,7 +707,7 @@ class HTTPConnection:
         else:
             self._tunnel_headers.clear()
 
-    def _get_hostport(self, host, port):
+    def _set_hostport(self, host, port):
         if port is None:
             i = host.rfind(':')
             j = host.rfind(']')         # ipv6 addresses have [...]
@@ -796,14 +724,15 @@ class HTTPConnection:
                 port = self.default_port
             if host and host[0] == '[' and host[-1] == ']':
                 host = host[1:-1]
-        return (host, port)
+        self.host = host
+        self.port = port
 
     def set_debuglevel(self, level):
         self.debuglevel = level
 
     def _tunnel(self):
-        (host, port) = self._get_hostport(self._tunnel_host, self._tunnel_port)
-        self.send("CONNECT %s:%d HTTP/1.0\r\n" % (host, port))
+        self._set_hostport(self._tunnel_host, self._tunnel_port)
+        self.send("CONNECT %s:%d HTTP/1.0\r\n" % (self.host, self.port))
         for header, value in self._tunnel_headers.iteritems():
             self.send("%s: %s\r\n" % (header, value))
         self.send("\r\n")
@@ -819,34 +748,26 @@ class HTTPConnection:
             line = response.fp.readline(_MAXLINE + 1)
             if len(line) > _MAXLINE:
                 raise LineTooLong("header line")
-            if not line:
-                # for sites which EOF without sending trailer
-                break
-            if line == '\r\n':
-                break
+            if line == '\r\n': break
 
 
     def connect(self):
         """Connect to the host and port specified in __init__."""
-        self.sock = self._create_connection((self.host,self.port),
-                                           self.timeout, self.source_address)
+        self.sock = socket.create_connection((self.host,self.port),
+                                             self.timeout, self.source_address)
 
         if self._tunnel_host:
             self._tunnel()
 
     def close(self):
         """Close the connection to the HTTP server."""
+        if self.sock:
+            self.sock.close()   # close it manually... there may be other refs
+            self.sock = None
+        if self.__response:
+            self.__response.close()
+            self.__response = None
         self.__state = _CS_IDLE
-        try:
-            sock = self.sock
-            if sock:
-                self.sock = None
-                sock.close()   # close it manually... there may be other refs
-        finally:
-            response = self.__response
-            if response:
-                self.__response = None
-                response.close()
 
     def send(self, data):
         """Send `data' to the server."""
@@ -971,24 +892,17 @@ class HTTPConnection:
                         netloc_enc = netloc.encode("idna")
                     self.putheader('Host', netloc_enc)
                 else:
-                    if self._tunnel_host:
-                        host = self._tunnel_host
-                        port = self._tunnel_port
-                    else:
-                        host = self.host
-                        port = self.port
-
                     try:
-                        host_enc = host.encode("ascii")
+                        host_enc = self.host.encode("ascii")
                     except UnicodeEncodeError:
-                        host_enc = host.encode("idna")
+                        host_enc = self.host.encode("idna")
                     # Wrap the IPv6 Host Header with [] (RFC 2732)
                     if host_enc.find(':') >= 0:
                         host_enc = "[" + host_enc + "]"
-                    if port == self.default_port:
+                    if self.port == self.default_port:
                         self.putheader('Host', host_enc)
                     else:
-                        self.putheader('Host', "%s:%s" % (host_enc, port))
+                        self.putheader('Host', "%s:%s" % (host_enc, self.port))
 
             # note: we are assuming that clients will not attempt to set these
             #       headers since *this* library must deal with the
@@ -1021,16 +935,7 @@ class HTTPConnection:
         if self.__state != _CS_REQ_STARTED:
             raise CannotSendHeader()
 
-        header = '%s' % header
-        if not _is_legal_header_name(header):
-            raise ValueError('Invalid header name %r' % (header,))
-
-        values = [str(v) for v in values]
-        for one_value in values:
-            if _is_illegal_header_value(one_value):
-                raise ValueError('Invalid header value %r' % (one_value,))
-
-        hdr = '%s: %s' % (header, '\r\n\t'.join(values))
+        hdr = '%s: %s' % (header, '\r\n\t'.join([str(v) for v in values]))
         self._output(hdr)
 
     def endheaders(self, message_body=None):
@@ -1052,25 +957,19 @@ class HTTPConnection:
         """Send a complete request to the server."""
         self._send_request(method, url, body, headers)
 
-    def _set_content_length(self, body, method):
-        # Set the content-length based on the body. If the body is "empty", we
-        # set Content-Length: 0 for methods that expect a body (RFC 7230,
-        # Section 3.3.2). If the body is set for other methods, we set the
-        # header provided we can figure out what the length is.
+    def _set_content_length(self, body):
+        # Set the content-length based on the body.
         thelen = None
-        if body is None and method.upper() in _METHODS_EXPECTING_BODY:
-            thelen = '0'
-        elif body is not None:
+        try:
+            thelen = str(len(body))
+        except TypeError, te:
+            # If this is a file-like object, try to
+            # fstat its file descriptor
             try:
-                thelen = str(len(body))
-            except TypeError:
-                # If this is a file-like object, try to
-                # fstat its file descriptor
-                try:
-                    thelen = str(os.fstat(body.fileno()).st_size)
-                except (AttributeError, OSError):
-                    # Don't send a length if this failed
-                    if self.debuglevel > 0: print "Cannot stat!!"
+                thelen = str(os.fstat(body.fileno()).st_size)
+            except (AttributeError, OSError):
+                # Don't send a length if this failed
+                if self.debuglevel > 0: print "Cannot stat!!"
 
         if thelen is not None:
             self.putheader('Content-Length', thelen)
@@ -1086,8 +985,8 @@ class HTTPConnection:
 
         self.putrequest(method, url, **skips)
 
-        if 'content-length' not in header_names:
-            self._set_content_length(body, method)
+        if body and ('content-length' not in header_names):
+            self._set_content_length(body)
         for hdr, value in headers.iteritems():
             self.putheader(hdr, value)
         self.endheaders(body)
@@ -1130,20 +1029,20 @@ class HTTPConnection:
 
         try:
             response.begin()
-            assert response.will_close != _UNKNOWN
-            self.__state = _CS_IDLE
-
-            if response.will_close:
-                # this effectively passes the connection to the response
-                self.close()
-            else:
-                # remember this, so we can tell when it is complete
-                self.__response = response
-
-            return response
         except:
             response.close()
             raise
+        assert response.will_close != _UNKNOWN
+        self.__state = _CS_IDLE
+
+        if response.will_close:
+            # this effectively passes the connection to the response
+            self.close()
+        else:
+            # remember this, so we can tell when it is complete
+            self.__response = response
+
+        return response
 
 
 class HTTP:
@@ -1163,7 +1062,7 @@ class HTTP:
         if port == 0:
             port = None
 
-        # Note that we may pass an empty string as the host; this will raise
+        # Note that we may pass an empty string as the host; this will throw
         # an error when we attempt to connect. Presumably, the client code
         # will call connect before then, with a proper host.
         self._setup(self._connection_class(host, port, strict))
@@ -1187,7 +1086,7 @@ class HTTP:
         "Accept arguments to set the host/port, since the superclass doesn't."
 
         if host is not None:
-            (self._conn.host, self._conn.port) = self._conn._get_hostport(host, port)
+            self._conn._set_hostport(host, port)
         self._conn.connect()
 
     def getfile(self):
@@ -1249,29 +1148,21 @@ else:
 
         def __init__(self, host, port=None, key_file=None, cert_file=None,
                      strict=None, timeout=socket._GLOBAL_DEFAULT_TIMEOUT,
-                     source_address=None, context=None):
+                     source_address=None):
             HTTPConnection.__init__(self, host, port, strict, timeout,
                                     source_address)
             self.key_file = key_file
             self.cert_file = cert_file
-            if context is None:
-                context = ssl._create_default_https_context()
-            if key_file or cert_file:
-                context.load_cert_chain(cert_file, key_file)
-            self._context = context
 
         def connect(self):
             "Connect to a host on a given (SSL) port."
 
-            HTTPConnection.connect(self)
-
+            sock = socket.create_connection((self.host, self.port),
+                                            self.timeout, self.source_address)
             if self._tunnel_host:
-                server_hostname = self._tunnel_host
-            else:
-                server_hostname = self.host
-
-            self.sock = self._context.wrap_socket(self.sock,
-                                                  server_hostname=server_hostname)
+                self.sock = sock
+                self._tunnel()
+            self.sock = ssl.wrap_socket(sock, self.key_file, self.cert_file)
 
     __all__.append("HTTPSConnection")
 
@@ -1286,15 +1177,14 @@ else:
         _connection_class = HTTPSConnection
 
         def __init__(self, host='', port=None, key_file=None, cert_file=None,
-                     strict=None, context=None):
+                     strict=None):
             # provide a default host, pass the X509 cert info
 
             # urf. compensate for bad input.
             if port == 0:
                 port = None
             self._setup(self._connection_class(host, port, key_file,
-                                               cert_file, strict,
-                                               context=context))
+                                               cert_file, strict))
 
             # we never actually use these for anything, but we keep them
             # here for compatibility with post-1.5.2 CVS.

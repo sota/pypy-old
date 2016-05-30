@@ -1,3 +1,4 @@
+from rpython.translator.simplify import get_funcobj
 from rpython.rtyper.llinterp import LLInterpreter
 from rpython.rtyper.lltypesystem import lltype, rffi
 from rpython.rtyper.extregistry import ExtRegistryEntry
@@ -27,7 +28,7 @@ def maybe_on_top_of_llinterp(rtyper, fnptr):
                 i += 1
         return real_args
 
-    funcobj = fnptr._obj
+    funcobj = get_funcobj(fnptr)
     if hasattr(funcobj, 'graph'):
         # cache the llinterp; otherwise the remember_malloc/remember_free
         # done on the LLInterpreter don't match

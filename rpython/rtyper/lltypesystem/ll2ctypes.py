@@ -22,10 +22,8 @@ from rpython.tool.uid import fixid
 from rpython.rlib.rarithmetic import r_singlefloat, r_longfloat, base_int, intmask
 from rpython.rlib.rarithmetic import is_emulated_long, maxint
 from rpython.annotator import model as annmodel
-from rpython.rtyper.llannotation import lltype_to_annotation
-from rpython.rtyper.llannotation import SomePtr
 from rpython.rtyper.llinterp import LLInterpreter, LLException
-from rpython.rtyper.rclass import OBJECT, OBJECT_VTABLE
+from rpython.rtyper.lltypesystem.rclass import OBJECT, OBJECT_VTABLE
 from rpython.rtyper import raddress
 from rpython.translator.platform import platform
 from array import array
@@ -46,7 +44,6 @@ rlock = RLock()
 
 _POSIX = os.name == "posix"
 _MS_WINDOWS = os.name == "nt"
-_FREEBSD = sys.platform.startswith('freebsd')
 _64BIT = "64bit" in host_platform.architecture()[0]
 
 
@@ -164,7 +161,7 @@ def _setup_ctypes_cache():
         llmemory.GCREF:    ctypes.c_void_p,
         llmemory.WeakRef:  ctypes.c_void_p, # XXX
         })
-
+        
     if '__int128_t' in rffi.TYPES:
         _ctypes_cache[rffi.__INT128_T] = ctypes.c_longlong # XXX: Not right at all. But for some reason, It started by while doing JIT compile after a merge with default. Can't extend ctypes, because thats a python standard, right?
 
@@ -258,7 +255,7 @@ def build_ctypes_array(A, delayed_builders, max_n=0):
         @classmethod
         def _malloc(cls, n=None):
             if not isinstance(n, int):
-                raise TypeError("array length must be an int")
+                raise TypeError, "array length must be an int"
             biggercls = get_ctypes_array_of_size(A, n)
             bigarray = allocate_ctypes(biggercls)
             if hasattr(bigarray, 'length'):
@@ -359,12 +356,6 @@ def build_new_ctypes_type(T, delayed_builders):
 
     if isinstance(T, lltype.Ptr):
         if isinstance(T.TO, lltype.FuncType):
-            functype = ctypes.CFUNCTYPE
-            if sys.platform == 'win32':
-                from rpython.rlib.clibffi import FFI_STDCALL, FFI_DEFAULT_ABI
-                if getattr(T.TO, 'ABI', FFI_DEFAULT_ABI) == FFI_STDCALL:
-                    # for win32 system call
-                    functype = ctypes.WINFUNCTYPE
             argtypes = [get_ctypes_type(ARG) for ARG in T.TO.ARGS
                         if ARG is not lltype.Void]
             if T.TO.RESULT is lltype.Void:
@@ -373,10 +364,10 @@ def build_new_ctypes_type(T, delayed_builders):
                 restype = get_ctypes_type(T.TO.RESULT)
             try:
                 kwds = {'use_errno': True}
-                return functype(restype, *argtypes, **kwds)
+                return ctypes.CFUNCTYPE(restype, *argtypes, **kwds)
             except TypeError:
                 # unexpected 'use_errno' argument, old ctypes version
-                return functype(restype, *argtypes)
+                return ctypes.CFUNCTYPE(restype, *argtypes)
         elif isinstance(T.TO, lltype.OpaqueType):
             return ctypes.c_void_p
         else:
@@ -412,12 +403,7 @@ def convert_struct(container, cstruct=None, delayed_converters=None):
         # bigger structure at once
         parent, parentindex = lltype.parentlink(container)
         if parent is not None:
-            if isinstance(parent, lltype._struct):
-                convert_struct(parent)
-            elif isinstance(parent, lltype._array):
-                convert_array(parent)
-            else:
-                raise AssertionError(type(parent))
+            convert_struct(parent)
             return
         # regular case: allocate a new ctypes Structure of the proper type
         cls = get_ctypes_type(STRUCT)
@@ -426,12 +412,7 @@ def convert_struct(container, cstruct=None, delayed_converters=None):
         else:
             n = None
         cstruct = cls._malloc(n)
-
-    if isinstance(container, lltype._fixedsizearray):
-        cls_mixin = _fixedsizedarray_mixin
-    else:
-        cls_mixin = _struct_mixin
-    add_storage(container, cls_mixin, ctypes.pointer(cstruct))
+    add_storage(container, _struct_mixin, ctypes.pointer(cstruct))
 
     if delayed_converters is None:
         delayed_converters_was_None = True
@@ -468,9 +449,6 @@ def convert_struct(container, cstruct=None, delayed_converters=None):
 
 def remove_regular_struct_content(container):
     STRUCT = container._TYPE
-    if isinstance(STRUCT, lltype.FixedSizeArray):
-        del container._items
-        return
     for field_name in STRUCT._names:
         FIELDTYPE = getattr(STRUCT, field_name)
         if not isinstance(FIELDTYPE, lltype.ContainerType):
@@ -511,11 +489,7 @@ def remove_regular_array_content(container):
 def struct_use_ctypes_storage(container, ctypes_storage):
     STRUCT = container._TYPE
     assert isinstance(STRUCT, lltype.Struct)
-    if isinstance(container, lltype._fixedsizearray):
-        cls_mixin = _fixedsizedarray_mixin
-    else:
-        cls_mixin = _struct_mixin
-    add_storage(container, cls_mixin, ctypes_storage)
+    add_storage(container, _struct_mixin, ctypes_storage)
     remove_regular_struct_content(container)
     for field_name in STRUCT._names:
         FIELDTYPE = getattr(STRUCT, field_name)
@@ -527,10 +501,8 @@ def struct_use_ctypes_storage(container, ctypes_storage):
                 struct_use_ctypes_storage(struct_container, struct_storage)
                 struct_container._setparentstructure(container, field_name)
             elif isinstance(FIELDTYPE, lltype.Array):
-                if FIELDTYPE._hints.get('nolength', False):
-                    arraycontainer = _array_of_unknown_length(FIELDTYPE)
-                else:
-                    arraycontainer = _array_of_known_length(FIELDTYPE)
+                assert FIELDTYPE._hints.get('nolength', False) == False
+                arraycontainer = _array_of_known_length(FIELDTYPE)
                 arraycontainer._storage = ctypes.pointer(
                     getattr(ctypes_storage.contents, field_name))
                 arraycontainer._setparentstructure(container, field_name)
@@ -542,7 +514,6 @@ def struct_use_ctypes_storage(container, ctypes_storage):
 # Ctypes-aware subclasses of the _parentable classes
 
 ALLOCATED = {}     # mapping {address: _container}
-DEBUG_ALLOCATED = False
 
 def get_common_subclass(cls1, cls2, cache={}):
     """Return a unique subclass with (cls1, cls2) as bases."""
@@ -582,8 +553,6 @@ class _parentable_mixin(object):
             raise Exception("internal ll2ctypes error - "
                             "double conversion from lltype to ctypes?")
         # XXX don't store here immortal structures
-        if DEBUG_ALLOCATED:
-            print >> sys.stderr, "LL2CTYPES:", hex(addr)
         ALLOCATED[addr] = self
 
     def _addressof_storage(self):
@@ -596,8 +565,6 @@ class _parentable_mixin(object):
         self._check()   # no double-frees
         # allow the ctypes object to go away now
         addr = ctypes.cast(self._storage, ctypes.c_void_p).value
-        if DEBUG_ALLOCATED:
-            print >> sys.stderr, "LL2C FREE:", hex(addr)
         try:
             del ALLOCATED[addr]
         except KeyError:
@@ -632,14 +599,11 @@ class _parentable_mixin(object):
             return object.__hash__(self)
 
     def __repr__(self):
-        if '__str__' in self._TYPE._adtmeths:
-            r = self._TYPE._adtmeths['__str__'](self)
-        else:
-            r = 'C object %s' % (self._TYPE,)
         if self._storage is None:
-            return '<freed %s>' % (r,)
+            return '<freed C object %s>' % (self._TYPE,)
         else:
-            return '<%s at 0x%x>' % (r, fixid(self._addressof_storage()))
+            return '<C object %s at 0x%x>' % (self._TYPE,
+                                              fixid(self._addressof_storage()))
 
     def __str__(self):
         return repr(self)
@@ -663,45 +627,6 @@ class _struct_mixin(_parentable_mixin):
         else:
             cobj = lltype2ctypes(value)
             setattr(self._storage.contents, field_name, cobj)
-
-class _fixedsizedarray_mixin(_parentable_mixin):
-    """Mixin added to _fixedsizearray containers when they become ctypes-based."""
-    __slots__ = ()
-
-    def __getattr__(self, field_name):
-        if hasattr(self, '_items'):
-            obj = lltype._fixedsizearray.__getattr__.im_func(self, field_name)
-            return obj
-        else:
-            cobj = getattr(self._storage.contents, field_name)
-            T = getattr(self._TYPE, field_name)
-            return ctypes2lltype(T, cobj)
-
-    def __setattr__(self, field_name, value):
-        if field_name.startswith('_'):
-            object.__setattr__(self, field_name, value)  # '_xxx' attributes
-        else:
-            cobj = lltype2ctypes(value)
-            if hasattr(self, '_items'):
-                lltype._fixedsizearray.__setattr__.im_func(self, field_name, cobj)
-            else:
-                setattr(self._storage.contents, field_name, cobj)
-
-
-    def getitem(self, index, uninitialized_ok=False):
-        if hasattr(self, '_items'):
-            obj = lltype._fixedsizearray.getitem.im_func(self, 
-                                     index, uninitialized_ok=uninitialized_ok)
-            return obj
-        else:
-            return getattr(self, 'item%d' % index)
-
-    def setitem(self, index, value):
-        cobj = lltype2ctypes(value)
-        if hasattr(self, '_items'):
-            lltype._fixedsizearray.setitem.im_func(self, index, value)
-        else:
-            setattr(self, 'item%d' % index, cobj)
 
 class _array_mixin(_parentable_mixin):
     """Mixin added to _array containers when they become ctypes-based."""
@@ -793,319 +718,305 @@ def get_rtyper():
         return None
 
 def lltype2ctypes(llobj, normalize=True):
-    """Convert the lltype object 'llobj' to its ctypes equivalent.
-    'normalize' should only be False in tests, where we want to
-    inspect the resulting ctypes object manually.
-    """
-    with rlock:
-        if isinstance(llobj, lltype._uninitialized):
-            return uninitialized2ctypes(llobj.TYPE)
-        if isinstance(llobj, llmemory.AddressAsInt):
-            cobj = ctypes.cast(lltype2ctypes(llobj.adr), ctypes.c_void_p)
-            res = intmask(cobj.value)
-            _int2obj[res] = llobj.adr.ptr._obj
-            return res
-        if isinstance(llobj, llmemory.fakeaddress):
-            llobj = llobj.ptr or 0
+  """Convert the lltype object 'llobj' to its ctypes equivalent.
+  'normalize' should only be False in tests, where we want to
+  inspect the resulting ctypes object manually.
+  """
+  with rlock:
+    if isinstance(llobj, lltype._uninitialized):
+        return uninitialized2ctypes(llobj.TYPE)
+    if isinstance(llobj, llmemory.AddressAsInt):
+        cobj = ctypes.cast(lltype2ctypes(llobj.adr), ctypes.c_void_p)
+        res = intmask(cobj.value)
+        _int2obj[res] = llobj.adr.ptr._obj
+        return res
+    if isinstance(llobj, llmemory.fakeaddress):
+        llobj = llobj.ptr or 0
 
-        T = lltype.typeOf(llobj)
+    T = lltype.typeOf(llobj)
 
-        if isinstance(T, lltype.Ptr):
-            if not llobj:   # NULL pointer
-                if T == llmemory.GCREF:
-                    return ctypes.c_void_p(0)
-                return get_ctypes_type(T)()
-
+    if isinstance(T, lltype.Ptr):
+        if not llobj:   # NULL pointer
             if T == llmemory.GCREF:
-                if isinstance(llobj._obj, _llgcopaque):
-                    return ctypes.c_void_p(llobj._obj.intval)
-                if isinstance(llobj._obj, int):    # tagged pointer
-                    return ctypes.c_void_p(llobj._obj)
-                container = llobj._obj.container
-                T = lltype.Ptr(lltype.typeOf(container))
-                # otherwise it came from integer and we want a c_void_p with
-                # the same value
-                if getattr(container, 'llopaque', None):
-                    try:
-                        no = _opaque_objs_seen[container]
-                    except KeyError:
-                        no = len(_opaque_objs)
-                        _opaque_objs.append(container)
-                        _opaque_objs_seen[container] = no
-                    return no * 2 + 1
-            else:
-                container = llobj._obj
-            if isinstance(T.TO, lltype.FuncType):
-                # XXX a temporary workaround for comparison of lltype.FuncType
-                key = llobj._obj.__dict__.copy()
-                key['_TYPE'] = repr(key['_TYPE'])
-                items = key.items()
-                items.sort()
-                key = tuple(items)
-                if key in _all_callbacks:
-                    return _all_callbacks[key]
-                v1voidlist = [(i, getattr(container, '_void' + str(i), None))
-                                 for i in range(len(T.TO.ARGS))
-                                     if T.TO.ARGS[i] is lltype.Void]
-                def callback_internal(*cargs):
-                    cargs = list(cargs)
-                    for v1 in v1voidlist:
-                        cargs.insert(v1[0], v1[1])
-                    assert len(cargs) == len(T.TO.ARGS)
-                    llargs = []
-                    for ARG, carg in zip(T.TO.ARGS, cargs):
-                        if ARG is lltype.Void:
-                            llargs.append(carg)
-                        else:
-                            llargs.append(ctypes2lltype(ARG, carg))
-                    if hasattr(container, 'graph'):
-                        if LLInterpreter.current_interpreter is None:
-                            raise AssertionError
-                        llinterp = LLInterpreter.current_interpreter
-                        try:
-                            llres = llinterp.eval_graph(container.graph, llargs)
-                        except LLException, lle:
-                            llinterp._store_exception(lle)
-                            return 0
-                        #except:
-                        #    import pdb
-                        #    pdb.set_trace()
+                return ctypes.c_void_p(0)
+            return get_ctypes_type(T)()
+
+        if T == llmemory.GCREF:
+            if isinstance(llobj._obj, _llgcopaque):
+                return ctypes.c_void_p(llobj._obj.intval)
+            if isinstance(llobj._obj, int):    # tagged pointer
+                return ctypes.c_void_p(llobj._obj)
+            container = llobj._obj.container
+            T = lltype.Ptr(lltype.typeOf(container))
+            # otherwise it came from integer and we want a c_void_p with
+            # the same value
+            if getattr(container, 'llopaque', None):
+                try:
+                    no = _opaque_objs_seen[container]
+                except KeyError:
+                    no = len(_opaque_objs)
+                    _opaque_objs.append(container)
+                    _opaque_objs_seen[container] = no
+                return no * 2 + 1
+        else:
+            container = llobj._obj
+        if isinstance(T.TO, lltype.FuncType):
+            # XXX a temporary workaround for comparison of lltype.FuncType
+            key = llobj._obj.__dict__.copy()
+            key['_TYPE'] = repr(key['_TYPE'])
+            items = key.items()
+            items.sort()
+            key = tuple(items)
+            if key in _all_callbacks:
+                return _all_callbacks[key]
+            v1voidlist = [(i, getattr(container, '_void' + str(i), None))
+                             for i in range(len(T.TO.ARGS))
+                                 if T.TO.ARGS[i] is lltype.Void]
+            def callback_internal(*cargs):
+                cargs = list(cargs)
+                for v1 in v1voidlist:
+                    cargs.insert(v1[0], v1[1])
+                assert len(cargs) == len(T.TO.ARGS)
+                llargs = []
+                for ARG, carg in zip(T.TO.ARGS, cargs):
+                    if ARG is lltype.Void:
+                        llargs.append(carg)
                     else:
-                        try:
-                            llres = container._callable(*llargs)
-                        except LLException, lle:
-                            llinterp = LLInterpreter.current_interpreter
-                            llinterp._store_exception(lle)
-                            return 0
-                    assert lltype.typeOf(llres) == T.TO.RESULT
-                    if T.TO.RESULT is lltype.Void:
-                        return None
-                    res = lltype2ctypes(llres)
-                    if isinstance(T.TO.RESULT, lltype.Ptr):
-                        _all_callbacks_results.append(res)
-                        res = ctypes.cast(res, ctypes.c_void_p).value
-                        if res is None:
-                            return 0
-                    if T.TO.RESULT == lltype.SingleFloat:
-                        res = res.value     # baaaah, cannot return a c_float()
-                    return res
-
-                def callback(*cargs):
+                        llargs.append(ctypes2lltype(ARG, carg))
+                if hasattr(container, 'graph'):
+                    if LLInterpreter.current_interpreter is None:
+                        raise AssertionError
+                    llinterp = LLInterpreter.current_interpreter
                     try:
-                        return callback_internal(*cargs)
-                    except:
-                        import sys
-                        #if option.usepdb:
-                        #    import pdb; pdb.post_mortem(sys.exc_traceback)
-                        global _callback_exc_info
-                        _callback_exc_info = sys.exc_info()
-                        raise
-
-                if isinstance(T.TO.RESULT, lltype.Ptr):
-                    TMod = lltype.Ptr(lltype.FuncType(T.TO.ARGS,
-                                                      lltype.Signed))
-                    ctypes_func_type = get_ctypes_type(TMod)
-                    res = ctypes_func_type(callback)
-                    ctypes_func_type = get_ctypes_type(T)
-                    res = ctypes.cast(res, ctypes_func_type)
+                        llres = llinterp.eval_graph(container.graph, llargs)
+                    except LLException, lle:
+                        llinterp._store_exception(lle)
+                        return 0
+                    #except:
+                    #    import pdb
+                    #    pdb.set_trace()
                 else:
-                    ctypes_func_type = get_ctypes_type(T)
-                    res = ctypes_func_type(callback)
-                _all_callbacks[key] = res
-                key2 = intmask(ctypes.cast(res, ctypes.c_void_p).value)
-                _int2obj[key2] = container
+                    try:
+                        llres = container._callable(*llargs)
+                    except LLException, lle:
+                        llinterp = LLInterpreter.current_interpreter
+                        llinterp._store_exception(lle)
+                        return 0
+                assert lltype.typeOf(llres) == T.TO.RESULT
+                if T.TO.RESULT is lltype.Void:
+                    return None
+                res = lltype2ctypes(llres)
+                if isinstance(T.TO.RESULT, lltype.Ptr):
+                    _all_callbacks_results.append(res)
+                    res = ctypes.cast(res, ctypes.c_void_p).value
+                    if res is None:
+                        return 0
+                if T.TO.RESULT == lltype.SingleFloat:
+                    res = res.value     # baaaah, cannot return a c_float()
                 return res
 
-            index = 0
-            if isinstance(container, lltype._subarray):
-                topmost, index = _find_parent(container)
-                container = topmost
-                T = lltype.Ptr(lltype.typeOf(container))
+            def callback(*cargs):
+                try:
+                    return callback_internal(*cargs)
+                except:
+                    import sys
+                    #if option.usepdb:
+                    #    import pdb; pdb.post_mortem(sys.exc_traceback)
+                    global _callback_exc_info
+                    _callback_exc_info = sys.exc_info()
+                    raise
 
-            if container._storage is None:
-                raise RuntimeError("attempting to pass a freed structure to C")
-            if container._storage is True:
-                # container has regular lltype storage, convert it to ctypes
-                if isinstance(T.TO, lltype.Struct):
-                    convert_struct(container)
-                elif isinstance(T.TO, lltype.Array):
-                    convert_array(container)
-                elif isinstance(T.TO, lltype.OpaqueType):
-                    if T.TO != lltype.RuntimeTypeInfo:
-                        cbuf = ctypes.create_string_buffer(T.TO.hints['getsize']())
-                    else:
-                        cbuf = ctypes.create_string_buffer("\x00")
-                    cbuf = ctypes.cast(cbuf, ctypes.c_void_p)
-                    add_storage(container, _parentable_mixin, cbuf)
-                else:
-                    raise NotImplementedError(T)
-                container._ctypes_storage_was_allocated()
-
-            if isinstance(T.TO, lltype.OpaqueType):
-                return container._storage.value
-
-            storage = container._storage
-            p = storage
-            if index:
-                p = ctypes.cast(p, ctypes.c_void_p)
-                p = ctypes.c_void_p(p.value + index)
-                c_tp = get_ctypes_type(T.TO)
-                storage.contents._normalized_ctype = c_tp
-            if normalize and hasattr(storage.contents, '_normalized_ctype'):
-                normalized_ctype = storage.contents._normalized_ctype
-                p = ctypes.cast(p, ctypes.POINTER(normalized_ctype))
-            if lltype.typeOf(llobj) == llmemory.GCREF:
-                p = ctypes.cast(p, ctypes.c_void_p)
-            return p
-
-        if isinstance(llobj, Symbolic):
-            if isinstance(llobj, llmemory.ItemOffset):
-                llobj = ctypes.sizeof(get_ctypes_type(llobj.TYPE)) * llobj.repeat
-            elif isinstance(llobj, ComputedIntSymbolic):
-                llobj = llobj.compute_fn()
-            elif isinstance(llobj, llmemory.CompositeOffset):
-                llobj = sum([lltype2ctypes(c) for c in llobj.offsets])
-            elif isinstance(llobj, llmemory.FieldOffset):
-                CSTRUCT = get_ctypes_type(llobj.TYPE)
-                llobj = getattr(CSTRUCT, llobj.fldname).offset
-            elif isinstance(llobj, llmemory.ArrayItemsOffset):
-                CARRAY = get_ctypes_type(llobj.TYPE)
-                llobj = CARRAY.items.offset
+            if isinstance(T.TO.RESULT, lltype.Ptr):
+                TMod = lltype.Ptr(lltype.FuncType(T.TO.ARGS,
+                                                  lltype.Signed))
+                ctypes_func_type = get_ctypes_type(TMod)
+                res = ctypes_func_type(callback)
+                ctypes_func_type = get_ctypes_type(T)
+                res = ctypes.cast(res, ctypes_func_type)
             else:
-                raise NotImplementedError(llobj)  # don't know about symbolic value
+                ctypes_func_type = get_ctypes_type(T)
+                res = ctypes_func_type(callback)
+            _all_callbacks[key] = res
+            key2 = intmask(ctypes.cast(res, ctypes.c_void_p).value)
+            _int2obj[key2] = container
+            return res
 
-        if T is lltype.Char or T is lltype.UniChar:
-            return ord(llobj)
+        index = 0
+        if isinstance(container, lltype._subarray):
+            topmost, index = _find_parent(container)
+            container = topmost
+            T = lltype.Ptr(lltype.typeOf(container))
 
-        if T is lltype.SingleFloat:
-            return ctypes.c_float(float(llobj))
-
-        return llobj
-
-def ctypes2lltype(T, cobj):
-    """Convert the ctypes object 'cobj' to its lltype equivalent.
-    'T' is the expected lltype type.
-    """
-    with rlock:
-        if T is lltype.Void:
-            return None
-        if isinstance(T, lltype.Typedef):
-            T = T.OF
-        if isinstance(T, lltype.Ptr):
-            ptrval = ctypes.cast(cobj, ctypes.c_void_p).value
-            if not cobj or not ptrval:   # NULL pointer
-                # CFunctionType.__nonzero__ is broken before Python 2.6
-                return lltype.nullptr(T.TO)
+        if container._storage is None:
+            raise RuntimeError("attempting to pass a freed structure to C")
+        if container._storage is True:
+            # container has regular lltype storage, convert it to ctypes
             if isinstance(T.TO, lltype.Struct):
-                if T.TO._gckind == 'gc' and ptrval & 1: # a tagged pointer
-                    gcref = _opaque_objs[ptrval // 2].hide()
-                    return lltype.cast_opaque_ptr(T, gcref)
-                REAL_TYPE = T.TO
-                if T.TO._arrayfld is not None:
-                    carray = getattr(cobj.contents, T.TO._arrayfld)
-                    length = getattr(carray, 'length', 9999)   # XXX
-                    container = lltype._struct(T.TO, length)
-                else:
-                    # special treatment of 'OBJECT' subclasses
-                    if get_rtyper() and lltype._castdepth(REAL_TYPE, OBJECT) >= 0:
-                        # figure out the real type of the object
-                        containerheader = lltype._struct(OBJECT)
-                        cobjheader = ctypes.cast(cobj,
-                                           get_ctypes_type(lltype.Ptr(OBJECT)))
-                        struct_use_ctypes_storage(containerheader,
-                                                  cobjheader)
-                        REAL_TYPE = get_rtyper().get_type_for_typeptr(
-                            containerheader.typeptr)
-                        REAL_T = lltype.Ptr(REAL_TYPE)
-                        cobj = ctypes.cast(cobj, get_ctypes_type(REAL_T))
-                    container = lltype._struct(REAL_TYPE)
-                # obscuuuuuuuuure: 'cobj' is a ctypes pointer, which is
-                # mutable; and so if we save away the 'cobj' object
-                # itself, it might suddenly later be unexpectedly
-                # modified!  Make a copy.
-                cobj = ctypes.cast(cobj, type(cobj))
-                struct_use_ctypes_storage(container, cobj)
-                if REAL_TYPE != T.TO:
-                    p = container._as_ptr()
-                    container = lltype.cast_pointer(T, p)._as_obj()
-                # special treatment of 'OBJECT_VTABLE' subclasses
-                if get_rtyper() and lltype._castdepth(REAL_TYPE,
-                                                      OBJECT_VTABLE) >= 0:
-                    # figure out the real object that this vtable points to,
-                    # and just return that
-                    p = get_rtyper().get_real_typeptr_for_typeptr(
-                        container._as_ptr())
-                    container = lltype.cast_pointer(T, p)._as_obj()
+                convert_struct(container)
             elif isinstance(T.TO, lltype.Array):
-                if T.TO._hints.get('nolength', False):
-                    container = _array_of_unknown_length(T.TO)
-                    container._storage = type(cobj)(cobj.contents)
-                else:
-                    container = _array_of_known_length(T.TO)
-                    container._storage = type(cobj)(cobj.contents)
-            elif isinstance(T.TO, lltype.FuncType):
-                cobjkey = intmask(ctypes.cast(cobj, ctypes.c_void_p).value)
-                if cobjkey in _int2obj:
-                    container = _int2obj[cobjkey]
-                else:
-                    _callable = get_ctypes_trampoline(T.TO, cobj)
-                    return lltype.functionptr(T.TO, getattr(cobj, '__name__', '?'),
-                                              _callable=_callable)
+                convert_array(container)
             elif isinstance(T.TO, lltype.OpaqueType):
-                if T == llmemory.GCREF:
-                    container = _llgcopaque(cobj)
+                if T.TO != lltype.RuntimeTypeInfo:
+                    cbuf = ctypes.create_string_buffer(T.TO.hints['getsize']())
                 else:
-                    container = lltype._opaque(T.TO)
-                    cbuf = ctypes.cast(cobj, ctypes.c_void_p)
-                    add_storage(container, _parentable_mixin, cbuf)
+                    cbuf = ctypes.create_string_buffer("\x00")
+                cbuf = ctypes.cast(cbuf, ctypes.c_void_p)
+                add_storage(container, _parentable_mixin, cbuf)
             else:
                 raise NotImplementedError(T)
-            llobj = lltype._ptr(T, container, solid=True)
-        elif T is llmemory.Address:
-            if cobj is None:
-                llobj = llmemory.NULL
+            container._ctypes_storage_was_allocated()
+
+        if isinstance(T.TO, lltype.OpaqueType):
+            return container._storage.value
+
+        storage = container._storage
+        p = storage
+        if index:
+            p = ctypes.cast(p, ctypes.c_void_p)
+            p = ctypes.c_void_p(p.value + index)
+            c_tp = get_ctypes_type(T.TO)
+            storage.contents._normalized_ctype = c_tp
+        if normalize and hasattr(storage.contents, '_normalized_ctype'):
+            normalized_ctype = storage.contents._normalized_ctype
+            p = ctypes.cast(p, ctypes.POINTER(normalized_ctype))
+        if lltype.typeOf(llobj) == llmemory.GCREF:
+            p = ctypes.cast(p, ctypes.c_void_p)
+        return p
+
+    if isinstance(llobj, Symbolic):
+        if isinstance(llobj, llmemory.ItemOffset):
+            llobj = ctypes.sizeof(get_ctypes_type(llobj.TYPE)) * llobj.repeat
+        elif isinstance(llobj, ComputedIntSymbolic):
+            llobj = llobj.compute_fn()
+        else:
+            raise NotImplementedError(llobj)  # don't know about symbolic value
+
+    if T is lltype.Char or T is lltype.UniChar:
+        return ord(llobj)
+
+    if T is lltype.SingleFloat:
+        return ctypes.c_float(float(llobj))
+
+    return llobj
+
+def ctypes2lltype(T, cobj):
+  """Convert the ctypes object 'cobj' to its lltype equivalent.
+  'T' is the expected lltype type.
+  """
+  with rlock:
+    if T is lltype.Void:
+        return None
+    if isinstance(T, lltype.Typedef):
+        T = T.OF
+    if isinstance(T, lltype.Ptr):
+        ptrval = ctypes.cast(cobj, ctypes.c_void_p).value
+        if not cobj or not ptrval:   # NULL pointer
+            # CFunctionType.__nonzero__ is broken before Python 2.6
+            return lltype.nullptr(T.TO)
+        if isinstance(T.TO, lltype.Struct):
+            if T.TO._gckind == 'gc' and ptrval & 1: # a tagged pointer
+                gcref = _opaque_objs[ptrval // 2].hide()
+                return lltype.cast_opaque_ptr(T, gcref)
+            REAL_TYPE = T.TO
+            if T.TO._arrayfld is not None:
+                carray = getattr(cobj.contents, T.TO._arrayfld)
+                container = lltype._struct(T.TO, carray.length)
             else:
-                llobj = _lladdress(cobj)
-        elif T is lltype.Char:
-            llobj = chr(cobj)
-        elif T is lltype.UniChar:
-            try:
-                llobj = unichr(cobj)
-            except (ValueError, OverflowError):
-                for tc in 'HIL':
-                    if array(tc).itemsize == array('u').itemsize:
-                        import struct
-                        cobj &= 256 ** struct.calcsize(tc) - 1
-                        llobj = array('u', array(tc, (cobj,)).tostring())[0]
-                        break
-                else:
-                    raise
-        elif T is lltype.Signed:
-            llobj = cobj
-        elif T is lltype.Bool:
-            assert cobj == True or cobj == False    # 0 and 1 work too
-            llobj = bool(cobj)
-        elif T is lltype.SingleFloat:
-            if isinstance(cobj, ctypes.c_float):
-                cobj = cobj.value
-            llobj = r_singlefloat(cobj)
-        elif T is lltype.LongFloat:
-            if isinstance(cobj, ctypes.c_longdouble):
-                cobj = cobj.value
-            llobj = r_longfloat(cobj)
-        elif T is lltype.Void:
+                # special treatment of 'OBJECT' subclasses
+                if get_rtyper() and lltype._castdepth(REAL_TYPE, OBJECT) >= 0:
+                    # figure out the real type of the object
+                    containerheader = lltype._struct(OBJECT)
+                    cobjheader = ctypes.cast(cobj,
+                                       get_ctypes_type(lltype.Ptr(OBJECT)))
+                    struct_use_ctypes_storage(containerheader,
+                                              cobjheader)
+                    REAL_TYPE = get_rtyper().get_type_for_typeptr(
+                        containerheader.typeptr)
+                    REAL_T = lltype.Ptr(REAL_TYPE)
+                    cobj = ctypes.cast(cobj, get_ctypes_type(REAL_T))
+                container = lltype._struct(REAL_TYPE)
+            struct_use_ctypes_storage(container, cobj)
+            if REAL_TYPE != T.TO:
+                p = container._as_ptr()
+                container = lltype.cast_pointer(T, p)._as_obj()
+            # special treatment of 'OBJECT_VTABLE' subclasses
+            if get_rtyper() and lltype._castdepth(REAL_TYPE,
+                                                  OBJECT_VTABLE) >= 0:
+                # figure out the real object that this vtable points to,
+                # and just return that
+                p = get_rtyper().get_real_typeptr_for_typeptr(
+                    container._as_ptr())
+                container = lltype.cast_pointer(T, p)._as_obj()
+        elif isinstance(T.TO, lltype.Array):
+            if T.TO._hints.get('nolength', False):
+                container = _array_of_unknown_length(T.TO)
+                container._storage = type(cobj)(cobj.contents)
+            else:
+                container = _array_of_known_length(T.TO)
+                container._storage = type(cobj)(cobj.contents)
+        elif isinstance(T.TO, lltype.FuncType):
+            cobjkey = intmask(ctypes.cast(cobj, ctypes.c_void_p).value)
+            if cobjkey in _int2obj:
+                container = _int2obj[cobjkey]
+            else:
+                _callable = get_ctypes_trampoline(T.TO, cobj)
+                return lltype.functionptr(T.TO, getattr(cobj, '__name__', '?'),
+                                          _callable=_callable)
+        elif isinstance(T.TO, lltype.OpaqueType):
+            if T == llmemory.GCREF:
+                container = _llgcopaque(cobj)
+            else:
+                container = lltype._opaque(T.TO)
+                cbuf = ctypes.cast(cobj, ctypes.c_void_p)
+                add_storage(container, _parentable_mixin, cbuf)
+        else:
+            raise NotImplementedError(T)
+        llobj = lltype._ptr(T, container, solid=True)
+    elif T is llmemory.Address:
+        if cobj is None:
+            llobj = llmemory.NULL
+        else:
+            llobj = _lladdress(cobj)
+    elif T is lltype.Char:
+        llobj = chr(cobj)
+    elif T is lltype.UniChar:
+        try:
+            llobj = unichr(cobj)
+        except (ValueError, OverflowError):
+            for tc in 'HIL':
+                if array(tc).itemsize == array('u').itemsize:
+                    import struct
+                    cobj &= 256 ** struct.calcsize(tc) - 1
+                    llobj = array('u', array(tc, (cobj,)).tostring())[0]
+                    break
+            else:
+                raise
+    elif T is lltype.Signed:
+        llobj = cobj
+    elif T is lltype.Bool:
+        assert cobj == True or cobj == False    # 0 and 1 work too
+        llobj = bool(cobj)
+    elif T is lltype.SingleFloat:
+        if isinstance(cobj, ctypes.c_float):
+            cobj = cobj.value
+        llobj = r_singlefloat(cobj)
+    elif T is lltype.LongFloat:
+        if isinstance(cobj, ctypes.c_longdouble):
+            cobj = cobj.value
+        llobj = r_longfloat(cobj)
+    elif T is lltype.Void:
+        llobj = cobj
+    else:
+        from rpython.rtyper.lltypesystem import rffi
+        try:
+            inttype = rffi.platform.numbertype_to_rclass[T]
+        except KeyError:
             llobj = cobj
         else:
-            from rpython.rtyper.lltypesystem import rffi
-            try:
-                inttype = rffi.platform.numbertype_to_rclass[T]
-            except KeyError:
-                llobj = cobj
-            else:
-                llobj = inttype(cobj)
+            llobj = inttype(cobj)
 
-        assert lltype.typeOf(llobj) == T
-        return llobj
+    assert lltype.typeOf(llobj) == T
+    return llobj
 
 def uninitialized2ctypes(T):
     "For debugging, create a ctypes object filled with 0xDD."
@@ -1151,11 +1062,8 @@ if ctypes:
             return ctypes.util.find_library('c')
 
     libc_name = get_libc_name()     # Make sure the name is determined during import, not at runtime
-    if _FREEBSD:
-        RTLD_DEFAULT = -2  # see <dlfcn.h>
-        rtld_default_lib = ctypes.CDLL("RTLD_DEFAULT", handle=RTLD_DEFAULT, **load_library_kwargs)
     # XXX is this always correct???
-    standard_c_lib = ctypes.CDLL(libc_name, **load_library_kwargs)
+    standard_c_lib = ctypes.CDLL(get_libc_name(), **load_library_kwargs)
 
 # ____________________________________________
 
@@ -1207,8 +1115,7 @@ def get_ctypes_callable(funcptr, calling_conv):
     try:
         eci = _eci_cache[old_eci]
     except KeyError:
-        eci = old_eci.compile_shared_lib(ignore_a_files=True,
-                                         defines=['RPYTHON_LL2CTYPES'])
+        eci = old_eci.compile_shared_lib(ignore_a_files=True)
         _eci_cache[old_eci] = eci
 
     libraries = eci.testonly_libraries + eci.libraries + eci.frameworks
@@ -1248,15 +1155,10 @@ def get_ctypes_callable(funcptr, calling_conv):
                 not_found.append(libname)
 
     if cfunc is None:
-        if _FREEBSD and funcname in ('dlopen', 'fdlopen', 'dlsym', 'dlfunc', 'dlerror', 'dlclose'):
-            cfunc = get_on_lib(rtld_default_lib, funcname)
-        else:
-            cfunc = get_on_lib(standard_c_lib, funcname)
+        cfunc = get_on_lib(standard_c_lib, funcname)
         # XXX magic: on Windows try to load the function from 'kernel32' too
         if cfunc is None and hasattr(ctypes, 'windll'):
             cfunc = get_on_lib(ctypes.windll.kernel32, funcname)
-        if cfunc is None and hasattr(ctypes, 'windll'):
-            cfunc = get_on_lib(ctypes.cdll.msvcrt, funcname)
 
     if cfunc is None:
         # function name not found in any of the libraries
@@ -1342,52 +1244,52 @@ def get_ctypes_trampoline(FUNCTYPE, cfunc):
 
 
 def force_cast(RESTYPE, value):
-    with rlock:
-        if not isinstance(RESTYPE, lltype.LowLevelType):
-            raise TypeError("rffi.cast() first arg should be a TYPE")
-        if isinstance(value, llmemory.AddressAsInt):
-            value = value.adr
-        if isinstance(value, llmemory.fakeaddress):
-            value = value.ptr or 0
-        if isinstance(value, r_singlefloat):
-            value = float(value)
-        TYPE1 = lltype.typeOf(value)
-        cvalue = lltype2ctypes(value)
-        cresulttype = get_ctypes_type(RESTYPE)
-        if RESTYPE == TYPE1:
-            return value
-        elif isinstance(TYPE1, lltype.Ptr):
-            if isinstance(RESTYPE, lltype.Ptr):
-                # shortcut: ptr->ptr cast
-                cptr = ctypes.cast(cvalue, cresulttype)
-                return ctypes2lltype(RESTYPE, cptr)
-            # first cast the input pointer to an integer
-            cvalue = ctypes.cast(cvalue, ctypes.c_void_p).value
-            if cvalue is None:
-                cvalue = 0
-        elif isinstance(cvalue, (str, unicode)):
-            cvalue = ord(cvalue)     # character -> integer
-        elif hasattr(RESTYPE, "_type") and issubclass(RESTYPE._type, base_int):
-            cvalue = int(cvalue)
-        elif isinstance(cvalue, r_longfloat):
-            cvalue = cvalue.value
-
-        if not isinstance(cvalue, (int, long, float)):
-            raise NotImplementedError("casting %r to %r" % (TYPE1, RESTYPE))
-
+  with rlock:
+    if not isinstance(RESTYPE, lltype.LowLevelType):
+        raise TypeError("rffi.cast() first arg should be a TYPE")
+    if isinstance(value, llmemory.AddressAsInt):
+        value = value.adr
+    if isinstance(value, llmemory.fakeaddress):
+        value = value.ptr or 0
+    if isinstance(value, r_singlefloat):
+        value = float(value)
+    TYPE1 = lltype.typeOf(value)
+    cvalue = lltype2ctypes(value)
+    cresulttype = get_ctypes_type(RESTYPE)
+    if RESTYPE == TYPE1:
+        return value
+    elif isinstance(TYPE1, lltype.Ptr):
         if isinstance(RESTYPE, lltype.Ptr):
-            # upgrade to a more recent ctypes (e.g. 1.0.2) if you get
-            # an OverflowError on the following line.
-            cvalue = ctypes.cast(ctypes.c_void_p(cvalue), cresulttype)
-        elif RESTYPE == lltype.Bool:
-            cvalue = bool(cvalue)
-        else:
-            try:
-                cvalue = cresulttype(cvalue).value   # mask high bits off if needed
-            except TypeError:
-                cvalue = int(cvalue)   # float -> int
-                cvalue = cresulttype(cvalue).value   # try again
-        return ctypes2lltype(RESTYPE, cvalue)
+            # shortcut: ptr->ptr cast
+            cptr = ctypes.cast(cvalue, cresulttype)
+            return ctypes2lltype(RESTYPE, cptr)
+        # first cast the input pointer to an integer
+        cvalue = ctypes.cast(cvalue, ctypes.c_void_p).value
+        if cvalue is None:
+            cvalue = 0
+    elif isinstance(cvalue, (str, unicode)):
+        cvalue = ord(cvalue)     # character -> integer
+    elif hasattr(RESTYPE, "_type") and issubclass(RESTYPE._type, base_int):
+        cvalue = int(cvalue)
+    elif isinstance(cvalue, r_longfloat):
+        cvalue = cvalue.value
+
+    if not isinstance(cvalue, (int, long, float)):
+        raise NotImplementedError("casting %r to %r" % (TYPE1, RESTYPE))
+
+    if isinstance(RESTYPE, lltype.Ptr):
+        # upgrade to a more recent ctypes (e.g. 1.0.2) if you get
+        # an OverflowError on the following line.
+        cvalue = ctypes.cast(ctypes.c_void_p(cvalue), cresulttype)
+    elif RESTYPE == lltype.Bool:
+        cvalue = bool(cvalue)
+    else:
+        try:
+            cvalue = cresulttype(cvalue).value   # mask high bits off if needed
+        except TypeError:
+            cvalue = int(cvalue)   # float -> int
+            cvalue = cresulttype(cvalue).value   # try again
+    return ctypes2lltype(RESTYPE, cvalue)
 
 class ForceCastEntry(ExtRegistryEntry):
     _about_ = force_cast
@@ -1395,7 +1297,7 @@ class ForceCastEntry(ExtRegistryEntry):
     def compute_result_annotation(self, s_RESTYPE, s_value):
         assert s_RESTYPE.is_constant()
         RESTYPE = s_RESTYPE.const
-        return lltype_to_annotation(RESTYPE)
+        return annmodel.lltype_to_annotation(RESTYPE)
 
     def specialize_call(self, hop):
         hop.exception_cannot_occur()
@@ -1432,9 +1334,9 @@ class ForcePtrAddEntry(ExtRegistryEntry):
 
     def compute_result_annotation(self, s_ptr, s_n):
         assert isinstance(s_n, annmodel.SomeInteger)
-        assert isinstance(s_ptr, SomePtr)
+        assert isinstance(s_ptr, annmodel.SomePtr)
         typecheck_ptradd(s_ptr.ll_ptrtype)
-        return lltype_to_annotation(s_ptr.ll_ptrtype)
+        return annmodel.lltype_to_annotation(s_ptr.ll_ptrtype)
 
     def specialize_call(self, hop):
         hop.exception_cannot_occur()
@@ -1570,17 +1472,18 @@ else:
             _where_is_errno().contents.value = TLS.errno
 
     if ctypes:
-        if _MS_WINDOWS:
+        if sys.platform == 'win32':
             standard_c_lib._errno.restype = ctypes.POINTER(ctypes.c_int)
             def _where_is_errno():
                 return standard_c_lib._errno()
 
-        elif sys.platform.startswith('linux'):
+        elif sys.platform.startswith('linux') or sys.platform == 'freebsd6':
             standard_c_lib.__errno_location.restype = ctypes.POINTER(ctypes.c_int)
             def _where_is_errno():
                 return standard_c_lib.__errno_location()
 
-        elif sys.platform == 'darwin' or _FREEBSD:
+        elif any(plat in sys.platform
+                 for plat in ('darwin', 'freebsd7', 'freebsd8', 'freebsd9')):
             standard_c_lib.__error.restype = ctypes.POINTER(ctypes.c_int)
             def _where_is_errno():
                 return standard_c_lib.__error()

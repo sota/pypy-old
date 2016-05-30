@@ -7,8 +7,8 @@ import sys, os, stat
 from pypy.interpreter.module import Module
 from pypy.interpreter.gateway import interp2app, unwrap_spec
 from pypy.interpreter.typedef import TypeDef, generic_new_descr
-from pypy.interpreter.error import OperationError, oefmt
-from pypy.interpreter.baseobjspace import W_Root, CannotHaveLock
+from pypy.interpreter.error import OperationError, operationerrfmt
+from pypy.interpreter.baseobjspace import W_Root
 from pypy.interpreter.eval import Code
 from pypy.interpreter.pycode import PyCode
 from rpython.rlib import streamio, jit
@@ -30,15 +30,7 @@ PY_FROZEN = 7
 IMP_HOOK = 9
 
 SO = '.pyd' if _WIN32 else '.so'
-
-# this used to change for every minor version, but no longer does: there
-# is little point any more, as the so's tend to be cross-version-
-# compatible, more so than between various versions of CPython.  Be
-# careful if we need to update it again: it is now used for both cpyext
-# and cffi so's.  If we do have to update it, we'd likely need a way to
-# split the two usages again.
-#DEFAULT_SOABI = 'pypy-%d%d' % PYPY_VERSION[:2]
-DEFAULT_SOABI = 'pypy-41'
+DEFAULT_SOABI = 'pypy-%d%d' % PYPY_VERSION[:2]
 
 @specialize.memo()
 def get_so_extension(space):
@@ -58,10 +50,6 @@ def get_so_extension(space):
 def file_exists(path):
     """Tests whether the given path is an existing regular file."""
     return os.path.isfile(path) and case_ok(path)
-
-def has_so_extension(space):
-    return (space.config.objspace.usemodules.cpyext or
-            space.config.objspace.usemodules._cffi_backend)
 
 def find_modtype(space, filepart):
     """Check which kind of module to import for the given filepart,
@@ -85,13 +73,13 @@ def find_modtype(space, filepart):
     # The "imp" module does not respect this, and is allowed to find
     # lone .pyc files.
     # check the .pyc file
-    if space.config.objspace.lonepycfiles:
+    if space.config.objspace.usepycfiles and space.config.objspace.lonepycfiles:
         pycfile = filepart + ".pyc"
         if file_exists(pycfile):
             # existing .pyc file
             return PY_COMPILED, ".pyc", "rb"
 
-    if has_so_extension(space):
+    if space.config.objspace.usemodules.cpyext:
         so_extension = get_so_extension(space)
         pydfile = filepart + so_extension
         if file_exists(pydfile):
@@ -259,10 +247,12 @@ def importhook(space, name, w_globals=None,
         fromlist_w = None
 
     rel_modulename = None
-    if (level != 0 and w_globals is not None and
-            space.isinstance_w(w_globals, space.w_dict)):
-        rel_modulename, rel_level = _get_relative_name(space, modulename, level,
-                                                       w_globals)
+    if (level != 0 and
+        w_globals is not None and
+        space.isinstance_w(w_globals, space.w_dict)):
+
+        rel_modulename, rel_level = _get_relative_name(space, modulename, level, w_globals)
+
         if rel_modulename:
             # if no level was set, ignore import errors, and
             # fall back to absolute import at the end of the
@@ -313,7 +303,7 @@ def absolute_import_with_lock(space, modulename, baselevel,
         return _absolute_import(space, modulename, baselevel,
                                 fromlist_w, tentative)
     finally:
-        lock.release_lock(silent_after_fork=True)
+        lock.release_lock()
 
 @jit.unroll_safe
 def absolute_import_try(space, modulename, baselevel, fromlist_w):
@@ -349,11 +339,6 @@ def absolute_import_try(space, modulename, baselevel, fromlist_w):
                 w_all = try_getattr(space, w_mod, space.wrap('__all__'))
                 if w_all is not None:
                     fromlist_w = space.fixedview(w_all)
-                else:
-                    fromlist_w = []
-                    # "from x import *" with x already imported and no x.__all__
-                    # always succeeds without doing more imports.  It will
-                    # just copy everything from x.__dict__ as it is now.
             for w_name in fromlist_w:
                 if try_getattr(space, w_mod, w_name) is None:
                     return None
@@ -394,8 +379,6 @@ def _absolute_import(space, modulename, baselevel, fromlist_w, tentative):
                 w_all = try_getattr(space, w_mod, w('__all__'))
                 if w_all is not None:
                     fromlist_w = space.fixedview(w_all)
-                else:
-                    fromlist_w = []
             for w_name in fromlist_w:
                 if try_getattr(space, w_mod, w_name) is None:
                     load_part(space, w_path, prefix, space.str0_w(w_name),
@@ -584,21 +567,20 @@ def add_module(space, w_name):
     return w_mod
 
 def load_c_extension(space, filename, modulename):
+    # the next line is mandatory to init cpyext
+    space.getbuiltinmodule("cpyext")
     from pypy.module.cpyext.api import load_extension_module
     load_extension_module(space, filename, modulename)
-    # NB. cpyext.api.load_extension_module() can also delegate to _cffi_backend
 
 @jit.dont_look_inside
 def load_module(space, w_modulename, find_info, reuse=False):
     if find_info is None:
         return
-
     if find_info.w_loader:
         return space.call_method(find_info.w_loader, "load_module", w_modulename)
 
     if find_info.modtype == C_BUILTIN:
-        return space.getbuiltinmodule(find_info.filename, force_init=True,
-                                      reuse=reuse)
+        return space.getbuiltinmodule(find_info.filename, force_init=True)
 
     if find_info.modtype in (PY_SOURCE, PY_COMPILED, C_EXTENSION, PKG_DIRECTORY):
         w_mod = None
@@ -619,7 +601,7 @@ def load_module(space, w_modulename, find_info, reuse=False):
         try:
             if find_info.modtype == PY_SOURCE:
                 load_source_module(
-                    space, w_modulename, w_mod,
+                    space, w_modulename, w_mod, 
                     find_info.filename, find_info.stream.readall(),
                     find_info.stream.try_to_find_file_descriptor())
                 return w_mod
@@ -639,14 +621,11 @@ def load_module(space, w_modulename, find_info, reuse=False):
                 try:
                     load_module(space, w_modulename, find_info, reuse=True)
                 finally:
-                    try:
-                        find_info.stream.close()
-                    except StreamErrors:
-                        pass
+                    find_info.stream.close()
                 # fetch the module again, in case of "substitution"
                 w_mod = check_sys_modules(space, w_modulename)
                 return w_mod
-            elif find_info.modtype == C_EXTENSION and has_so_extension(space):
+            elif find_info.modtype == C_EXTENSION and space.config.objspace.usemodules.cpyext:
                 load_c_extension(space, find_info.filename, space.str_w(w_modulename))
                 return check_sys_modules(space, w_modulename)
         except OperationError:
@@ -684,16 +663,14 @@ def load_part(space, w_path, prefix, partname, w_parent, tentative):
             if find_info:
                 stream = find_info.stream
                 if stream:
-                    try:
-                        stream.close()
-                    except StreamErrors:
-                        pass
+                    stream.close()
 
     if tentative:
         return None
     else:
         # ImportError
-        raise oefmt(space.w_ImportError, "No module named %s", modulename)
+        msg = "No module named %s"
+        raise operationerrfmt(space.w_ImportError, msg, modulename)
 
 @jit.dont_look_inside
 def reload(space, w_module):
@@ -707,8 +684,9 @@ def reload(space, w_module):
     w_modulename = space.getattr(w_module, space.wrap("__name__"))
     modulename = space.str0_w(w_modulename)
     if not space.is_w(check_sys_modules(space, w_modulename), w_module):
-        raise oefmt(space.w_ImportError,
-                    "reload(): module %s not in sys.modules", modulename)
+        raise operationerrfmt(
+            space.w_ImportError,
+            "reload(): module %s not in sys.modules", modulename)
 
     try:
         w_mod = space.reloading_modules[modulename]
@@ -725,9 +703,10 @@ def reload(space, w_module):
         if parent_name:
             w_parent = check_sys_modules_w(space, parent_name)
             if w_parent is None:
-                raise oefmt(space.w_ImportError,
-                            "reload(): parent %s not in sys.modules",
-                            parent_name)
+                raise operationerrfmt(
+                    space.w_ImportError,
+                    "reload(): parent %s not in sys.modules",
+                    parent_name)
             w_path = space.getattr(w_parent, space.wrap("__path__"))
         else:
             w_path = None
@@ -737,7 +716,8 @@ def reload(space, w_module):
 
         if not find_info:
             # ImportError
-            raise oefmt(space.w_ImportError, "No module named %s", modulename)
+            msg = "No module named %s"
+            raise operationerrfmt(space.w_ImportError, msg, modulename)
 
         try:
             try:
@@ -772,20 +752,32 @@ class ImportRLock:
         self.lockcounter = 0
 
     def lock_held_by_someone_else(self):
-        me = self.space.getexecutioncontext()   # used as thread ident
-        return self.lockowner is not None and self.lockowner is not me
+        return self.lockowner is not None and not self.lock_held()
 
-    def lock_held_by_anyone(self):
-        return self.lockowner is not None
+    def lock_held(self):
+        me = self.space.getexecutioncontext()   # used as thread ident
+        return self.lockowner is me
+
+    def _can_have_lock(self):
+        # hack: we can't have self.lock != None during translation,
+        # because prebuilt lock objects are not allowed.  In this
+        # special situation we just don't lock at all (translation is
+        # not multithreaded anyway).
+        if we_are_translated():
+            return True     # we need a lock at run-time
+        elif self.space.config.translating:
+            assert self.lock is None
+            return False
+        else:
+            return True     # in py.py
 
     def acquire_lock(self):
         # this function runs with the GIL acquired so there is no race
         # condition in the creation of the lock
         if self.lock is None:
-            try:
-                self.lock = self.space.allocate_lock()
-            except CannotHaveLock:
+            if not self._can_have_lock():
                 return
+            self.lock = self.space.allocate_lock()
         me = self.space.getexecutioncontext()   # used as thread ident
         if self.lockowner is me:
             pass    # already acquired by the current thread
@@ -796,14 +788,10 @@ class ImportRLock:
             self.lockowner = me
         self.lockcounter += 1
 
-    def release_lock(self, silent_after_fork):
+    def release_lock(self):
         me = self.space.getexecutioncontext()   # used as thread ident
         if self.lockowner is not me:
-            if self.lockowner is None and silent_after_fork:
-                # Too bad.  This situation can occur if a fork() occurred
-                # with the import lock held, and we're the child.
-                return
-            if self.lock is None:   # CannotHaveLock occurred
+            if not self._can_have_lock():
                 return
             space = self.space
             raise OperationError(space.w_RuntimeError,
@@ -841,15 +829,21 @@ def getimportlock(space):
 """
 
 # picking a magic number is a mess.  So far it works because we
-# have only one extra opcode which might or might not be present.
-# CPython leaves a gap of 10 when it increases its own magic number.
-# To avoid assigning exactly the same numbers as CPython, we can pick
-# any number between CPython + 2 and CPython + 9.  Right now,
-# default_magic = CPython + 7.
+# have only one extra opcode, which bumps the magic number by +2, and CPython
+# leaves a gap of 10 when it increases
+# its own magic number.  To avoid assigning exactly the same numbers
+# as CPython we always add a +2.  We'll have to think again when we
+# get three more new opcodes
 #
-#     CPython + 0                  -- used by CPython without the -U option
-#     CPython + 1                  -- used by CPython with the -U option
-#     CPython + 7 = default_magic  -- used by PyPy (incompatible!)
+#  * CALL_METHOD            +2
+#
+# In other words:
+#
+#     default_magic        -- used by CPython without the -U option
+#     default_magic + 1    -- used by CPython with the -U option
+#     default_magic + 2    -- used by PyPy without any extra opcode
+#     ...
+#     default_magic + 5    -- used by PyPy with both extra opcodes
 #
 from pypy.interpreter.pycode import default_magic
 MARSHAL_VERSION_FOR_PYC = 2
@@ -862,7 +856,10 @@ def get_pyc_magic(space):
             magic = __import__('imp').get_magic()
             return struct.unpack('<i', magic)[0]
 
-    return default_magic
+    result = default_magic
+    if space.config.objspace.opcodes.CALL_METHOD:
+        result += 2
+    return result
 
 
 def parse_source_module(space, pathname, source):
@@ -888,36 +885,31 @@ def load_source_module(space, w_modulename, w_mod, pathname, source, fd,
     """
     w = space.wrap
 
-    src_stat = os.fstat(fd)
-    cpathname = pathname + 'c'
-    mtime = int(src_stat[stat.ST_MTIME])
-    mode = src_stat[stat.ST_MODE]
-    stream = check_compiled_module(space, cpathname, mtime)
+    if space.config.objspace.usepycfiles:
+        src_stat = os.fstat(fd)
+        cpathname = pathname + 'c'
+        mtime = int(src_stat[stat.ST_MTIME])
+        mode = src_stat[stat.ST_MODE]
+        stream = check_compiled_module(space, cpathname, mtime)
+    else:
+        cpathname = None
+        mtime = 0
+        mode = 0
+        stream = None
 
     if stream:
         # existing and up-to-date .pyc file
         try:
             code_w = read_compiled_module(space, cpathname, stream.readall())
         finally:
-            try:
-                stream.close()
-            except StreamErrors:
-                pass
+            stream.close()
         space.setattr(w_mod, w('__file__'), w(cpathname))
     else:
         code_w = parse_source_module(space, pathname, source)
 
-        if write_pyc:
+        if space.config.objspace.usepycfiles and write_pyc:
             if not space.is_true(space.sys.get('dont_write_bytecode')):
                 write_compiled_module(space, code_w, cpathname, mode, mtime)
-
-    try:
-        optimize = space.sys.get_flag('optimize')
-    except RuntimeError:
-        # during bootstrapping
-        optimize = 0
-    if optimize >= 2:
-        code_w.remove_docstrings(space)
 
     update_code_filenames(space, code_w, pathname)
     exec_code_module(space, w_mod, code_w)
@@ -987,10 +979,7 @@ def check_compiled_module(space, pycfilename, expected_mtime):
         return stream
     except StreamErrors:
         if stream:
-            try:
-                stream.close()
-            except StreamErrors:
-                pass
+            stream.close()
         return None    # XXX! must not eat all exceptions, e.g.
                        # Out of file descriptors.
 
@@ -1000,7 +989,8 @@ def read_compiled_module(space, cpathname, strbuf):
     w_marshal = space.getbuiltinmodule('marshal')
     w_code = space.call_method(w_marshal, 'loads', space.wrap(strbuf))
     if not isinstance(w_code, Code):
-        raise oefmt(space.w_ImportError, "Non-code object in %s", cpathname)
+        raise operationerrfmt(space.w_ImportError,
+                              "Non-code object in %s", cpathname)
     return w_code
 
 @jit.dont_look_inside
@@ -1011,17 +1001,10 @@ def load_compiled_module(space, w_modulename, w_mod, cpathname, magic,
     module object.
     """
     if magic != get_pyc_magic(space):
-        raise oefmt(space.w_ImportError, "Bad magic number in %s", cpathname)
+        raise operationerrfmt(space.w_ImportError,
+                              "Bad magic number in %s", cpathname)
     #print "loading pyc file:", cpathname
     code_w = read_compiled_module(space, cpathname, source)
-    try:
-        optimize = space.sys.get_flag('optimize')
-    except RuntimeError:
-        # during bootstrapping
-        optimize = 0
-    if optimize >= 2:
-        code_w.remove_docstrings(space)
-
     exec_code_module(space, w_mod, code_w)
 
     return w_mod

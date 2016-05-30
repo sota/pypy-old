@@ -9,8 +9,13 @@ def test_echo():
     res = host.execute('echo', '42 24')
     assert res.out == '42 24\n'
 
-    res = host.execute('echo', ['42', '24'])
-    assert res.out == '42 24\n'
+    if sys.platform == 'win32':
+        # echo is a shell builtin on Windows
+        res = host.execute('cmd', ['/c', 'echo', '42', '24'])
+        assert res.out == '42 24\n'
+    else:
+        res = host.execute('echo', ['42', '24'])
+        assert res.out == '42 24\n'
 
 class TestMakefile(object):
     platform = host
@@ -56,13 +61,8 @@ class TestMakefile(object):
         finally:
             del os.environ['PYPY_LOCALBASE']
         Makefile = tmpdir.join('Makefile').read()
-        include_prefix = '-I'
-        lib_prefix = '-L'
-        if self.platform.name == 'msvc':
-            include_prefix = '/I'
-            lib_prefix = '/LIBPATH:'
-        assert 'INCLUDEDIRS = %s/foo/baz/include' % include_prefix in Makefile
-        assert 'LIBDIRS = %s/foo/baz/lib' % lib_prefix in Makefile
+        assert 'INCLUDEDIRS = -I/foo/baz/include' in Makefile
+        assert 'LIBDIRS = -L/foo/baz/lib' in Makefile
 
 class TestMaemo(TestMakefile):
     strict_on_stderr = False

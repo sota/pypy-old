@@ -1,7 +1,7 @@
 from rpython.jit.backend.arm import conditions as cond
 from rpython.jit.backend.arm import registers as reg
 from rpython.jit.backend.arm import support
-from rpython.jit.backend.arm.arch import WORD, PC_OFFSET
+from rpython.jit.backend.arm.arch import (WORD, FUNC_ALIGN, PC_OFFSET)
 from rpython.jit.backend.arm.instruction_builder import define_instructions
 from rpython.jit.backend.llsupport.asmmemmgr import BlockBuilderMixin
 from rpython.rlib.objectmodel import we_are_translated
@@ -29,8 +29,13 @@ def binary_helper_call(name):
 
 
 class AbstractARMBuilder(object):
+
     def __init__(self, arch_version=7):
         self.arch_version = arch_version
+
+    def align(self):
+        while(self.currpos() % FUNC_ALIGN != 0):
+            self.writechar(chr(0))
 
     def NOP(self):
         self.MOV_rr(0, 0)
@@ -173,30 +178,6 @@ class AbstractARMBuilder(object):
                 | (dm & 0xF))
         self.write32(instr)
 
-    def VMOV_sc(self, dest, src):
-        """move a single precision vfp register[src] to a core reg[dest]"""
-        self._VMOV_32bit(src, dest, to_arm_register=1)
-
-    def VMOV_cs(self, dest, src):
-        """move a core register[src] to a single precision vfp
-        register[dest]"""
-        self._VMOV_32bit(dest, src, to_arm_register=0)
-
-    def _VMOV_32bit(self, float_reg, core_reg, to_arm_register, cond=cond.AL):
-        """This instruction transfers the contents of a single-precision VFP
-           register to an ARM core register, or the contents of an ARM core
-           register to a single-precision VFP register.
-        """
-        instr = (cond << 28
-                | 0xE << 24
-                | to_arm_register << 20
-                | ((float_reg >> 1) & 0xF) << 16
-                | core_reg << 12
-                | 0xA << 8
-                | (float_reg & 0x1) << 7
-                | 1 << 4)
-        self.write32(instr)
-
     def VMOV_cc(self, dd, dm, cond=cond.AL):
         sz = 1  # for 64-bit mode
         instr = (cond << 28
@@ -217,16 +198,8 @@ class AbstractARMBuilder(object):
         self._VCVT(target, source, cond, 0, 1)
 
     def _VCVT(self, target, source, cond, opc2, sz):
-        # A8.6.295
-        to_integer = (opc2 >> 2) & 1
-        if to_integer:
-            D = target & 1
-            target >>= 1
-            M = (source >> 4) & 1
-        else:
-            M = source & 1
-            source >>= 1
-            D = (target >> 4) & 1
+        D = 0
+        M = 0
         op = 1
         instr = (cond << 28
                 | 0xEB8 << 16
@@ -243,8 +216,8 @@ class AbstractARMBuilder(object):
 
     def _VCVT_single_double(self, target, source, cond, sz):
         # double_to_single = (sz == '1');
-        D = target & 1 if sz else (target >> 4) & 1
-        M = (source >> 4) & 1 if sz else source & 1
+        D = 0
+        M = 0
         instr = (cond << 28
                 | 0xEB7 << 16
                 | 0xAC << 4
@@ -313,47 +286,9 @@ class AbstractARMBuilder(object):
                     | (rd & 0xF) << 12
                     | imm16 & 0xFFF)
 
-    def SXTB_rr(self, rd, rm, c=cond.AL):
-        self.write32(c << 28
-                    | 0x06AF0070
-                    | (rd & 0xF) << 12
-                    | (rm & 0xF))
-
-    def SXTH_rr(self, rd, rm, c=cond.AL):
-        self.write32(c << 28
-                    | 0x06BF0070
-                    | (rd & 0xF) << 12
-                    | (rm & 0xF))
-
-    def LDREX(self, rt, rn, c=cond.AL):
-        self.write32(c << 28
-                    | 0x01900f9f
-                    | (rt & 0xF) << 12
-                    | (rn & 0xF) << 16)
-
-    def STREX(self, rd, rt, rn, c=cond.AL):
-        """rd must not be the same register as rt or rn"""
-        self.write32(c << 28
-                    | 0x01800f90
-                    | (rt & 0xF)
-                    | (rd & 0xF) << 12
-                    | (rn & 0xF) << 16)
-
-    def DMB(self):
-        # ARMv7 only.  I guess ARMv6 CPUs cannot be used in symmetric
-        # multi-processing at all? That would make this instruction unneeded.
-        # note: 'cond' is only permitted on Thumb here, but don't
-        # write literally 0xf57ff05f, because it's larger than 31 bits
-        c = cond.AL
-        self.write32(c << 28
-                    | 0x157ff05f)
-
     DIV = binary_helper_call('int_div')
     MOD = binary_helper_call('int_mod')
     UDIV = binary_helper_call('uint_div')
-
-    FMDRR = VMOV_cr     # uh, there are synonyms?
-    FMRRD = VMOV_rc
 
     def _encode_reg_list(self, instr, regs):
         for reg in regs:
@@ -461,6 +396,21 @@ class InstrBuilder(BlockBuilderMixin, AbstractARMBuilder):
             for i in range(self.currpos()):
                 f.write(data[i])
             f.close()
+
+    # XXX remove and setup aligning in llsupport
+    def materialize(self, asmmemmgr, allblocks, gcrootmap=None):
+        size = self.get_relative_pos() + WORD
+        malloced = asmmemmgr.malloc(size, size + 7)
+        allblocks.append(malloced)
+        rawstart = malloced[0]
+        while(rawstart % FUNC_ALIGN != 0):
+            rawstart += 1
+        self.copy_to_raw_memory(rawstart)
+        if self.gcroot_markers is not None:
+            assert gcrootmap is not None
+            for pos, mark in self.gcroot_markers:
+                gcrootmap.put(rawstart + pos, mark)
+        return rawstart
 
     def clear_cache(self, addr):
         if we_are_translated():

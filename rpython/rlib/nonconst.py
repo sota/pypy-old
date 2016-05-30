@@ -4,7 +4,6 @@
 
 from rpython.rtyper.extregistry import ExtRegistryEntry
 from rpython.flowspace.model import Constant
-from rpython.annotator.model import not_const
 
 class NonConstant(object):
     def __init__(self, _constant):
@@ -34,8 +33,11 @@ class NonConstant(object):
 class EntryNonConstant(ExtRegistryEntry):
     _about_ = NonConstant
 
-    def compute_result_annotation(self, s_arg):
-        return not_const(s_arg)
+    def compute_result_annotation(self, arg):
+        if hasattr(arg, 'const'):
+            return self.bookkeeper.immutablevalue(arg.const, False)
+        else:
+            return arg
 
     def specialize_call(self, hop):
         hop.exception_cannot_occur()

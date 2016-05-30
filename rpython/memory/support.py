@@ -58,30 +58,7 @@ def get_chunk_manager(chunk_size=DEFAULT_CHUNK_SIZE, cache={}):
 
     unused_chunks = FreeList()
     cache[chunk_size] = unused_chunks, null_chunk
-
-    def partition(array, left, right):
-        last_item = array[right]
-        pivot = last_item
-        storeindex = left
-        for i in range(left, right):
-            if array[i] >= pivot:
-                array[i], array[storeindex] = array[storeindex], array[i]
-                storeindex += 1
-        # Move pivot to its final place
-        array[storeindex], array[right] = last_item, array[storeindex]
-        return storeindex
-
-    def quicksort(array, left, right):
-        # sort array[left:right+1] (i.e. bounds included)
-        if right > left:
-            pivotnewindex = partition(array, left, right)
-            quicksort(array, left, pivotnewindex - 1)
-            quicksort(array, pivotnewindex + 1, right)
-
-    def sort_chunk(chunk, size):
-        quicksort(chunk.items, 0, size - 1)
-        
-    return unused_chunks, null_chunk, sort_chunk
+    return unused_chunks, null_chunk
 
 
 def get_address_stack(chunk_size=DEFAULT_CHUNK_SIZE, cache={}):
@@ -90,7 +67,7 @@ def get_address_stack(chunk_size=DEFAULT_CHUNK_SIZE, cache={}):
     except KeyError:
         pass
 
-    unused_chunks, null_chunk, sort_chunk = get_chunk_manager(chunk_size)
+    unused_chunks, null_chunk = get_chunk_manager(chunk_size)
 
     class AddressStack(object):
         _alloc_flavor_ = "raw"
@@ -144,15 +121,13 @@ def get_address_stack(chunk_size=DEFAULT_CHUNK_SIZE, cache={}):
                 cur = next
             free_non_gc_object(self)
 
-        def length(self):
+        def _length_estimate(self):
             chunk = self.chunk
-            result = 0
             count = self.used_in_last_chunk
             while chunk:
-                result += count
                 chunk = chunk.next
-                count = chunk_size
-            return result
+                count += chunk_size
+            return count
 
         def foreach(self, callback, arg):
             """Invoke 'callback(address, arg)' for all addresses in the stack.
@@ -169,7 +144,7 @@ def get_address_stack(chunk_size=DEFAULT_CHUNK_SIZE, cache={}):
         foreach._annspecialcase_ = 'specialize:arg(1)'
 
         def stack2dict(self):
-            result = AddressDict(self.length())
+            result = AddressDict(self._length_estimate())
             self.foreach(_add_in_dict, result)
             return result
 
@@ -196,13 +171,6 @@ def get_address_stack(chunk_size=DEFAULT_CHUNK_SIZE, cache={}):
                 next = chunk.items[count]
                 chunk.items[count] = got
                 got = next
-
-        def sort(self):
-            """Sorts the items in the AddressStack.  They must not be more
-            than one chunk of them.  This results in a **reverse** order,
-            so that the first pop()ped items are the smallest ones."""
-            ll_assert(self.chunk.next == null_chunk, "too big for sorting")
-            sort_chunk(self.chunk, self.used_in_last_chunk)
 
     cache[chunk_size] = AddressStack
     return AddressStack

@@ -39,7 +39,7 @@ class SearchableSet(object):
         return len(self._items)
 
 class Item(object):
-    def __init__(self, name, kind, subitems=[]):
+    def __init__(self, name, kind, subitems=None):
         self.name = name
         self.kind = kind
         self.subitems = subitems
@@ -71,21 +71,12 @@ def find_numpy_items(python, modname="numpy", attr=None):
     lines = subprocess.check_output(args).splitlines()
     items = SearchableSet()
     for line in lines:
-        # since calling a function in "search.py" may have printed side effects,
-        # make sure the line begins with '[UT] : '
-        if not (line[:1] in KINDS.values() and line[1:4] == ' : '):
-            continue
         kind, name = line.split(" : ", 1)
-        subitems = []
+        subitems = None
         if kind == KINDS["TYPE"] and name in SPECIAL_NAMES and attr is None:
             subitems = find_numpy_items(python, modname, name)
         items.add(Item(name, kind, subitems))
     return items
-
-def get_version_str(python):
-    args = [python, '-c', 'import sys; print sys.version']
-    lines = subprocess.check_output(args).splitlines()
-    return lines[0]
 
 def split(lst):
     SPLIT = 5
@@ -97,21 +88,11 @@ def split(lst):
                 l[i].append(lst[k * lgt + i])
     return l
 
-SPECIAL_NAMES = ["ndarray", "dtype", "generic", "flatiter", "ufunc",
-                 "nditer"]
+SPECIAL_NAMES = ["ndarray", "dtype", "generic", "flatiter"]
 
 def main(argv):
-    if 'help' in argv[1]:
-        print '\nusage: python', os.path.dirname(__file__), '<path-to-pypy> [<outfile.html>] [<path-to-cpython-with-numpy>]'
-        print '       path-to-cpython-with-numpy defaults to "/usr/bin/python"\n'
-        return 
-    if len(argv) < 4:
-        cpython = '/usr/bin/python'
-    else:
-        cpython = argv[3]
-    cpy_items = find_numpy_items(cpython)
-    pypy_items = find_numpy_items(argv[1])
-    ver = get_version_str(argv[1])
+    cpy_items = find_numpy_items("/usr/bin/python")
+    pypy_items = find_numpy_items(argv[1], "numpypy")
     all_items = []
 
     msg = "{:d}/{:d} names".format(len(pypy_items), len(cpy_items)) + " "
@@ -132,8 +113,7 @@ def main(argv):
     env = jinja2.Environment(
         loader=jinja2.FileSystemLoader(os.path.dirname(__file__))
     )
-    html = env.get_template("page.html").render(all_items=split(sorted(all_items)),
-             msg=msg, ver=ver)
+    html = env.get_template("page.html").render(all_items=split(sorted(all_items)), msg=msg)
     if len(argv) > 2:
         with open(argv[2], 'w') as f:
             f.write(html.encode("utf-8"))

@@ -60,6 +60,7 @@ class AppTestFile(object):
         finally:
             f.close()
 
+
     def test_fdopen(self):
         import os
         f = self.file(self.temppath, "w")
@@ -252,56 +253,7 @@ Delivered-To: gkj@sundance.gregorykjohnson.com'''
         assert os.strerror(errno.EBADF) in g.getvalue()
         # the following is a "nice to have" feature that CPython doesn't have
         if '__pypy__' in sys.builtin_module_names:
-            assert repr(self.temppath) in g.getvalue()
-
-    def test_truncate(self):
-        f = self.file(self.temppath, "w")
-        f.write("foo")
-        f.close()
-        with self.file(self.temppath, 'r') as f:
-            raises(IOError, f.truncate, 100)
-
-    def test_write_full(self):
-        try:
-            f = self.file('/dev/full', 'w', 1)
-        except IOError:
-            skip("requires '/dev/full'")
-        try:
-            f.write('hello')
-            raises(IOError, f.write, '\n')
-            f.write('zzz')
-            raises(IOError, f.flush)
-            f.flush()
-        finally:
-            f.close()
-
-    def test_ignore_ioerror_in_readall_if_nonempty_result(self):
-        # this is the behavior of regular files in CPython 2.7, as
-        # well as of _io.FileIO at least in CPython 3.3.  This is
-        # *not* the behavior of _io.FileIO in CPython 3.4 or 3.5;
-        # see CPython's issue #21090.
-        import sys
-        try:
-            from posix import openpty, fdopen, write, close
-        except ImportError:
-            skip('no openpty on this platform')
-        read_fd, write_fd = openpty()
-        write(write_fd, 'Abc\n')
-        close(write_fd)
-        f = fdopen(read_fd)
-        # behavior on Linux: f.read() returns 'Abc\r\n', then the next time
-        # it raises IOError.  Behavior on OS/X (Python 2.7.5): the close()
-        # above threw away the buffer, and f.read() always returns ''.
-        if sys.platform.startswith('linux'):
-            s = f.read()
-            assert s == 'Abc\r\n'
-            raises(IOError, f.read)
-        else:
-            s = f.read()
-            assert s == ''
-            s = f.read()
-            assert s == ''
-        f.close()
+            assert self.temppath in g.getvalue()
 
 
 class AppTestNonblocking(object):
@@ -312,34 +264,28 @@ class AppTestNonblocking(object):
 
         if cls.runappdirect:
             py.test.skip("works with internals of _file impl on py.py")
+        state = [0]
         def read(fd, n=None):
-            if fd != 424242:
+            if fd != 42:
                 return cls.old_read(fd, n)
-            if cls.state == 0:
-                cls.state += 1
+            if state[0] == 0:
+                state[0] += 1
                 return "xyz"
-            if cls.state < 3:
-                cls.state += 1
+            if state[0] < 3:
+                state[0] += 1
                 raise OSError(errno.EAGAIN, "xyz")
             return ''
         os.read = read
         stdin = W_File(cls.space)
-        stdin.file_fdopen(424242, 'rb', 1)
+        stdin.file_fdopen(42, 'rb', 1)
         stdin.name = '<stdin>'
         cls.w_stream = stdin
-
-    def setup_method(self, meth):
-        self.__class__.state = 0
 
     def teardown_class(cls):
         os.read = cls.old_read
 
-    def test_nonblocking_file_all(self):
+    def test_nonblocking_file(self):
         res = self.stream.read()
-        assert res == 'xyz'
-
-    def test_nonblocking_file_max(self):
-        res = self.stream.read(100)
         assert res == 'xyz'
 
 class AppTestConcurrency(object):
@@ -438,24 +384,6 @@ class AppTestConcurrency(object):
         else:
             raise Exception("time out")
         print 'Passed.'
-
-    def test_seek_from_cur_backwards_off_end(self):
-        import os
-
-        f = self.file(self.temppath, "w+b")
-        f.write('123456789x12345678><123456789\n')
-
-        f.seek(0, os.SEEK_END)
-        f.seek(-25, os.SEEK_CUR)
-        f.read(25)
-        f.seek(-25, os.SEEK_CUR)
-        try:
-            f.seek(-25, os.SEEK_CUR)
-        except IOError:
-            pass
-        else:
-            raise AssertionError("Didn't raise IOError")
-        assert f.tell() == 5
 
 
 class AppTestFile25:

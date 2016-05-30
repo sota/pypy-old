@@ -53,24 +53,10 @@ class SignatureBuilder(object):
 
 #________________________________________________________________
 
-
-class Unwrapper(object):
-    """A base class for custom unwrap_spec items.
-
-    Subclasses must override unwrap().
-    """
-    def _freeze_(self):
-        return True
-
-    def unwrap(self, space, w_value):
-        """NOT_RPYTHON"""
-        raise NotImplementedError
-
-
 class UnwrapSpecRecipe(object):
     "NOT_RPYTHON"
 
-    bases_order = [W_Root, ObjSpace, Arguments, Unwrapper, object]
+    bases_order = [W_Root, ObjSpace, Arguments, object]
 
     def dispatch(self, el, *args):
         if isinstance(el, str):
@@ -161,16 +147,7 @@ class UnwrapSpec_Check(UnwrapSpecRecipe):
     def visit_c_nonnegint(self, el, app_sig):
         self.checked_space_method(el, app_sig)
 
-    def visit_c_short(self, el, app_sig):
-        self.checked_space_method(el, app_sig)
-
-    def visit_c_ushort(self, el, app_sig):
-        self.checked_space_method(el, app_sig)
-
     def visit_truncatedint_w(self, el, app_sig):
-        self.checked_space_method(el, app_sig)
-
-    def visit__Unwrapper(self, el, app_sig):
         self.checked_space_method(el, app_sig)
 
     def visit__ObjSpace(self, el, app_sig):
@@ -232,10 +209,6 @@ class UnwrapSpec_EmitRun(UnwrapSpecEmit):
         self.run_args.append("space.descr_self_interp_w(%s, %s)" %
                              (self.use(typ), self.scopenext()))
 
-    def visit__Unwrapper(self, typ):
-        self.run_args.append("%s().unwrap(space, %s)" %
-                             (self.use(typ), self.scopenext()))
-
     def visit__ObjSpace(self, el):
         self.run_args.append('space')
 
@@ -287,12 +260,6 @@ class UnwrapSpec_EmitRun(UnwrapSpecEmit):
 
     def visit_c_nonnegint(self, typ):
         self.run_args.append("space.c_nonnegint_w(%s)" % (self.scopenext(),))
-
-    def visit_c_short(self, typ):
-        self.run_args.append("space.c_short_w(%s)" % (self.scopenext(),))
-
-    def visit_c_ushort(self, typ):
-        self.run_args.append("space.c_ushort_w(%s)" % (self.scopenext(),))
 
     def visit_truncatedint_w(self, typ):
         self.run_args.append("space.truncatedint_w(%s)" % (self.scopenext(),))
@@ -379,12 +346,8 @@ class UnwrapSpec_FastFunc_Unwrap(UnwrapSpecEmit):
         self.unwrap.append("space.descr_self_interp_w(%s, %s)" %
                            (self.use(typ), self.nextarg()))
 
-    def visit__Unwrapper(self, typ):
-        self.unwrap.append("%s().unwrap(space, %s)" %
-                           (self.use(typ), self.nextarg()))
-
     def visit__ObjSpace(self, el):
-        if self.finger > 1:
+        if self.finger != 0:
             raise FastFuncNotSupported
         self.unwrap.append("space")
 
@@ -434,12 +397,6 @@ class UnwrapSpec_FastFunc_Unwrap(UnwrapSpecEmit):
     def visit_c_nonnegint(self, typ):
         self.unwrap.append("space.c_nonnegint_w(%s)" % (self.nextarg(),))
 
-    def visit_c_short(self, typ):
-        self.unwrap.append("space.c_short_w(%s)" % (self.nextarg(),))
-
-    def visit_c_ushort(self, typ):
-        self.unwrap.append("space.c_ushort_w(%s)" % (self.nextarg(),))
-
     def visit_truncatedint_w(self, typ):
         self.unwrap.append("space.truncatedint_w(%s)" % (self.nextarg(),))
 
@@ -457,21 +414,21 @@ class UnwrapSpec_FastFunc_Unwrap(UnwrapSpecEmit):
                 mod = ""
             if mod == 'pypy.interpreter.astcompiler.ast':
                 raise FastFuncNotSupported
-            #if (not mod.startswith('pypy.module.__builtin__') and
-            #    not mod.startswith('pypy.module.sys') and
-            #    not mod.startswith('pypy.module.math')):
-            #    if not func.__name__.startswith('descr'):
-            #        raise FastFuncNotSupported
+            if (not mod.startswith('pypy.module.__builtin__') and
+                not mod.startswith('pypy.module.sys') and
+                not mod.startswith('pypy.module.math')):
+                if not func.__name__.startswith('descr'):
+                    raise FastFuncNotSupported
             d = {}
             unwrap_info.miniglobals['func'] = func
             source = """if 1:
                 def fastfunc_%s_%d(%s):
                     return func(%s)
-                \n""" % (func.__name__.replace('-', '_'), narg,
+                \n""" % (func.__name__, narg,
                          ', '.join(args),
                          ', '.join(unwrap_info.unwrap))
             exec compile2(source) in unwrap_info.miniglobals, d
-            fastfunc = d['fastfunc_%s_%d' % (func.__name__.replace('-', '_'), narg)]
+            fastfunc = d['fastfunc_%s_%d' % (func.__name__, narg)]
         return narg, fastfunc
     make_fastfunc = staticmethod(make_fastfunc)
 
@@ -563,13 +520,12 @@ class BuiltinCode(Code):
     # When a BuiltinCode is stored in a Function object,
     # you get the functionality of CPython's built-in function type.
 
-    def __init__(self, func, unwrap_spec=None, self_type=None,
-                 descrmismatch=None, doc=None):
+    def __init__(self, func, unwrap_spec=None, self_type=None, descrmismatch=None):
         "NOT_RPYTHON"
         # 'implfunc' is the interpreter-level function.
         # Note that this uses a lot of (construction-time) introspection.
         Code.__init__(self, func.__name__)
-        self.docstring = doc or func.__doc__
+        self.docstring = func.__doc__
 
         self.identifier = "%s-%s-%s" % (func.__module__, func.__name__,
                                         getattr(self_type, '__name__', '*'))
@@ -635,17 +591,6 @@ class BuiltinCode(Code):
                 elif unwrap_spec == [ObjSpace, W_Root, Arguments]:
                     self.__class__ = BuiltinCodePassThroughArguments1
                     self.func__args__ = func
-                elif unwrap_spec == [self_type, ObjSpace, Arguments]:
-                    self.__class__ = BuiltinCodePassThroughArguments1
-                    miniglobals = {'func': func, 'self_type': self_type}
-                    d = {}
-                    source = """if 1:
-                        def _call(space, w_obj, args):
-                            self = space.descr_self_interp_w(self_type, w_obj)
-                            return func(self, space, args)
-                        \n"""
-                    exec compile2(source) in miniglobals, d
-                    self.func__args__ = d['_call']
             else:
                 self.__class__ = globals()['BuiltinCode%d' % arity]
                 setattr(self, 'fastfunc_%d' % arity, fastfunc)
@@ -858,25 +803,24 @@ def interpindirect2app(unbound_meth, unwrap_spec=None):
     args = inspect.getargs(func.func_code)
     if args.varargs or args.keywords:
         raise TypeError("Varargs and keywords not supported in unwrap_spec")
+    assert not func.func_defaults
     argspec = ', '.join([arg for arg in args.args[1:]])
     func_code = py.code.Source("""
-    def f(self, %(args)s):
-        return self.%(func_name)s(%(args)s)
+    def f(w_obj, %(args)s):
+        return w_obj.%(func_name)s(%(args)s)
     """ % {'args': argspec, 'func_name': func.func_name})
     d = {}
     exec func_code.compile() in d
     f = d['f']
-    f.func_defaults = unbound_meth.func_defaults
-    f.func_doc = unbound_meth.func_doc
     f.__module__ = func.__module__
     # necessary for unique identifiers for pickling
     f.func_name = func.func_name
     if unwrap_spec is None:
-        unwrap_spec = getattr(unbound_meth, 'unwrap_spec', {})
+        unwrap_spec = {}
     else:
         assert isinstance(unwrap_spec, dict)
         unwrap_spec = unwrap_spec.copy()
-    unwrap_spec['self'] = base_cls
+    unwrap_spec['w_obj'] = base_cls
     return interp2app(globals()['unwrap_spec'](**unwrap_spec)(f))
 
 class interp2app(W_Root):
@@ -887,7 +831,7 @@ class interp2app(W_Root):
     instancecache = {}
 
     def __new__(cls, f, app_name=None, unwrap_spec=None, descrmismatch=None,
-                as_classmethod=False, doc=None):
+                as_classmethod=False):
 
         "NOT_RPYTHON"
         # f must be a function whose name does NOT start with 'app_'
@@ -916,8 +860,7 @@ class interp2app(W_Root):
         cls.instancecache[key] = self
         self._code = BuiltinCode(f, unwrap_spec=unwrap_spec,
                                  self_type=self_type,
-                                 descrmismatch=descrmismatch,
-                                 doc=doc)
+                                 descrmismatch=descrmismatch)
         self.__name__ = f.func_name
         self.name = app_name
         self.as_classmethod = as_classmethod
@@ -940,7 +883,7 @@ class interp2app(W_Root):
                     "use unwrap_spec(...=WrappedDefault(default))" % (
                     self._code.identifier, name, defaultval))
                 defs_w.append(None)
-            elif name != '__args__' and name != 'args_w':
+            else:
                 defs_w.append(space.wrap(defaultval))
         if self._code._unwrap_spec:
             UNDEFINED = object()
@@ -1119,9 +1062,7 @@ def appdef(source, applevel=ApplevelClass, filename=None):
                            return x+y
                     ''')
     """
-    prefix = ""
     if not isinstance(source, str):
-        flags = source.__code__.co_flags
         source = py.std.inspect.getsource(source).lstrip()
         while source.startswith(('@py.test.mark.', '@pytest.mark.')):
             # these decorators are known to return the same function
@@ -1130,21 +1071,12 @@ def appdef(source, applevel=ApplevelClass, filename=None):
             source = source[source.find('\n') + 1:].lstrip()
         assert source.startswith("def "), "can only transform functions"
         source = source[4:]
-        import __future__
-        if flags & __future__.CO_FUTURE_DIVISION:
-            prefix += "from __future__ import division\n"
-        if flags & __future__.CO_FUTURE_ABSOLUTE_IMPORT:
-            prefix += "from __future__ import absolute_import\n"
-        if flags & __future__.CO_FUTURE_PRINT_FUNCTION:
-            prefix += "from __future__ import print_function\n"
-        if flags & __future__.CO_FUTURE_UNICODE_LITERALS:
-            prefix += "from __future__ import unicode_literals\n"
     p = source.find('(')
     assert p >= 0
     funcname = source[:p].strip()
     source = source[p:]
     assert source.strip()
-    funcsource = prefix + "def %s%s\n" % (funcname, source)
+    funcsource = "def %s%s\n" % (funcname, source)
     #for debugging of wrong source code: py.std.parser.suite(funcsource)
     a = applevel(funcsource, filename=filename)
     return a.interphook(funcname)

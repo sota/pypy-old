@@ -3,7 +3,7 @@ from rpython.rtyper.lltypesystem import rffi, lltype
 from pypy.module.cpyext.api import (cpython_api, CANNOT_FAIL, Py_ssize_t,
                                     build_type_checkers)
 from pypy.module.cpyext.pyerrors import PyErr_BadInternalCall
-from pypy.module.cpyext.pyobject import Py_DecRef, PyObject
+from pypy.module.cpyext.pyobject import Py_DecRef, PyObject, borrow_from
 from pypy.objspace.std.listobject import W_ListObject
 from pypy.interpreter.error import OperationError
 
@@ -38,7 +38,7 @@ def PyList_SetItem(space, w_list, index, w_item):
     w_list.setitem(index, w_item)
     return 0
 
-@cpython_api([PyObject, Py_ssize_t], PyObject, result_borrowed=True)
+@cpython_api([PyObject, Py_ssize_t], PyObject)
 def PyList_GetItem(space, w_list, index):
     """Return the object at position pos in the list pointed to by p.  The
     position must be positive, indexing from the end of the list is not
@@ -46,13 +46,11 @@ def PyList_GetItem(space, w_list, index):
     IndexError exception."""
     if not isinstance(w_list, W_ListObject):
         PyErr_BadInternalCall(space)
-    if index < 0 or index >= w_list.length():
+    wrappeditems = w_list.getitems()
+    if index < 0 or index >= len(wrappeditems):
         raise OperationError(space.w_IndexError, space.wrap(
             "list index out of range"))
-    w_list.ensure_object_strategy()  # make sure we can return a borrowed obj
-    # XXX ^^^ how does this interact with CPyListStrategy?
-    w_res = w_list.getitem(index)
-    return w_res     # borrowed ref
+    return borrow_from(w_list, wrappeditems[index])
 
 
 @cpython_api([PyObject, PyObject], rffi.INT_real, error=-1)
@@ -67,7 +65,7 @@ def PyList_Insert(space, w_list, index, w_item):
     """Insert the item item into list list in front of index index.  Return
     0 if successful; return -1 and set an exception if unsuccessful.
     Analogous to list.insert(index, item)."""
-    space.call_method(space.w_list, "insert", w_list, space.wrap(index), w_item)
+    space.call_method(w_list, "insert", space.wrap(index), w_item)
     return 0
 
 @cpython_api([PyObject], Py_ssize_t, error=CANNOT_FAIL)
@@ -100,7 +98,7 @@ def PyList_Sort(space, w_list):
     failure.  This is equivalent to list.sort()."""
     if not isinstance(w_list, W_ListObject):
         PyErr_BadInternalCall(space)
-    space.call_method(space.w_list, "sort", w_list)
+    space.call_method(w_list, "sort")
     return 0
 
 @cpython_api([PyObject], rffi.INT_real, error=-1)
@@ -109,7 +107,7 @@ def PyList_Reverse(space, w_list):
     failure.  This is the equivalent of list.reverse()."""
     if not isinstance(w_list, W_ListObject):
         PyErr_BadInternalCall(space)
-    space.call_method(space.w_list, "reverse", w_list)
+    space.call_method(w_list, "reverse")
     return 0
 
 @cpython_api([PyObject, Py_ssize_t, Py_ssize_t], PyObject)

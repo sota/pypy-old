@@ -8,7 +8,7 @@ def example(d):
         d['key'] = 'value'
 
 def test_example():
-    t = TranslationContext()
+    t = TranslationContext(simplifying=True)
     t.buildflowgraph(example)
     # this specific example triggered a bug in simplify.py
     #t.view()

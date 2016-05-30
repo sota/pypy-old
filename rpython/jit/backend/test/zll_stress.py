@@ -17,6 +17,6 @@ def do_test_stress(piece):
     cpu = CPU(None, None)
     cpu.setup_once()
     r = Random()
-    r.jumpahead(piece*99999999)
+    r.jumpahead(piece*per_piece)
     for i in range(piece*per_piece, (piece+1)*per_piece):
         check_random_function(cpu, LLtypeOperationBuilder, r, i, total_iterations)

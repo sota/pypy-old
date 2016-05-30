@@ -2,10 +2,8 @@ from __future__ import with_statement
 
 import signal as cpy_signal
 import sys
-import os
-import errno
 
-from pypy.interpreter.error import OperationError, exception_from_saved_errno
+from pypy.interpreter.error import OperationError, exception_from_errno
 from pypy.interpreter.executioncontext import (AsyncAction, AbstractActionFlag,
     PeriodicAsyncAction)
 from pypy.interpreter.gateway import unwrap_spec
@@ -63,35 +61,25 @@ class CheckSignalAction(PeriodicAsyncAction):
         AsyncAction.__init__(self, space)
         self.pending_signal = -1
         self.fire_in_another_thread = False
-        #
-        @rgc.no_collect
-        def _after_thread_switch():
-            if self.fire_in_another_thread:
-                if self.space.threadlocals.signals_enabled():
-                    self.fire_in_another_thread = False
-                    self.space.actionflag.rearm_ticker()
-                    # this occurs when we just switched to the main thread
-                    # and there is a signal pending: we force the ticker to
-                    # -1, which should ensure perform() is called quickly.
-        self._after_thread_switch = _after_thread_switch
-        # ^^^ so that 'self._after_thread_switch' can be annotated as a
-        # constant
+        if self.space.config.objspace.usemodules.thread:
+            from pypy.module.thread import gil
+            gil.after_thread_switch = self._after_thread_switch
 
-    def startup(self, space):
-        # this is translated
-        if space.config.objspace.usemodules.thread:
-            from rpython.rlib import rgil
-            rgil.invoke_after_thread_switch(self._after_thread_switch)
-
-    def perform(self, executioncontext, frame):
-        self._poll_for_signals()
+    @rgc.no_collect
+    def _after_thread_switch(self):
+        if self.fire_in_another_thread:
+            if self.space.threadlocals.signals_enabled():
+                self.fire_in_another_thread = False
+                self.space.actionflag.rearm_ticker()
+                # this occurs when we just switched to the main thread
+                # and there is a signal pending: we force the ticker to
+                # -1, which should ensure perform() is called quickly.
 
     @jit.dont_look_inside
-    def _poll_for_signals(self):
+    def perform(self, executioncontext, frame):
         # Poll for the next signal, if any
         n = self.pending_signal
-        if n < 0:
-            n = pypysig_poll()
+        if n < 0: n = pypysig_poll()
         while n >= 0:
             if self.space.threadlocals.signals_enabled():
                 # If we are in the main thread, report the signal now,
@@ -99,8 +87,7 @@ class CheckSignalAction(PeriodicAsyncAction):
                 self.pending_signal = -1
                 report_signal(self.space, n)
                 n = self.pending_signal
-                if n < 0:
-                    n = pypysig_poll()
+                if n < 0: n = pypysig_poll()
             else:
                 # Otherwise, arrange for perform() to be called again
                 # after we switch to the main thread.
@@ -249,12 +236,6 @@ def set_wakeup_fd(space, fd):
             space.w_ValueError,
             space.wrap("set_wakeup_fd only works in main thread "
                        "or with __pypy__.thread.enable_signals()"))
-    if fd != -1:
-        try:
-            os.fstat(fd)
-        except OSError, e:
-            if e.errno == errno.EBADF:
-                raise OperationError(space.w_ValueError, space.wrap("invalid fd"))
     old_fd = pypysig_set_wakeup_fd(fd)
     return space.wrap(intmask(old_fd))
 
@@ -264,7 +245,7 @@ def set_wakeup_fd(space, fd):
 def siginterrupt(space, signum, flag):
     check_signum_in_range(space, signum)
     if rffi.cast(lltype.Signed, c_siginterrupt(signum, flag)) < 0:
-        errno = rposix.get_saved_errno()
+        errno = rposix.get_errno()
         raise OperationError(space.w_RuntimeError, space.wrap(errno))
 
 
@@ -317,7 +298,7 @@ def setitimer(space, which, first, interval=0):
 
             ret = c_setitimer(which, new, old)
             if ret != 0:
-                raise exception_from_saved_errno(space, get_itimer_error(space))
+                raise exception_from_errno(space, get_itimer_error(space))
 
             return itimer_retval(space, old[0])
 

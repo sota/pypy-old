@@ -663,7 +663,7 @@ xyzabc
 
 try:
     u = eval("u'\N{LATIN CAPITAL LETTER A WITH DIAERESIS}'")
-except (SyntaxError, ValueError):
+except SyntaxError:
     pass
 else:
     tests.extend([

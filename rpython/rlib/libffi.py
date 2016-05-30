@@ -9,8 +9,7 @@ from rpython.rlib.rarithmetic import intmask, r_uint, r_singlefloat, r_longlong
 from rpython.rlib import jit
 from rpython.rlib import clibffi
 from rpython.rlib.clibffi import FUNCFLAG_CDECL, FUNCFLAG_STDCALL, \
-        AbstractFuncPtr, push_arg_as_ffiptr, c_ffi_call, FFI_TYPE_STRUCT, \
-        adjust_return_size
+        AbstractFuncPtr, push_arg_as_ffiptr, c_ffi_call, FFI_TYPE_STRUCT
 from rpython.rlib.rdynload import dlopen, dlclose, dlsym, dlsym_byordinal
 from rpython.rlib.rdynload import DLLHANDLE
 
@@ -110,11 +109,11 @@ IS_32_BIT = (r_uint.BITS == 32)
 def _check_type(TYPE):
     if isinstance(TYPE, lltype.Ptr):
         if TYPE.TO._gckind != 'raw':
-            raise TypeError("Can only push raw values to C, not 'gc'")
+            raise TypeError, "Can only push raw values to C, not 'gc'"
         # XXX probably we should recursively check for struct fields here,
         # lets just ignore that for now
         if isinstance(TYPE.TO, lltype.Array) and 'nolength' not in TYPE.TO._hints:
-            raise TypeError("Can only push to C arrays without length info")
+            raise TypeError, "Can only push to C arrays without length info"
 
 
 class ArgChain(object):
@@ -137,7 +136,7 @@ class ArgChain(object):
         elif TYPE is rffi.FLOAT:
             cls = SingleFloatArg
         else:
-            raise TypeError('Unsupported argument type: %s' % TYPE)
+            raise TypeError, 'Unsupported argument type: %s' % TYPE
         self._append(cls(val))
         return self
 
@@ -248,8 +247,8 @@ class Func(AbstractFuncPtr):
         # assuming that argchain is completely virtual.
         self = jit.promote(self)
         if argchain.numargs != len(self.argtypes):
-            raise TypeError('Wrong number of arguments: %d expected, got %d' %
-                (len(self.argtypes), argchain.numargs))
+            raise TypeError, 'Wrong number of arguments: %d expected, got %d' %\
+                (len(self.argtypes), argchain.numargs)
         ll_args = self._prepare()
         i = 0
         arg = argchain.first
@@ -274,7 +273,7 @@ class Func(AbstractFuncPtr):
         elif RESULT is lltype.Void:
             return self._do_call_void(self.funcsym, ll_args)
         else:
-            raise TypeError('Unsupported result type: %s' % RESULT)
+            raise TypeError, 'Unsupported result type: %s' % RESULT
         #
         return rffi.cast(RESULT, res)
 
@@ -370,8 +369,8 @@ class Func(AbstractFuncPtr):
         # XXX: check len(args)?
         ll_result = lltype.nullptr(rffi.CCHARP.TO)
         if self.restype != types.void:
-            size = adjust_return_size(intmask(self.restype.c_size))
-            ll_result = lltype.malloc(rffi.CCHARP.TO, size,
+            ll_result = lltype.malloc(rffi.CCHARP.TO,
+                                      intmask(self.restype.c_size),
                                       flavor='raw')
         ffires = c_ffi_call(self.ll_cif,
                             self.funcsym,
@@ -431,7 +430,7 @@ class CDLL(object):
 
     def getpointer_by_ordinal(self, name, argtypes, restype,
                               flags=FUNCFLAG_CDECL):
-        return Func('by_ordinal', argtypes, restype,
+        return Func('by_ordinal', argtypes, restype, 
                     dlsym_byordinal(self.lib, name),
                     flags=flags, keepalive=self)
     def getaddressindll(self, name):

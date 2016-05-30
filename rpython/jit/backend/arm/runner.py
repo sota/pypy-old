@@ -20,18 +20,16 @@ class AbstractARMCPU(AbstractLLCPU):
     IS_64_BIT = False
 
     supports_floats = True
-    supports_longlong = True
-    supports_singlefloats = True
+    supports_longlong = False # XXX requires an implementation of
+                              # read_timestamp that works in user mode
+    supports_singlefloats = not detect_hardfloat()
+    can_inline_varsize_malloc = True
 
     from rpython.jit.backend.arm.arch import JITFRAME_FIXED_SIZE
     all_reg_indexes = range(len(all_regs))
     gen_regs = all_regs
     float_regs = VFPRegisterManager.all_regs
     frame_reg = fp
-
-    # can an ISA instruction handle a factor to the offset?
-    # XXX should be: tuple(1 << i for i in range(31))
-    load_supported_factors = (1,)
 
     def __init__(self, rtyper, stats, opts=None, translate_support_code=False,
                  gcdescr=None):
@@ -42,25 +40,40 @@ class AbstractARMCPU(AbstractLLCPU):
     def set_debug(self, flag):
         return self.assembler.set_debug(flag)
 
+    def get_failargs_limit(self):
+        if self.opts is not None:
+            return self.opts.failargs_limit
+        else:
+            return 1000
+
     def setup(self):
         self.assembler = AssemblerARM(self, self.translate_support_code)
 
     def setup_once(self):
         self.cpuinfo.arch_version = detect_arch_version()
         self.cpuinfo.hf_abi = detect_hardfloat()
-        #self.codemap.setup()
         self.assembler.setup_once()
 
     def finish_once(self):
         self.assembler.finish_once()
 
+    def compile_loop(self, inputargs, operations, looptoken,
+                                                    log=True, name=''):
+        return self.assembler.assemble_loop(name, inputargs, operations,
+                                                    looptoken, log=log)
+
     def compile_bridge(self, faildescr, inputargs, operations,
-                       original_loop_token, log=True, logger=None):
+                                       original_loop_token, log=True):
         clt = original_loop_token.compiled_loop_token
         clt.compiling_a_bridge()
-        return self.assembler.assemble_bridge(logger, faildescr, inputargs,
-                                              operations,
-                                              original_loop_token, log=log)
+        return self.assembler.assemble_bridge(faildescr, inputargs, operations,
+                                                original_loop_token, log=log)
+
+    def clear_latest_values(self, count):
+        setitem = self.assembler.fail_boxes_ptr.setitem
+        null = lltype.nullptr(llmemory.GCREF.TO)
+        for index in range(count):
+            setitem(index, null)
 
     def cast_ptr_to_int(x):
         adr = llmemory.cast_ptr_to_adr(x)

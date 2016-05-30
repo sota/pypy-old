@@ -1,7 +1,7 @@
-from pypy.interpreter.typedef import TypeDef
+from pypy.objspace.std.stdtypedef import StdTypeDef
 
 
-basestring_typedef = TypeDef("basestring",
+basestring_typedef = StdTypeDef("basestring",
     __doc__ =  ("basestring cannot be instantiated; "
                 "it is the base for str and unicode.")
     )

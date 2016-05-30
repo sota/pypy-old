@@ -91,10 +91,6 @@ class AppTestAppSysTests:
         assert isinstance(sys.__stderr__, file)
         assert isinstance(sys.__stdin__, file)
 
-        #assert sys.__stdin__.name == "<stdin>"
-        #assert sys.__stdout__.name == "<stdout>"
-        #assert sys.__stderr__.name == "<stderr>"
-
         if self.appdirect and not isinstance(sys.stdin, file):
             return
 
@@ -126,21 +122,6 @@ class AppTestAppSysTests:
         li = sys.long_info
         assert isinstance(li.bits_per_digit, int)
         assert isinstance(li.sizeof_digit, int)
-
-    def test_sys_exit(self):
-        import sys
-        exc = raises(SystemExit, sys.exit)
-        assert exc.value.code is None
-
-        exc = raises(SystemExit, sys.exit, 0)
-        assert exc.value.code == 0
-
-        exc = raises(SystemExit, sys.exit, 1)
-        assert exc.value.code == 1
-
-        exc = raises(SystemExit, sys.exit, (1, 2, 3))
-        assert exc.value.code == (1, 2, 3)
-
 
 class AppTestSysModulePortedFromCPython:
 
@@ -225,36 +206,6 @@ class AppTestSysModulePortedFromCPython:
             sys.stderr = savestderr
 
         assert err.getvalue() == "ValueError: 42\n"
-
-    def test_original_excepthook_pypy_encoding(self):
-        import sys
-        if '__pypy__' not in sys.builtin_module_names:
-            skip("only on PyPy")
-        savestderr = sys.stderr
-        class MyStringIO(object):
-            def __init__(self):
-                self.output = []
-            def write(self, s):
-                assert isinstance(s, str)
-                self.output.append(s)
-            def getvalue(self):
-                return ''.join(self.output)
-
-        for input, expectedoutput in [(u"\u013a", "\xe5"),
-                                      (u"\u1111", "\\u1111")]:
-            err = MyStringIO()
-            err.encoding = 'iso-8859-2'
-            sys.stderr = err
-
-            eh = sys.__excepthook__
-            try:
-                raise ValueError(input)
-            except ValueError, exc:
-                eh(*sys.exc_info())
-
-            sys.stderr = savestderr
-            print repr(err.getvalue())
-            assert err.getvalue().endswith("ValueError: %s\n" % expectedoutput)
 
     # FIXME: testing the code for a lost or replaced excepthook in
     # Python/pythonrun.c::PyErr_PrintEx() is tricky.
@@ -410,8 +361,7 @@ class AppTestSysModulePortedFromCPython:
         import sys
         if hasattr(sys, "getwindowsversion"):
             v = sys.getwindowsversion()
-            if '__pypy__' in sys.builtin_module_names:
-                assert isinstance(v, tuple)
+            assert isinstance(v, tuple)
             assert len(v) == 5
             assert isinstance(v[0], int)
             assert isinstance(v[1], int)
@@ -438,10 +388,6 @@ class AppTestSysModulePortedFromCPython:
         import sys
         if hasattr(sys, "winver"):
             assert sys.winver == sys.version[:3]
-
-    def test_dllhandle(self):
-        import sys
-        assert hasattr(sys, 'dllhandle') == (sys.platform == 'win32')
 
     def test_dlopenflags(self):
         import sys
@@ -500,7 +446,7 @@ class AppTestSysModulePortedFromCPython:
         assert isinstance(sys.builtin_module_names, tuple)
         assert isinstance(sys.copyright, basestring)
         #assert isinstance(sys.exec_prefix, basestring) -- not present!
-        #assert isinstance(sys.executable, basestring) -- not present!
+        assert isinstance(sys.executable, basestring)
         assert isinstance(sys.hexversion, int)
         assert isinstance(sys.maxint, int)
         assert isinstance(sys.maxsize, int)
@@ -510,22 +456,13 @@ class AppTestSysModulePortedFromCPython:
         assert isinstance(sys.version, basestring)
         assert isinstance(sys.warnoptions, list)
         vi = sys.version_info
-        if '__pypy__' in sys.builtin_module_names:
-            assert isinstance(vi, tuple)
+        assert isinstance(vi, tuple)
         assert len(vi) == 5
         assert isinstance(vi[0], int)
         assert isinstance(vi[1], int)
         assert isinstance(vi[2], int)
         assert vi[3] in ("alpha", "beta", "candidate", "final")
         assert isinstance(vi[4], int)
-
-    def test_reload_doesnt_override_sys_executable(self):
-        import sys
-        if not hasattr(sys, 'executable'):    # if not translated
-            sys.executable = 'from_test_sysmodule'
-        previous = sys.executable
-        reload(sys)
-        assert sys.executable == previous
 
     def test_settrace(self):
         import sys
@@ -545,8 +482,6 @@ class AppTestSysModulePortedFromCPython:
 
     def test_pypy_attributes(self):
         import sys
-        if '__pypy__' not in sys.builtin_module_names:
-            skip("only on PyPy")
         assert isinstance(sys.pypy_objspaceclass, str)
         vi = sys.pypy_version_info
         assert isinstance(vi, tuple)
@@ -563,14 +498,10 @@ class AppTestSysModulePortedFromCPython:
 
     def test_subversion(self):
         import sys
-        if '__pypy__' not in sys.builtin_module_names:
-            skip("only on PyPy")
         assert sys.subversion == ('PyPy', '', '')
 
     def test__mercurial(self):
         import sys, re
-        if '__pypy__' not in sys.builtin_module_names:
-            skip("only on PyPy")
         project, hgtag, hgid = sys._mercurial
         assert project == 'PyPy'
         # the tag or branch may be anything, including the empty string
@@ -607,59 +538,6 @@ class AppTestSysModulePortedFromCPython:
         # be changed.
         assert sys.float_repr_style == "short"
 
-class AppTestSysSettracePortedFromCpython(object):
-    def test_sys_settrace(self):
-        import sys
-        
-        class Tracer:
-            def __init__(self):
-                self.events = []
-            def trace(self, frame, event, arg):
-                self.events.append((frame.f_lineno, event))
-                return self.trace
-            def traceWithGenexp(self, frame, event, arg):
-                (o for o in [1])
-                self.events.append((frame.f_lineno, event))
-                return self.trace
-
-        def compare_events(line_offset, events, expected_events):
-            events = [(l - line_offset, e) for (l, e) in events]
-            assert events == expected_events
-
-        def run_test2(func):
-            tracer = Tracer()
-            func(tracer.trace)
-            sys.settrace(None)
-            compare_events(func.func_code.co_firstlineno,
-                           tracer.events, func.events)
-
-
-        def _settrace_and_return(tracefunc):
-            sys.settrace(tracefunc)
-            sys._getframe().f_back.f_trace = tracefunc
-        def settrace_and_return(tracefunc):
-            _settrace_and_return(tracefunc)
-
-
-        def _settrace_and_raise(tracefunc):
-            sys.settrace(tracefunc)
-            sys._getframe().f_back.f_trace = tracefunc
-            raise RuntimeError
-        def settrace_and_raise(tracefunc):
-            try:
-                _settrace_and_raise(tracefunc)
-            except RuntimeError, exc:
-                pass
-
-        settrace_and_raise.events = [(2, 'exception'),
-                                     (3, 'line'),
-                                     (4, 'line'),
-                                     (4, 'return')]
-
-        settrace_and_return.events = [(1, 'return')]
-        run_test2(settrace_and_return)
-        run_test2(settrace_and_raise)
-
 
 class AppTestCurrentFrames:
     def test_current_frames(self):
@@ -680,7 +558,7 @@ class AppTestCurrentFrames:
 
 class AppTestCurrentFramesWithThread(AppTestCurrentFrames):
     spaceconfig = {
-        "usemodules": ["time", "thread"],
+        "usemodules": ["rctime", "thread"],
     }
 
     def test_current_frames(self):
@@ -695,7 +573,7 @@ class AppTestCurrentFramesWithThread(AppTestCurrentFrames):
 
         thread_id = thread.get_ident()
         def other_thread():
-            #print "thread started"
+            print "thread started"
             lock2.release()
             lock1.acquire()
         lock1 = thread.allocate_lock()
@@ -832,3 +710,7 @@ class AppTestSysExcInfoDirect:
         except:
             assert g() is e
     test_call_in_subfunction.expected = 'n'
+
+
+class AppTestSysExcInfoDirectCallMethod(AppTestSysExcInfoDirect):
+    spaceconfig = {"objspace.opcodes.CALL_METHOD": True}

@@ -1,6 +1,6 @@
 import new
-from pypy.interpreter.error import OperationError, oefmt
-from pypy.interpreter.gateway import interp2app, unwrap_spec
+from pypy.interpreter.error import OperationError, operationerrfmt
+from pypy.interpreter.gateway import interp2app
 from pypy.interpreter.typedef import TypeDef, make_weakref_descr
 from pypy.interpreter.baseobjspace import W_Root
 from pypy.interpreter.typedef import GetSetProperty, descr_get_dict, descr_set_dict
@@ -10,8 +10,19 @@ from rpython.rlib import jit
 
 
 def raise_type_err(space, argument, expected, w_obj):
-    raise oefmt(space.w_TypeError,
-                "argument %s must be %s, not %T", argument, expected, w_obj)
+    type_name = space.type(w_obj).getname(space)
+    raise operationerrfmt(space.w_TypeError,
+                          "argument %s must be %s, not %s",
+                          argument, expected, type_name)
+
+def unwrap_attr(space, w_attr):
+    try:
+        return space.str_w(w_attr)
+    except OperationError, e:
+        if not e.match(space, space.w_TypeError):
+            raise
+        return "?"    # any string different from "__dict__" & co. is fine
+        # XXX it's not clear that we have to catch the TypeError...
 
 def descr_classobj_new(space, w_subtype, w_name, w_bases, w_dict):
     if not space.isinstance_w(w_bases, space.w_tuple):
@@ -20,7 +31,7 @@ def descr_classobj_new(space, w_subtype, w_name, w_bases, w_dict):
     if not space.isinstance_w(w_dict, space.w_dict):
         raise_type_err(space, 'bases', 'tuple', w_bases)
 
-    if not space.contains_w(w_dict, space.wrap("__doc__")):
+    if not space.is_true(space.contains(w_dict, space.wrap("__doc__"))):
         space.setitem(w_dict, space.wrap("__doc__"), space.w_None)
 
     # XXX missing: lengthy and obscure logic about "__module__"
@@ -106,8 +117,8 @@ class W_ClassObject(W_Root):
                 return w_result
         return None
 
-    @unwrap_spec(name=str)
-    def descr_getattribute(self, space, name):
+    def descr_getattribute(self, space, w_attr):
+        name = unwrap_attr(space, w_attr)
         if name and name[0] == "_":
             if name == "__dict__":
                 return self.w_dict
@@ -117,8 +128,10 @@ class W_ClassObject(W_Root):
                 return space.newtuple(self.bases_w)
         w_value = self.lookup(space, name)
         if w_value is None:
-            raise oefmt(space.w_AttributeError,
-                        "class %s has no attribute '%s'", self.name, name)
+            raise operationerrfmt(
+                space.w_AttributeError,
+                "class %s has no attribute '%s'",
+                self.name, name)
 
         w_descr_get = space.lookup(w_value, '__get__')
         if w_descr_get is None:
@@ -126,7 +139,7 @@ class W_ClassObject(W_Root):
         return space.call_function(w_descr_get, w_value, space.w_None, self)
 
     def descr_setattr(self, space, w_attr, w_value):
-        name = space.str_w(w_attr)
+        name = unwrap_attr(space, w_attr)
         if name and name[0] == "_":
             if name == "__dict__":
                 self.setdict(space, w_value)
@@ -145,17 +158,20 @@ class W_ClassObject(W_Root):
         space.setitem(self.w_dict, w_attr, w_value)
 
     def descr_delattr(self, space, w_attr):
-        name = space.str_w(w_attr)
+        name = unwrap_attr(space, w_attr)
         if name in ("__dict__", "__name__", "__bases__"):
-            raise oefmt(space.w_TypeError,
-                        "cannot delete attribute '%s'", name)
+            raise operationerrfmt(
+                space.w_TypeError,
+                "cannot delete attribute '%s'", name)
         try:
             space.delitem(self.w_dict, w_attr)
         except OperationError, e:
             if not e.match(space, space.w_KeyError):
                 raise
-            raise oefmt(space.w_AttributeError,
-                        "class %s has no attribute '%s'", self.name, name)
+            raise operationerrfmt(
+                space.w_AttributeError,
+                "class %s has no attribute '%s'",
+                self.name, name)
 
     def descr_repr(self, space):
         mod = self.get_module_string(space)
@@ -170,7 +186,7 @@ class W_ClassObject(W_Root):
 
     def get_module_string(self, space):
         try:
-            w_mod = self.descr_getattribute(space, "__module__")
+            w_mod = self.descr_getattribute(space, space.wrap("__module__"))
         except OperationError, e:
             if not e.match(space, space.w_AttributeError):
                 raise
@@ -253,27 +269,26 @@ def make_binary_instance_method(name):
 
     def binaryop(self, space, w_other):
         w_a, w_b = _coerce_helper(space, self, w_other)
-        if isinstance(w_a, W_InstanceObject):
-            w_meth = w_a.getattr(space, specialname, False)
+        if w_a is None:
+            w_a = self
+            w_b = w_other
+        if w_a is self:
+            w_meth = self.getattr(space, specialname, False)
             if w_meth is None:
                 return space.w_NotImplemented
             return space.call_function(w_meth, w_b)
         else:
-            # fall back to space.xxx() if coerce returns a non-W_Instance
-            # object as first argument
             return getattr(space, objspacename)(w_a, w_b)
     binaryop.func_name = name
 
     def rbinaryop(self, space, w_other):
         w_a, w_b = _coerce_helper(space, self, w_other)
-        if isinstance(w_a, W_InstanceObject):
-            w_meth = w_a.getattr(space, rspecialname, False)
+        if w_a is None or w_a is self:
+            w_meth = self.getattr(space, rspecialname, False)
             if w_meth is None:
                 return space.w_NotImplemented
-            return space.call_function(w_meth, w_b)
+            return space.call_function(w_meth, w_other)
         else:
-            # fall back to space.xxx() if coerce returns a non-W_Instance
-            # object as first argument
             return getattr(space, objspacename)(w_b, w_a)
     rbinaryop.func_name = "r" + name
     return binaryop, rbinaryop
@@ -284,7 +299,7 @@ def _coerce_helper(space, w_self, w_other):
     except OperationError, e:
         if not e.match(space, space.w_TypeError):
             raise
-        return [w_self, w_other]
+        return [None, None]
     return space.fixedview(w_tup, 2)
 
 def descr_instance_new(space, w_type, w_class, w_dict=None):
@@ -349,14 +364,15 @@ class W_InstanceObject(W_Root):
                 raise
         # not found at all
         if exc:
-            raise oefmt(space.w_AttributeError,
-                        "%s instance has no attribute '%s'",
-                        self.w_class.name, name)
+            raise operationerrfmt(
+                space.w_AttributeError,
+                "%s instance has no attribute '%s'",
+                self.w_class.name, name)
         else:
             return None
 
-    @unwrap_spec(name=str)
-    def descr_getattribute(self, space, name):
+    def descr_getattribute(self, space, w_attr):
+        name = space.str_w(w_attr)
         if len(name) >= 8 and name[0] == '_':
             if name == "__dict__":
                 return self.getdict(space)
@@ -365,7 +381,7 @@ class W_InstanceObject(W_Root):
         return self.getattr(space, name)
 
     def descr_setattr(self, space, w_name, w_value):
-        name = space.str_w(w_name)
+        name = unwrap_attr(space, w_name)
         w_meth = self.getattr_from_class(space, '__setattr__')
         if name and name[0] == "_":
             if name == '__dict__':
@@ -387,7 +403,7 @@ class W_InstanceObject(W_Root):
             self.setdictvalue(space, name, w_value)
 
     def descr_delattr(self, space, w_name):
-        name = space.str_w(w_name)
+        name = unwrap_attr(space, w_name)
         if name and name[0] == "_":
             if name == '__dict__':
                 # use setdict to raise the error
@@ -402,9 +418,10 @@ class W_InstanceObject(W_Root):
             space.call_function(w_meth, w_name)
         else:
             if not self.deldictvalue(space, name):
-                raise oefmt(space.w_AttributeError,
-                            "%s instance has no attribute '%s'",
-                            self.w_class.name, name)
+                raise operationerrfmt(
+                    space.w_AttributeError,
+                    "%s instance has no attribute '%s'",
+                    self.w_class.name, name)
 
     def descr_repr(self, space):
         w_meth = self.getattr(space, '__repr__', False)
@@ -524,9 +541,13 @@ class W_InstanceObject(W_Root):
 
     def descr_cmp(self, space, w_other): # do all the work here like CPython
         w_a, w_b = _coerce_helper(space, self, w_other)
-        if (not isinstance(w_a, W_InstanceObject) and
-            not isinstance(w_b, W_InstanceObject)):
-            return space.cmp(w_a, w_b)
+        if w_a is None:
+            w_a = self
+            w_b = w_other
+        else:
+            if (not isinstance(w_a, W_InstanceObject) and
+                not isinstance(w_b, W_InstanceObject)):
+                return space.cmp(w_a, w_b)
         if isinstance(w_a, W_InstanceObject):
             w_func = w_a.getattr(space, '__cmp__', False)
             if w_func is not None:
@@ -633,36 +654,42 @@ class W_InstanceObject(W_Root):
     def descr_pow(self, space, w_other, w_modulo=None):
         if space.is_none(w_modulo):
             w_a, w_b = _coerce_helper(space, self, w_other)
-            if isinstance(w_a, W_InstanceObject):
-                w_func = w_a.getattr(space, '__pow__', False)
-                if w_func is None:
-                    return space.w_NotImplemented
-                return space.call_function(w_func, w_other)
+            if w_a is None:
+                w_a = self
+                w_b = w_other
+            if w_a is self:
+                w_func = self.getattr(space, '__pow__', False)
+                if w_func is not None:
+                    return space.call_function(w_func, w_other)
+                return space.w_NotImplemented
             else:
                 return space.pow(w_a, w_b, space.w_None)
         else:
             # CPython also doesn't try coercion in this case
             w_func = self.getattr(space, '__pow__', False)
-            if w_func is None:
-                return space.w_NotImplemented
-            return space.call_function(w_func, w_other, w_modulo)
+            if w_func is not None:
+                return space.call_function(w_func, w_other, w_modulo)
+            return space.w_NotImplemented
 
     def descr_rpow(self, space, w_other, w_modulo=None):
         if space.is_none(w_modulo):
             w_a, w_b = _coerce_helper(space, self, w_other)
-            if isinstance(w_a, W_InstanceObject):
-                w_func = w_a.getattr(space, '__rpow__', False)
-                if w_func is None:
-                    return space.w_NotImplemented
-                return space.call_function(w_func, w_other)
+            if w_a is None:
+                w_a = self
+                w_b = w_other
+            if w_a is self:
+                w_func = self.getattr(space, '__rpow__', False)
+                if w_func is not None:
+                    return space.call_function(w_func, w_other)
+                return space.w_NotImplemented
             else:
                 return space.pow(w_b, w_a, space.w_None)
         else:
             # CPython also doesn't try coercion in this case
             w_func = self.getattr(space, '__rpow__', False)
-            if w_func is None:
-                return space.w_NotImplemented
-            return space.call_function(w_func, w_other, w_modulo)
+            if w_func is not None:
+                return space.call_function(w_func, w_other, w_modulo)
+            return space.w_NotImplemented
 
     def descr_next(self, space):
         w_func = self.getattr(space, 'next', False)

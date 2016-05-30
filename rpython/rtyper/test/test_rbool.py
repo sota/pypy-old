@@ -1,6 +1,7 @@
 from rpython.translator.translator import TranslationContext
+from rpython.annotator import unaryop, binaryop
 from rpython.rtyper.test import snippet
-from rpython.rtyper.test.tool import BaseRtypingTest
+from rpython.rtyper.test.tool import BaseRtypingTest, LLRtypeMixin, OORtypeMixin
 
 
 class TestSnippet(object):
@@ -22,8 +23,17 @@ class TestSnippet(object):
     def test_bool_cast1(self):
         self._test(snippet.bool_cast1, [bool])
 
+    def DONTtest_unary_operations(self):
+        # XXX TODO test if all unary operations are implemented
+        for opname in unaryop.UNARY_OPERATIONS:
+            print 'UNARY_OPERATIONS:', opname
 
-class TestRbool(BaseRtypingTest):
+    def DONTtest_binary_operations(self):
+        # XXX TODO test if all binary operations are implemented
+        for opname in binaryop.BINARY_OPERATIONS:
+            print 'BINARY_OPERATIONS:', opname
+
+class BaseTestRbool(BaseRtypingTest):
 
     def test_bool2int(self):
         def f(n):
@@ -72,3 +82,9 @@ class TestRbool(BaseRtypingTest):
         assert res == 1
         res = self.interpret(f, [1, True])
         assert res == 1
+
+class TestLLtype(BaseTestRbool, LLRtypeMixin):
+    pass
+
+class TestOOtype(BaseTestRbool, OORtypeMixin):
+    pass

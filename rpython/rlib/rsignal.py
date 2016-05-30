@@ -1,7 +1,7 @@
 import signal as cpy_signal
 import sys
 import py
-from rpython.translator import cdir
+from rpython.conftest import cdir
 from rpython.rtyper.tool import rffi_platform
 from rpython.rtyper.lltypesystem import lltype, rffi
 from rpython.translator.tool.cbuild import ExternalCompilationInfo
@@ -41,6 +41,11 @@ eci = ExternalCompilationInfo(
     includes = includes,
     separate_module_files = [cdir / 'src' / 'signals.c'],
     include_dirs = [str(cdir)],
+    export_symbols = ['pypysig_poll', 'pypysig_default',
+                      'pypysig_ignore', 'pypysig_setflag',
+                      'pypysig_reinstall',
+                      'pypysig_set_wakeup_fd',
+                      'pypysig_getaddr_occurred'],
 )
 
 class CConfig:
@@ -72,11 +77,11 @@ pypysig_default = external('pypysig_default', [rffi.INT], lltype.Void)
 pypysig_setflag = external('pypysig_setflag', [rffi.INT], lltype.Void)
 pypysig_reinstall = external('pypysig_reinstall', [rffi.INT], lltype.Void)
 pypysig_set_wakeup_fd = external('pypysig_set_wakeup_fd', [rffi.INT], rffi.INT)
-pypysig_poll = external('pypysig_poll', [], rffi.INT, releasegil=False)
+pypysig_poll = external('pypysig_poll', [], rffi.INT, threadsafe=False)
 # don't bother releasing the GIL around a call to pypysig_poll: it's
 # pointless and a performance issue
 pypysig_pushback = external('pypysig_pushback', [rffi.INT], lltype.Void,
-                            releasegil=False)
+                            threadsafe=False)
 
 # don't use rffi.LONGP because the JIT doesn't support raw arrays so far
 struct_name = 'pypysig_long_struct'
@@ -88,13 +93,11 @@ pypysig_getaddr_occurred = external('pypysig_getaddr_occurred', [],
                                     lltype.Ptr(LONG_STRUCT), _nowrapper=True,
                                     elidable_function=True)
 c_alarm = external('alarm', [rffi.INT], rffi.INT)
-c_pause = external('pause', [], rffi.INT, releasegil=True)
-c_siginterrupt = external('siginterrupt', [rffi.INT, rffi.INT], rffi.INT,
-                          save_err=rffi.RFFI_SAVE_ERRNO)
+c_pause = external('pause', [], rffi.INT, threadsafe=True)
+c_siginterrupt = external('siginterrupt', [rffi.INT, rffi.INT], rffi.INT)
 
 if sys.platform != 'win32':
     itimervalP = rffi.CArrayPtr(itimerval)
     c_setitimer = external('setitimer',
-                           [rffi.INT, itimervalP, itimervalP], rffi.INT,
-                           save_err=rffi.RFFI_SAVE_ERRNO)
+                           [rffi.INT, itimervalP, itimervalP], rffi.INT)
     c_getitimer = external('getitimer', [rffi.INT, itimervalP], rffi.INT)

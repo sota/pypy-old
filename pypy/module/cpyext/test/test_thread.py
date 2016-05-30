@@ -8,10 +8,8 @@ class AppTestThread(AppTestCpythonExtensionBase):
         module = self.import_extension('foo', [
             ("get_thread_ident", "METH_NOARGS",
              """
-#ifndef PyThread_get_thread_ident
-#error "seems we are not accessing PyPy's functions"
-#endif
-                 return PyInt_FromLong(PyThread_get_thread_ident());
+                 /* Use the 'PyPy' prefix to ensure we access our functions */
+                 return PyInt_FromLong(PyPyThread_get_thread_ident());
              """),
             ])
         import thread, threading
@@ -34,19 +32,17 @@ class AppTestThread(AppTestCpythonExtensionBase):
         module = self.import_extension('foo', [
             ("test_acquire_lock", "METH_NOARGS",
              """
-#ifndef PyThread_allocate_lock
-#error "seems we are not accessing PyPy's functions"
-#endif
-                 PyThread_type_lock lock = PyThread_allocate_lock();
-                 if (PyThread_acquire_lock(lock, 1) != 1) {
+                 /* Use the 'PyPy' prefix to ensure we access our functions */
+                 PyThread_type_lock lock = PyPyThread_allocate_lock();
+                 if (PyPyThread_acquire_lock(lock, 1) != 1) {
                      PyErr_SetString(PyExc_AssertionError, "first acquire");
                      return NULL;
                  }
-                 if (PyThread_acquire_lock(lock, 0) != 0) {
+                 if (PyPyThread_acquire_lock(lock, 0) != 0) {
                      PyErr_SetString(PyExc_AssertionError, "second acquire");
                      return NULL;
                  }
-                 PyThread_free_lock(lock);
+                 PyPyThread_free_lock(lock);
 
                  Py_RETURN_NONE;
              """),
@@ -57,17 +53,15 @@ class AppTestThread(AppTestCpythonExtensionBase):
         module = self.import_extension('foo', [
             ("test_release_lock", "METH_NOARGS",
              """
-#ifndef PyThread_release_lock
-#error "seems we are not accessing PyPy's functions"
-#endif           
-                 PyThread_type_lock lock = PyThread_allocate_lock();
-                 PyThread_acquire_lock(lock, 1);
-                 PyThread_release_lock(lock);
-                 if (PyThread_acquire_lock(lock, 0) != 1) {
+                 /* Use the 'PyPy' prefix to ensure we access our functions */
+                 PyThread_type_lock lock = PyPyThread_allocate_lock();
+                 PyPyThread_acquire_lock(lock, 1);
+                 PyPyThread_release_lock(lock);
+                 if (PyPyThread_acquire_lock(lock, 0) != 1) {
                      PyErr_SetString(PyExc_AssertionError, "first acquire");
                      return NULL;
                  }
-                 PyThread_free_lock(lock);
+                 PyPyThread_free_lock(lock);
 
                  Py_RETURN_NONE;
              """),

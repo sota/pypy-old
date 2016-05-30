@@ -1,4 +1,4 @@
-# Copyright 2001-2014 by Vinay Sajip. All Rights Reserved.
+# Copyright 2001-2010 by Vinay Sajip. All Rights Reserved.
 #
 # Permission to use, copy, modify, and distribute this software and its
 # documentation for any purpose and without fee is hereby granted,
@@ -16,14 +16,14 @@
 
 """
 Logging package for Python. Based on PEP 282 and comments thereto in
-comp.lang.python.
+comp.lang.python, and influenced by Apache's log4j system.
 
-Copyright (C) 2001-2014 Vinay Sajip. All Rights Reserved.
+Copyright (C) 2001-2010 Vinay Sajip. All Rights Reserved.
 
 To use, simply 'import logging' and log away!
 """
 
-import sys, os, time, cStringIO, traceback, warnings, weakref, collections
+import sys, os, time, cStringIO, traceback, warnings, weakref
 
 __all__ = ['BASIC_FORMAT', 'BufferingFormatter', 'CRITICAL', 'DEBUG', 'ERROR',
            'FATAL', 'FileHandler', 'Filter', 'Formatter', 'Handler', 'INFO',
@@ -46,7 +46,6 @@ except ImportError:
 
 __author__  = "Vinay Sajip <vinay_sajip@red-dove.com>"
 __status__  = "production"
-# Note: the attributes below are no longer maintained.
 __version__ = "0.5.1.2"
 __date__    = "07 February 2010"
 
@@ -135,30 +134,21 @@ INFO = 20
 DEBUG = 10
 NOTSET = 0
 
-# NOTE(flaper87): This is different from
-# python's stdlib module since pypy's
-# dicts are much faster when their
-# keys are all of the same type.
-# Introduced in commit 9de7b40c586f
-_levelToName = {
-    CRITICAL: 'CRITICAL',
-    ERROR: 'ERROR',
-    WARNING: 'WARNING',
-    INFO: 'INFO',
-    DEBUG: 'DEBUG',
-    NOTSET: 'NOTSET',
+_levelNames = {
+    CRITICAL : 'CRITICAL',
+    ERROR : 'ERROR',
+    WARNING : 'WARNING',
+    INFO : 'INFO',
+    DEBUG : 'DEBUG',
+    NOTSET : 'NOTSET',
+    'CRITICAL' : CRITICAL,
+    'ERROR' : ERROR,
+    'WARN' : WARNING,
+    'WARNING' : WARNING,
+    'INFO' : INFO,
+    'DEBUG' : DEBUG,
+    'NOTSET' : NOTSET,
 }
-_nameToLevel = {
-    'CRITICAL': CRITICAL,
-    'ERROR': ERROR,
-    'WARN': WARNING,
-    'WARNING': WARNING,
-    'INFO': INFO,
-    'DEBUG': DEBUG,
-    'NOTSET': NOTSET,
-}
-_levelNames = dict(_levelToName)
-_levelNames.update(_nameToLevel)   # backward compatibility
 
 def getLevelName(level):
     """
@@ -174,11 +164,7 @@ def getLevelName(level):
 
     Otherwise, the string "Level %s" % level is returned.
     """
-
-    # NOTE(flaper87): Check also in _nameToLevel
-    # if value is None.
-    return (_levelToName.get(level) or
-            _nameToLevel.get(level, ("Level %s" % level)))
+    return _levelNames.get(level, ("Level %s" % level))
 
 def addLevelName(level, levelName):
     """
@@ -188,18 +174,18 @@ def addLevelName(level, levelName):
     """
     _acquireLock()
     try:    #unlikely to cause an exception, but you never know...
-        _levelToName[level] = levelName
-        _nameToLevel[levelName] = level
+        _levelNames[level] = levelName
+        _levelNames[levelName] = level
     finally:
         _releaseLock()
 
 def _checkLevel(level):
-    if isinstance(level, (int, long)):
+    if isinstance(level, int):
         rv = level
     elif str(level) == level:
-        if level not in _nameToLevel:
+        if level not in _levelNames:
             raise ValueError("Unknown level: %r" % level)
-        rv = _nameToLevel[level]
+        rv = _levelNames[level]
     else:
         raise TypeError("Level not an integer or a valid string: %r" % level)
     return rv
@@ -274,13 +260,7 @@ class LogRecord(object):
         # 'Value is %d' instead of 'Value is 0'.
         # For the use case of passing a dictionary, this should not be a
         # problem.
-        # Issue #21172: a request was made to relax the isinstance check
-        # to hasattr(args[0], '__getitem__'). However, the docs on string
-        # formatting still seem to suggest a mapping object is required.
-        # Thus, while not removing the isinstance check, it does now look
-        # for collections.Mapping rather than, as before, dict.
-        if (args and len(args) == 1 and isinstance(args[0], collections.Mapping)
-            and args[0]):
+        if args and len(args) == 1 and isinstance(args[0], dict) and args[0]:
             args = args[0]
         self.args = args
         self.levelname = getLevelName(level)
@@ -297,7 +277,7 @@ class LogRecord(object):
         self.lineno = lineno
         self.funcName = func
         self.created = ct
-        self.msecs = (ct - int(ct)) * 1000
+        self.msecs = (ct - long(ct)) * 1000
         self.relativeCreated = (self.created - _startTime) * 1000
         if logThreads and thread:
             self.thread = thread.get_ident()
@@ -642,17 +622,15 @@ def _removeHandlerRef(wr):
     Remove a handler reference from the internal cleanup list.
     """
     # This function can be called during module teardown, when globals are
-    # set to None. It can also be called from another thread. So we need to
-    # pre-emptively grab the necessary globals and check if they're None,
-    # to prevent race conditions and failures during interpreter shutdown.
-    acquire, release, handlers = _acquireLock, _releaseLock, _handlerList
-    if acquire and release and handlers:
-        acquire()
+    # set to None. If _acquireLock is None, assume this is the case and do
+    # nothing.
+    if _acquireLock is not None:
+        _acquireLock()
         try:
-            if wr in handlers:
-                handlers.remove(wr)
+            if wr in _handlerList:
+                _handlerList.remove(wr)
         finally:
-            release()
+            _releaseLock()
 
 def _addHandlerRef(handler):
     """
@@ -850,12 +828,8 @@ class StreamHandler(Handler):
         """
         Flushes the stream.
         """
-        self.acquire()
-        try:
-            if self.stream and hasattr(self.stream, "flush"):
-                self.stream.flush()
-        finally:
-            self.release()
+        if self.stream and hasattr(self.stream, "flush"):
+            self.stream.flush()
 
     def emit(self, record):
         """
@@ -878,7 +852,7 @@ class StreamHandler(Handler):
                 try:
                     if (isinstance(msg, unicode) and
                         getattr(stream, 'encoding', None)):
-                        ufs = u'%s\n'
+                        ufs = fs.decode(stream.encoding)
                         try:
                             stream.write(ufs % msg)
                         except UnicodeEncodeError:
@@ -914,7 +888,6 @@ class FileHandler(StreamHandler):
         self.baseFilename = os.path.abspath(filename)
         self.mode = mode
         self.encoding = encoding
-        self.delay = delay
         if delay:
             #We don't open the stream, but we still need to call the
             #Handler constructor to set level, formatter, lock etc.
@@ -927,23 +900,12 @@ class FileHandler(StreamHandler):
         """
         Closes the stream.
         """
-        self.acquire()
-        try:
-            try:
-                if self.stream:
-                    try:
-                        self.flush()
-                    finally:
-                        stream = self.stream
-                        self.stream = None
-                        if hasattr(stream, "close"):
-                            stream.close()
-            finally:
-                # Issue #19523: call unconditionally to
-                # prevent a handler leak when delay is set
-                StreamHandler.close(self)
-        finally:
-            self.release()
+        if self.stream:
+            self.flush()
+            if hasattr(self.stream, "close"):
+                self.stream.close()
+            StreamHandler.close(self)
+            self.stream = None
 
     def _open(self):
         """
@@ -1203,12 +1165,11 @@ class Logger(Filterer):
         if self.isEnabledFor(ERROR):
             self._log(ERROR, msg, args, **kwargs)
 
-    def exception(self, msg, *args, **kwargs):
+    def exception(self, msg, *args):
         """
         Convenience method for logging an ERROR with exception information.
         """
-        kwargs['exc_info'] = 1
-        self.error(msg, *args, **kwargs)
+        self.error(msg, exc_info=1, *args)
 
     def critical(self, msg, *args, **kwargs):
         """
@@ -1281,7 +1242,7 @@ class Logger(Filterer):
         all the handlers of this logger to handle the record.
         """
         if _srcfile:
-            #IronPython doesn't track Python frames, so findCaller raises an
+            #IronPython doesn't track Python frames, so findCaller throws an
             #exception on some versions of IronPython. We trap it here so that
             #IronPython can use logging.
             try:
@@ -1613,13 +1574,12 @@ def error(msg, *args, **kwargs):
         basicConfig()
     root.error(msg, *args, **kwargs)
 
-def exception(msg, *args, **kwargs):
+def exception(msg, *args):
     """
     Log a message with severity 'ERROR' on the root logger,
     with exception information.
     """
-    kwargs['exc_info'] = 1
-    error(msg, *args, **kwargs)
+    error(msg, exc_info=1, *args)
 
 def warning(msg, *args, **kwargs):
     """

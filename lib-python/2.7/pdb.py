@@ -1095,7 +1095,7 @@ command with a 'global' command, e.g.:
     def help_run(self):
         print """run [args...]
 Restart the debugged python program. If a string is supplied, it is
-split with "shlex" and the result is used as the new sys.argv.
+splitted with "shlex" and the result is used as the new sys.argv.
 History, breakpoints, actions and debugger options are preserved.
 "restart" is an alias for "run"."""
 

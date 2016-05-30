@@ -1,29 +1,18 @@
-# Generates the resource cache (it might be there already, but maybe not)
-from __future__ import absolute_import
+# Generates the resource cache
+#from __future__ import absolute_import
+#from lib_pypy.ctypes_config_cache import rebuild
+#rebuild.rebuild_one('resource.ctc.py')
+
 import os
 
-import py
-
-from lib_pypy.ctypes_config_cache import rebuild
-from pypy.module.test_lib_pypy.support import import_lib_pypy
-
-
-class AppTestOsWait:
-
-    spaceconfig = dict(usemodules=('_rawffi', 'itertools'))
-
-    def setup_class(cls):
-        if not hasattr(os, "fork"):
-            py.test.skip("Need fork() to test wait3/wait4()")
-        rebuild.rebuild_one('resource.ctc.py')
-        cls.w__pypy_wait = import_lib_pypy(
-            cls.space, '_pypy_wait',
-            '_pypy_wait not supported on this platform')
-
-    def test_os_wait3(self):
-        import os
-        wait3 = self._pypy_wait.wait3
+if hasattr(os, 'wait3'):
+    from lib_pypy._pypy_wait import wait3
+    def test_os_wait3():
         exit_status = 0x33
+
+        if not hasattr(os, "fork"):
+            skip("Need fork() to test wait3()")
+
         child = os.fork()
         if child == 0: # in child
             os._exit(exit_status)
@@ -35,10 +24,14 @@ class AppTestOsWait:
             assert isinstance(rusage.ru_utime, float)
             assert isinstance(rusage.ru_maxrss, int)
 
-    def test_os_wait4(self):
-        import os
-        wait4 = self._pypy_wait.wait4
+if hasattr(os, 'wait4'):
+    from lib_pypy._pypy_wait import wait4
+    def test_os_wait4():
         exit_status = 0x33
+
+        if not hasattr(os, "fork"):
+            skip("Need fork() to test wait4()")
+
         child = os.fork()
         if child == 0: # in child
             os._exit(exit_status)

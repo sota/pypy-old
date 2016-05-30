@@ -57,8 +57,8 @@ from rpython.memory.support import mangle_hash
 from rpython.rlib.rarithmetic import ovfcheck, LONG_BIT, intmask, r_uint
 from rpython.rlib.rarithmetic import LONG_BIT_SHIFT
 from rpython.rlib.debug import ll_assert, debug_print, debug_start, debug_stop
-from rpython.rlib.objectmodel import specialize
-
+from rpython.rlib.objectmodel import we_are_translated
+from rpython.tool.sourcetools import func_with_new_name
 
 #
 # Handles the objects in 2 generations:
@@ -124,7 +124,7 @@ GCFLAG_CARDS_SET    = first_gcflag << 7     # <- at least one card bit is set
 # note that GCFLAG_CARDS_SET is the most significant bit of a byte:
 # this is required for the JIT (x86)
 
-_GCFLAG_FIRST_UNUSED = first_gcflag << 8    # the first unused bit
+TID_MASK            = (first_gcflag << 8) - 1
 
 
 FORWARDSTUB = lltype.GcStruct('forwarding_stub',
@@ -174,8 +174,8 @@ class MiniMarkGC(MovingGCBase):
         # fall-back number.
         "nursery_size": 896*1024,
 
-        # The system page size.  Like malloc, we assume that it is 4K
-        # for 32-bit systems; unlike malloc, we assume that it is 8K
+        # The system page size.  Like obmalloc.c, we assume that it is 4K
+        # for 32-bit systems; unlike obmalloc.c, we assume that it is 8K
         # for 64-bit systems, for consistent results.
         "page_size": 1024*WORD,
 
@@ -519,7 +519,7 @@ class MiniMarkGC(MovingGCBase):
         if needs_finalizer and not is_finalizer_light:
             ll_assert(not contains_weakptr,
                      "'needs_finalizer' and 'contains_weakptr' both specified")
-            obj = self.external_malloc(typeid, 0, alloc_young=False)
+            obj = self.external_malloc(typeid, 0, can_make_young=False)
             self.objects_with_finalizers.append(obj)
         #
         # If totalsize is greater than nonlarge_max (which should never be
@@ -528,7 +528,7 @@ class MiniMarkGC(MovingGCBase):
         elif rawtotalsize > self.nonlarge_max:
             ll_assert(not contains_weakptr,
                       "'contains_weakptr' specified for a large object")
-            obj = self.external_malloc(typeid, 0, alloc_young=True)
+            obj = self.external_malloc(typeid, 0)
             #
         else:
             # If totalsize is smaller than minimal_size_in_nursery, round it
@@ -581,7 +581,7 @@ class MiniMarkGC(MovingGCBase):
             # If the total size of the object would be larger than
             # 'nonlarge_max', then allocate it externally.  We also
             # go there if 'length' is actually negative.
-            obj = self.external_malloc(typeid, length, alloc_young=True)
+            obj = self.external_malloc(typeid, length)
             #
         else:
             # With the above checks we know now that totalsize cannot be more
@@ -611,11 +611,6 @@ class MiniMarkGC(MovingGCBase):
             obj = result + size_gc_header
             (obj + offset_to_length).signed[0] = length
         #
-        return llmemory.cast_adr_to_ptr(obj, llmemory.GCREF)
-
-
-    def malloc_fixedsize_nonmovable(self, typeid):
-        obj = self.external_malloc(typeid, 0, alloc_young=True)
         return llmemory.cast_adr_to_ptr(obj, llmemory.GCREF)
 
 
@@ -676,7 +671,7 @@ class MiniMarkGC(MovingGCBase):
     collect_and_reserve._dont_inline_ = True
 
 
-    def external_malloc(self, typeid, length, alloc_young):
+    def external_malloc(self, typeid, length, can_make_young=True):
         """Allocate a large object using the ArenaCollection or
         raw_malloc(), possibly as an object with card marking enabled,
         if it has gc pointers in its var-sized part.  'length' should be
@@ -716,9 +711,7 @@ class MiniMarkGC(MovingGCBase):
             self.major_collection(raw_malloc_usage(totalsize))
         #
         # Check if the object would fit in the ArenaCollection.
-        # Also, an object allocated from ArenaCollection must be old.
-        if (raw_malloc_usage(totalsize) <= self.small_request_threshold
-            and not alloc_young):
+        if raw_malloc_usage(totalsize) <= self.small_request_threshold:
             #
             # Yes.  Round up 'totalsize' (it cannot overflow and it
             # must remain <= self.small_request_threshold.)
@@ -731,6 +724,10 @@ class MiniMarkGC(MovingGCBase):
             result = self.ac.malloc(totalsize)
             llmemory.raw_memclear(result, totalsize)
             #
+            # An object allocated from ArenaCollection is always old, even
+            # if 'can_make_young'.  The interesting case of 'can_make_young'
+            # is for large objects, bigger than the 'large_objects' threshold,
+            # which are raw-malloced but still young.
             extra_flags = GCFLAG_TRACK_YOUNG_PTRS
             #
         else:
@@ -750,11 +747,11 @@ class MiniMarkGC(MovingGCBase):
                 extra_words = self.card_marking_words_for_length(length)
                 cardheadersize = WORD * extra_words
                 extra_flags = GCFLAG_HAS_CARDS | GCFLAG_TRACK_YOUNG_PTRS
-                # if 'alloc_young', then we also immediately set
+                # if 'can_make_young', then we also immediately set
                 # GCFLAG_CARDS_SET, but without adding the object to
                 # 'old_objects_with_cards_set'.  In this way it should
                 # never be added to that list as long as it is young.
-                if alloc_young:
+                if can_make_young:
                     extra_flags |= GCFLAG_CARDS_SET
             #
             # Detect very rare cases of overflows
@@ -790,7 +787,7 @@ class MiniMarkGC(MovingGCBase):
             # Record the newly allocated object and its full malloced size.
             # The object is young or old depending on the argument.
             self.rawmalloced_total_size += r_uint(allocsize)
-            if alloc_young:
+            if can_make_young:
                 if not self.young_rawmalloced_objects:
                     self.young_rawmalloced_objects = self.AddressDict()
                 self.young_rawmalloced_objects.add(result + size_gc_header)
@@ -824,6 +821,9 @@ class MiniMarkGC(MovingGCBase):
             # that one will occur very soon
             self.nursery_top = self.nursery_real_top
             self.nursery_free = self.nursery_real_top
+
+    def can_malloc_nonmovable(self):
+        return True
 
     def can_optimize_clean_setarrayitems(self):
         if self.card_page_indices > 0:
@@ -859,6 +859,19 @@ class MiniMarkGC(MovingGCBase):
         offset_to_length = self.varsize_offset_to_length(typeid)
         (obj + offset_to_length).signed[0] = smallerlength
         return True
+
+
+    def malloc_fixedsize_nonmovable(self, typeid):
+        obj = self.external_malloc(typeid, 0)
+        return llmemory.cast_adr_to_ptr(obj, llmemory.GCREF)
+
+    def malloc_varsize_nonmovable(self, typeid, length):
+        obj = self.external_malloc(typeid, length)
+        return llmemory.cast_adr_to_ptr(obj, llmemory.GCREF)
+
+    def malloc_nonmovable(self, typeid, length, zero):
+        # helper for testing, same as GCBase.malloc
+        return self.external_malloc(typeid, length or 0)    # None -> 0
 
 
     # ----------
@@ -931,7 +944,7 @@ class MiniMarkGC(MovingGCBase):
             ll_assert(tid == -42, "bogus header for young obj")
         else:
             ll_assert(bool(tid), "bogus header (1)")
-            ll_assert(tid & -_GCFLAG_FIRST_UNUSED == 0, "bogus header (2)")
+            ll_assert(tid & ~TID_MASK == 0, "bogus header (2)")
         return result
 
     def get_forwarding_address(self, obj):
@@ -978,12 +991,9 @@ class MiniMarkGC(MovingGCBase):
         # after a minor or major collection, no object should be in the nursery
         ll_assert(not self.is_in_nursery(obj),
                   "object in nursery after collection")
-        # similarily, all objects should have this flag, except if they
-        # don't have any GC pointer
-        typeid = self.get_type_id(obj)
-        if self.has_gcptr(typeid):
-            ll_assert(self.header(obj).tid & GCFLAG_TRACK_YOUNG_PTRS != 0,
-                      "missing GCFLAG_TRACK_YOUNG_PTRS")
+        # similarily, all objects should have this flag:
+        ll_assert(self.header(obj).tid & GCFLAG_TRACK_YOUNG_PTRS != 0,
+                  "missing GCFLAG_TRACK_YOUNG_PTRS")
         # the GCFLAG_VISITED should not be set between collections
         ll_assert(self.header(obj).tid & GCFLAG_VISITED == 0,
                   "unexpected GCFLAG_VISITED")
@@ -1046,16 +1056,16 @@ class MiniMarkGC(MovingGCBase):
     def JIT_minimal_size_in_nursery(cls):
         return cls.minimal_size_in_nursery
 
-    def write_barrier(self, addr_struct):
+    def write_barrier(self, newvalue, addr_struct):
         if self.header(addr_struct).tid & GCFLAG_TRACK_YOUNG_PTRS:
-            self.remember_young_pointer(addr_struct)
+            self.remember_young_pointer(addr_struct, newvalue)
 
-    def write_barrier_from_array(self, addr_array, index):
+    def write_barrier_from_array(self, newvalue, addr_array, index):
         if self.header(addr_array).tid & GCFLAG_TRACK_YOUNG_PTRS:
             if self.card_page_indices > 0:     # <- constant-folded
                 self.remember_young_pointer_from_array2(addr_array, index)
             else:
-                self.remember_young_pointer(addr_array)
+                self.remember_young_pointer(addr_array, newvalue)
 
     def _init_writebarrier_logic(self):
         DEBUG = self.DEBUG
@@ -1063,8 +1073,9 @@ class MiniMarkGC(MovingGCBase):
         # instead of keeping it as a regular method is to
         # make the code in write_barrier() marginally smaller
         # (which is important because it is inlined *everywhere*).
-        def remember_young_pointer(addr_struct):
+        def remember_young_pointer(addr_struct, newvalue):
             # 'addr_struct' is the address of the object in which we write.
+            # 'newvalue' is the address that we are going to write in there.
             # We know that 'addr_struct' has GCFLAG_TRACK_YOUNG_PTRS so far.
             #
             if DEBUG:   # note: PYPY_GC_DEBUG=1 does not enable this
@@ -1072,31 +1083,39 @@ class MiniMarkGC(MovingGCBase):
                           self.header(addr_struct).tid & GCFLAG_HAS_CARDS != 0,
                       "young object with GCFLAG_TRACK_YOUNG_PTRS and no cards")
             #
-            # We need to remove the flag GCFLAG_TRACK_YOUNG_PTRS and add
-            # the object to the list 'old_objects_pointing_to_young'.
-            # We know that 'addr_struct' cannot be in the nursery,
-            # because nursery objects never have the flag
-            # GCFLAG_TRACK_YOUNG_PTRS to start with.  Note that in
-            # theory we don't need to do that if the pointer that we're
-            # writing into the object isn't pointing to a young object.
-            # However, it isn't really a win, because then sometimes
-            # we're going to call this function a lot of times for the
-            # same object; moreover we'd need to pass the 'newvalue' as
-            # an argument here.  The JIT has always called a
-            # 'newvalue'-less version, too.
-            self.old_objects_pointing_to_young.append(addr_struct)
+            # If it seems that what we are writing is a pointer to a young obj
+            # (as checked with appears_to_be_young()), then we need
+            # to remove the flag GCFLAG_TRACK_YOUNG_PTRS and add the object
+            # to the list 'old_objects_pointing_to_young'.  We know that
+            # 'addr_struct' cannot be in the nursery, because nursery objects
+            # never have the flag GCFLAG_TRACK_YOUNG_PTRS to start with.
             objhdr = self.header(addr_struct)
-            objhdr.tid &= ~GCFLAG_TRACK_YOUNG_PTRS
+            if self.appears_to_be_young(newvalue):
+                self.old_objects_pointing_to_young.append(addr_struct)
+                objhdr.tid &= ~GCFLAG_TRACK_YOUNG_PTRS
             #
             # Second part: if 'addr_struct' is actually a prebuilt GC
             # object and it's the first time we see a write to it, we
-            # add it to the list 'prebuilt_root_objects'.
+            # add it to the list 'prebuilt_root_objects'.  Note that we
+            # do it even in the (rare?) case of 'addr' being NULL or another
+            # prebuilt object, to simplify code.
             if objhdr.tid & GCFLAG_NO_HEAP_PTRS:
                 objhdr.tid &= ~GCFLAG_NO_HEAP_PTRS
                 self.prebuilt_root_objects.append(addr_struct)
 
         remember_young_pointer._dont_inline_ = True
         self.remember_young_pointer = remember_young_pointer
+        #
+        def jit_remember_young_pointer(addr_struct):
+            # minimal version of the above, with just one argument,
+            # called by the JIT when GCFLAG_TRACK_YOUNG_PTRS is set
+            self.old_objects_pointing_to_young.append(addr_struct)
+            objhdr = self.header(addr_struct)
+            objhdr.tid &= ~GCFLAG_TRACK_YOUNG_PTRS
+            if objhdr.tid & GCFLAG_NO_HEAP_PTRS:
+                objhdr.tid &= ~GCFLAG_NO_HEAP_PTRS
+                self.prebuilt_root_objects.append(addr_struct)
+        self.jit_remember_young_pointer = jit_remember_young_pointer
         #
         if self.card_page_indices > 0:
             self._init_writebarrier_with_card_marker()
@@ -1157,13 +1176,13 @@ class MiniMarkGC(MovingGCBase):
             # called by the JIT when GCFLAG_TRACK_YOUNG_PTRS is set
             # but GCFLAG_CARDS_SET is cleared.  This tries to set
             # GCFLAG_CARDS_SET if possible; otherwise, it falls back
-            # to remember_young_pointer().
+            # to jit_remember_young_pointer().
             objhdr = self.header(addr_array)
             if objhdr.tid & GCFLAG_HAS_CARDS:
                 self.old_objects_with_cards_set.append(addr_array)
                 objhdr.tid |= GCFLAG_CARDS_SET
             else:
-                self.remember_young_pointer(addr_array)
+                self.jit_remember_young_pointer(addr_array)
 
         self.jit_remember_young_pointer_from_array = (
             jit_remember_young_pointer_from_array)
@@ -1173,6 +1192,19 @@ class MiniMarkGC(MovingGCBase):
         addr_byte = obj - size_gc_header
         return llarena.getfakearenaaddress(addr_byte) + (~byteindex)
 
+
+    def assume_young_pointers(self, addr_struct):
+        """Called occasionally by the JIT to mean ``assume that 'addr_struct'
+        may now contain young pointers.''
+        """
+        objhdr = self.header(addr_struct)
+        if objhdr.tid & GCFLAG_TRACK_YOUNG_PTRS:
+            self.old_objects_pointing_to_young.append(addr_struct)
+            objhdr.tid &= ~GCFLAG_TRACK_YOUNG_PTRS
+            #
+            if objhdr.tid & GCFLAG_NO_HEAP_PTRS:
+                objhdr.tid &= ~GCFLAG_NO_HEAP_PTRS
+                self.prebuilt_root_objects.append(addr_struct)
 
     def writebarrier_before_copy(self, source_addr, dest_addr,
                                  source_start, dest_start, length):
@@ -1222,7 +1254,6 @@ class MiniMarkGC(MovingGCBase):
 
     def manually_copy_card_bits(self, source_addr, dest_addr, length):
         # manually copy the individual card marks from source to dest
-        assert self.card_page_indices > 0
         bytes = self.card_marking_bytes_for_length(length)
         #
         anybyte = 0
@@ -1325,8 +1356,7 @@ class MiniMarkGC(MovingGCBase):
         self.root_walker.walk_roots(
             MiniMarkGC._trace_drag_out1,  # stack roots
             MiniMarkGC._trace_drag_out1,  # static in prebuilt non-gc
-            None,                         # static in prebuilt gc
-            is_minor=True)
+            None)                         # static in prebuilt gc
         debug_stop("gc-minor-walkroots")
 
     def collect_cardrefs_to_nursery(self):
@@ -1481,7 +1511,6 @@ class MiniMarkGC(MovingGCBase):
         # replace the old object's content with the target address.
         # A bit of no-ops to convince llarena that we are changing
         # the layout, in non-translated versions.
-        typeid = self.get_type_id(obj)
         obj = llarena.getfakearenaaddress(obj)
         llarena.arena_reset(obj - size_gc_header, totalsize, 0)
         llarena.arena_reserve(obj - size_gc_header,
@@ -1497,9 +1526,7 @@ class MiniMarkGC(MovingGCBase):
         # because it can contain further pointers to other young objects.
         # We will fix such references to point to the copy of the young
         # objects when we walk 'old_objects_pointing_to_young'.
-        if self.has_gcptr(typeid):
-            # we only have to do it if we have any gcptrs
-            self.old_objects_pointing_to_young.append(newobj)
+        self.old_objects_pointing_to_young.append(newobj)
     _trace_drag_out._always_inline_ = True
 
     def _visit_young_rawmalloced_object(self, obj):
@@ -1788,8 +1815,6 @@ class MiniMarkGC(MovingGCBase):
         #
         # It's the first time.  We set the flag.
         hdr.tid |= GCFLAG_VISITED
-        if not self.has_gcptr(llop.extract_ushort(llgroup.HALFWORD, hdr.tid)):
-            return
         #
         # Trace the content of the object and put all objects it references
         # into the 'objects_to_trace' list.
@@ -1799,48 +1824,6 @@ class MiniMarkGC(MovingGCBase):
     # ----------
     # id() and identityhash() support
 
-    def _allocate_shadow(self, obj):
-        size_gc_header = self.gcheaderbuilder.size_gc_header
-        size = self.get_size(obj)
-        shadowhdr = self._malloc_out_of_nursery(size_gc_header +
-                                                size)
-        # Initialize the shadow enough to be considered a
-        # valid gc object.  If the original object stays
-        # alive at the next minor collection, it will anyway
-        # be copied over the shadow and overwrite the
-        # following fields.  But if the object dies, then
-        # the shadow will stay around and only be freed at
-        # the next major collection, at which point we want
-        # it to look valid (but ready to be freed).
-        shadow = shadowhdr + size_gc_header
-        self.header(shadow).tid = self.header(obj).tid
-        typeid = self.get_type_id(obj)
-        if self.is_varsize(typeid):
-            lenofs = self.varsize_offset_to_length(typeid)
-            (shadow + lenofs).signed[0] = (obj + lenofs).signed[0]
-        #
-        self.header(obj).tid |= GCFLAG_HAS_SHADOW
-        self.nursery_objects_shadows.setitem(obj, shadow)
-        return shadow
-
-    def _find_shadow(self, obj):
-        #
-        # The object is not a tagged pointer, and it is still in the
-        # nursery.  Find or allocate a "shadow" object, which is
-        # where the object will be moved by the next minor
-        # collection
-        if self.header(obj).tid & GCFLAG_HAS_SHADOW:
-            shadow = self.nursery_objects_shadows.get(obj)
-            ll_assert(shadow != NULL,
-                      "GCFLAG_HAS_SHADOW but no shadow found")
-        else:
-            shadow = self._allocate_shadow(obj)
-        #
-        # The answer is the address of the shadow.
-        return shadow
-    _find_shadow._dont_inline_ = True
-
-    @specialize.arg(2)
     def id_or_identityhash(self, gcobj, is_hash):
         """Implement the common logic of id() and identityhash()
         of an object, given as a GCREF.
@@ -1849,7 +1832,41 @@ class MiniMarkGC(MovingGCBase):
         #
         if self.is_valid_gc_object(obj):
             if self.is_in_nursery(obj):
-                obj = self._find_shadow(obj)
+                #
+                # The object is not a tagged pointer, and it is still in the
+                # nursery.  Find or allocate a "shadow" object, which is
+                # where the object will be moved by the next minor
+                # collection
+                if self.header(obj).tid & GCFLAG_HAS_SHADOW:
+                    shadow = self.nursery_objects_shadows.get(obj)
+                    ll_assert(shadow != NULL,
+                              "GCFLAG_HAS_SHADOW but no shadow found")
+                else:
+                    size_gc_header = self.gcheaderbuilder.size_gc_header
+                    size = self.get_size(obj)
+                    shadowhdr = self._malloc_out_of_nursery(size_gc_header +
+                                                            size)
+                    # Initialize the shadow enough to be considered a
+                    # valid gc object.  If the original object stays
+                    # alive at the next minor collection, it will anyway
+                    # be copied over the shadow and overwrite the
+                    # following fields.  But if the object dies, then
+                    # the shadow will stay around and only be freed at
+                    # the next major collection, at which point we want
+                    # it to look valid (but ready to be freed).
+                    shadow = shadowhdr + size_gc_header
+                    self.header(shadow).tid = self.header(obj).tid
+                    typeid = self.get_type_id(obj)
+                    if self.is_varsize(typeid):
+                        lenofs = self.varsize_offset_to_length(typeid)
+                        (shadow + lenofs).signed[0] = (obj + lenofs).signed[0]
+                    #
+                    self.header(obj).tid |= GCFLAG_HAS_SHADOW
+                    self.nursery_objects_shadows.setitem(obj, shadow)
+                #
+                # The answer is the address of the shadow.
+                obj = shadow
+                #
             elif is_hash:
                 if self.header(obj).tid & GCFLAG_HAS_SHADOW:
                     #
@@ -1867,7 +1884,6 @@ class MiniMarkGC(MovingGCBase):
         if is_hash:
             i = mangle_hash(i)
         return i
-    id_or_identityhash._always_inline_ = True
 
     def id(self, gcobj):
         return self.id_or_identityhash(gcobj, False)
@@ -2013,8 +2029,6 @@ class MiniMarkGC(MovingGCBase):
     # The code relies on the fact that no weakref can be an old object
     # weakly pointing to a young object.  Indeed, weakrefs are immutable
     # so they cannot point to an object that was created after it.
-    # Thanks to this, during a minor collection, we don't have to fix
-    # or clear the address stored in old weakrefs.
     def invalidate_young_weakrefs(self):
         """Called during a nursery collection."""
         # walk over the list of objects that contain weakrefs and are in the

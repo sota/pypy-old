@@ -1,7 +1,7 @@
-=========================
-What's new in PyPy 5.0.+
-=========================
+======================
+What's new in PyPy 2.1
+======================
 
-.. this is a revision shortly after release-5.0
-.. startrev: 9c4299dc2d60
+.. this is a revision shortly after release-2.0
+.. startrev: a13c07067613
 

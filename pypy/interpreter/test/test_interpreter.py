@@ -299,30 +299,6 @@ class AppTestInterpreter:
         finally:
             sys.stdout = save
 
-    def test_print_strange_object(self):
-        import sys
-
-        class A(object):
-            def __getattribute__(self, name):
-                print "seeing", name
-            def __str__(self):
-                return 'A!!'
-        save = sys.stdout
-        class Out(object):
-            def __init__(self):
-                self.data = []
-            def write(self, x):
-                self.data.append((type(x), x))
-        sys.stdout = out = Out()
-        try:
-            a = A()
-            assert out.data == []
-            print a
-            assert out.data == [(str, 'A!!'),
-                                (str, '\n')]
-        finally:
-            sys.stdout = save
-
     def test_identity(self):
         def f(x): return x
         assert f(666) == 666
@@ -335,73 +311,3 @@ class AppTestInterpreter:
             assert str(e) == "maximum recursion depth exceeded"
         else:
             assert 0, "should have raised!"
-
-    def test_with_statement_and_sys_clear(self):
-        import sys
-        class CM(object):
-            def __enter__(self):
-                return self
-            def __exit__(self, exc_type, exc_value, tb):
-                sys.exc_clear()
-        try:
-            with CM():
-                1 / 0
-            raise AssertionError("should not be reached")
-        except ZeroDivisionError:
-            pass
-
-    def test_sys_clear_while_handling_exception(self):
-        import sys
-        def f():
-            try:
-                some_missing_name
-            except NameError:
-                g()
-                assert sys.exc_info()[0] is NameError
-        def g():
-            assert sys.exc_info()[0] is NameError
-            try:
-                1 / 0
-            except ZeroDivisionError:
-                assert sys.exc_info()[0] is ZeroDivisionError
-                sys.exc_clear()
-                assert sys.exc_info()[0] is None
-                h()
-                assert sys.exc_info()[0] is None
-        def h():
-            assert sys.exc_info()[0] is None
-        f()
-
-    def test_sys_clear_while_handling_exception_nested(self):
-        import sys
-        def f():
-            try:
-                some_missing_name
-            except NameError:
-                g()
-                assert sys.exc_info()[0] is NameError
-        def g():
-            assert sys.exc_info()[0] is NameError
-            try:
-                1 / 0
-            except ZeroDivisionError:
-                assert sys.exc_info()[0] is ZeroDivisionError
-                h1()
-                assert sys.exc_info()[0] is None
-                h()
-                assert sys.exc_info()[0] is None
-        def h():
-            assert sys.exc_info()[0] is None
-        def h1():
-            sys.exc_clear()
-        f()
-
-    def test_sys_clear_reraise(self):
-        import sys
-        def f():
-            try:
-                1 / 0
-            except ZeroDivisionError:
-                sys.exc_clear()
-                raise
-        raises(TypeError, f)

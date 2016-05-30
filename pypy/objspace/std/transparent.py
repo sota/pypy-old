@@ -1,29 +1,13 @@
+
 """ transparent.py - Several transparent proxy helpers
 """
+
 from pypy.interpreter import gateway
-from pypy.interpreter.error import OperationError, oefmt
-from pypy.interpreter.typedef import Function, GeneratorIterator, PyTraceback, \
-    PyFrame, PyCode
-from pypy.objspace.std.proxyobject import W_Transparent
+from pypy.interpreter.error import OperationError, operationerrfmt
+from pypy.objspace.std.proxyobject import *
 from pypy.objspace.std.typeobject import W_TypeObject
+from rpython.rlib.objectmodel import r_dict
 from rpython.rlib.unroll import unrolling_iterable
-
-
-class W_TransparentFunction(W_Transparent):
-    typedef = Function.typedef
-
-class W_TransparentTraceback(W_Transparent):
-    typedef = PyTraceback.typedef
-
-class W_TransparentCode(W_Transparent):
-    typedef = PyCode.typedef
-
-class W_TransparentFrame(W_Transparent):
-    typedef = PyFrame.typedef
-
-class W_TransparentGenerator(W_Transparent):
-    typedef = GeneratorIterator.typedef
-
 
 class TypeCache(object):
     def __init__(self):
@@ -44,10 +28,13 @@ def setup(space):
                   space.wrap(app_proxy_controller))
 
 
+
 def proxy(space, w_type, w_controller):
     """tproxy(typ, controller) -> obj
 Return something that looks like it is of type typ. Its behaviour is
 completely controlled by the controller."""
+    from pypy.interpreter.typedef import Function, PyTraceback, PyFrame, \
+        PyCode, GeneratorIterator
     if not space.is_true(space.callable(w_controller)):
         raise OperationError(space.w_TypeError, space.wrap("controller should be function"))
 
@@ -62,7 +49,7 @@ completely controlled by the controller."""
             return W_TransparentGenerator(space, w_type, w_controller)
         if space.is_true(space.issubtype(w_type, space.gettypeobject(PyCode.typedef))):
             return W_TransparentCode(space, w_type, w_controller)
-        if w_type.layout.typedef is space.w_object.layout.typedef:
+        if w_type.instancetypedef is space.w_object.instancetypedef:
             return W_Transparent(space, w_type, w_controller)
     else:
         raise OperationError(space.w_TypeError, space.wrap("type expected as first argument"))
@@ -70,7 +57,9 @@ completely controlled by the controller."""
     for k, v in type_cache.cache:
         if w_lookup == k:
             return v(space, w_type, w_controller)
-    raise oefmt(space.w_TypeError, "'%N' object could not be wrapped", w_type)
+    raise operationerrfmt(space.w_TypeError,
+        "'%s' object could not be wrapped",
+        w_type.getname(space))
 
 def register_proxyable(space, cls):
     tpdef = cls.typedef

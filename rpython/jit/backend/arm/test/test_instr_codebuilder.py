@@ -76,16 +76,16 @@ class TestInstrCodeBuilder(ASMTest):
         self.assert_equal('ASR r7, r5, #24')
 
     def test_orr_rr_no_shift(self):
-        self.cb.ORR_rr(r.r0.value, r.r7.value, r.r12.value)
+        self.cb.ORR_rr(r.r0.value, r.r7.value,r.r12.value)
         self.assert_equal('ORR r0, r7, r12')
 
     def test_orr_rr_lsl_8(self):
-        self.cb.ORR_rr(r.r0.value, r.r7.value, r.r12.value, 8)
+        self.cb.ORR_rr(r.r0.value, r.r7.value,r.r12.value, 8)
         self.assert_equal('ORR r0, r7, r12, lsl #8')
 
     def test_push_one_reg(self):
         if get_as_version() < (2, 23):
-            py.test.xfail("GNU as before version 2.23 generates encoding A1 for "
+          py.test.xfail("GNU as before version 2.23 generates encoding A1 for "
                         "pushing only one register")
         self.cb.PUSH([r.r1.value])
         self.assert_equal('PUSH {r1}')
@@ -186,26 +186,6 @@ class TestInstrCodeBuilder(ASMTest):
     def test_movt(self):
         self.cb.MOVT_ri(r.r3.value, 0xFFFF, conditions.NE)
         self.assert_equal("MOVTNE r3, #65535")
-
-    def test_ldrex(self):
-        self.cb.LDREX(r.r10.value, r.r11.value)
-        self.assert_equal('LDREX r10, [r11]')
-
-    def test_strex(self):
-        self.cb.STREX(r.r9.value, r.r1.value, r.r14.value, conditions.NE)
-        self.assert_equal('STREXNE r9, r1, [r14]')
-
-    def test_dmb(self):
-        self.cb.DMB()
-        self.assert_equal('DMB')
-
-    def test_fmdrr(self):
-        self.cb.FMDRR(r.d11.value, r.r9.value, r.r14.value)
-        self.assert_equal('FMDRR d11, r9, r14')
-
-    def test_fmrrd(self):
-        self.cb.FMRRD(r.r9.value, r.r14.value, r.d11.value)
-        self.assert_equal('FMRRD r9, r14, d11')
 
 
 def test_size_of_gen_load_int():

@@ -1,7 +1,5 @@
 from pypy.interpreter.mixedmodule import MixedModule
 
-from rpython.rlib import rtermios
-
 class Module(MixedModule):
     "This module provides an interface to the Posix calls for tty I/O control.\n\
     For a complete description of these calls, see the Posix or Unix manual\n\
@@ -25,6 +23,10 @@ class Module(MixedModule):
         'error'       : 'space.fromcache(interp_termios.Cache).w_error',
     }
 
-    for name in rtermios.all_constants:
-        value = getattr(rtermios, name)
-        interpleveldefs[name] = "space.wrap(%s)" % value
+# XXX this is extremaly not-portable, but how to prevent this?
+
+import termios
+for i in dir(termios):
+    val = getattr(termios, i)
+    if i.isupper() and type(val) is int:
+        Module.interpleveldefs[i] = "space.wrap(%s)" % val

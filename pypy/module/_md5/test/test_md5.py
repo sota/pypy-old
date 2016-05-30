@@ -5,7 +5,7 @@ Tests for the md5 module implemented at interp-level in pypy/module/md5.
 
 class AppTestMD5(object):
     spaceconfig = {
-        'usemodules': ['_md5', 'binascii', 'time', 'struct'],
+        "usemodules": ['_md5', 'rctime', 'binascii'],
     }
 
     def setup_class(cls):

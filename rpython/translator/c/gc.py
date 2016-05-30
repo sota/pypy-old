@@ -1,7 +1,8 @@
 import sys
 from rpython.flowspace.model import Constant
-from rpython.rtyper.lltypesystem.lltype import (RttiStruct,
-     RuntimeTypeInfo)
+from rpython.rtyper.lltypesystem import lltype
+from rpython.rtyper.lltypesystem.lltype import (typeOf, RttiStruct,
+     RuntimeTypeInfo, top_container)
 from rpython.translator.c.node import ContainerNode
 from rpython.translator.c.support import cdecl
 from rpython.translator.tool.cbuild import ExternalCompilationInfo
@@ -17,11 +18,22 @@ class BasicGcPolicy(object):
             return defnode.db.gctransformer.HDR
         return None
 
+    def common_gcheader_initdata(self, defnode):
+        if defnode.db.gctransformer is not None:
+            raise NotImplementedError
+        return None
+
     def struct_gcheader_definition(self, defnode):
         return self.common_gcheader_definition(defnode)
 
+    def struct_gcheader_initdata(self, defnode):
+        return self.common_gcheader_initdata(defnode)
+
     def array_gcheader_definition(self, defnode):
         return self.common_gcheader_definition(defnode)
+
+    def array_gcheader_initdata(self, defnode):
+        return self.common_gcheader_initdata(defnode)
 
     def compilation_info(self):
         if not self.db:
@@ -33,6 +45,9 @@ class BasicGcPolicy(object):
                               '#define MALLOC_ZERO_FILLED %d' % (gct.malloc_zero_filled,),
                               ]
             )
+
+    def get_prebuilt_hash(self, obj):
+        return None
 
     def need_no_typeptr(self):
         return False
@@ -56,20 +71,13 @@ class BasicGcPolicy(object):
         return ''
 
     def OP_GC_THREAD_RUN(self, funcgen, op):
-        # The gc transformer leaves this operation in the graphs
-        # in all cases except with framework+shadowstack.  In that
-        # case the operation is removed because redundant with
-        # rthread.get_or_make_ident().
-        return 'RPY_THREADLOCALREF_ENSURE();'
+        return ''
 
     def OP_GC_THREAD_START(self, funcgen, op):
         return ''
 
     def OP_GC_THREAD_DIE(self, funcgen, op):
-        # The gc transformer leaves this operation in the graphs
-        # (but may insert a call to a gcrootfinder-specific
-        # function just before).
-        return 'RPython_ThreadLocals_ThreadDie();'
+        return ''
 
     def OP_GC_THREAD_BEFORE_FORK(self, funcgen, op):
         return '%s = NULL;' % funcgen.expr(op.result)
@@ -77,7 +85,7 @@ class BasicGcPolicy(object):
     def OP_GC_THREAD_AFTER_FORK(self, funcgen, op):
         return ''
 
-    def OP_GC_WRITEBARRIER(self, funcgen, op):
+    def OP_GC_ASSUME_YOUNG_POINTERS(self, funcgen, op):
         return ''
 
     def OP_GC_STACK_BOTTOM(self, funcgen, op):
@@ -94,9 +102,16 @@ class RefcountingInfo:
 
 class RefcountingGcPolicy(BasicGcPolicy):
 
-    def gettransformer(self, translator):
+    def gettransformer(self):
         from rpython.memory.gctransform import refcounting
-        return refcounting.RefcountingGCTransformer(translator)
+        return refcounting.RefcountingGCTransformer(self.db.translator)
+
+    def common_gcheader_initdata(self, defnode):
+        if defnode.db.gctransformer is not None:
+            gct = defnode.db.gctransformer
+            top = top_container(defnode.obj)
+            return gct.gcheaderbuilder.header_of_object(top)._obj
+        return None
 
     # for structs
 
@@ -175,9 +190,16 @@ class BoehmInfo:
 
 class BoehmGcPolicy(BasicGcPolicy):
 
-    def gettransformer(self, translator):
+    def gettransformer(self):
         from rpython.memory.gctransform import boehm
-        return boehm.BoehmGCTransformer(translator)
+        return boehm.BoehmGCTransformer(self.db.translator)
+
+    def common_gcheader_initdata(self, defnode):
+        if defnode.db.gctransformer is not None:
+            hdr = lltype.malloc(defnode.db.gctransformer.HDR, immortal=True)
+            hdr.hash = lltype.identityhash_nocache(defnode.obj._as_ptr())
+            return hdr._obj
+        return None
 
     def array_setup(self, arraydefnode):
         pass
@@ -284,9 +306,9 @@ class NoneGcPolicy(BoehmGcPolicy):
 
 class BasicFrameworkGcPolicy(BasicGcPolicy):
 
-    def gettransformer(self, translator):
+    def gettransformer(self):
         if hasattr(self, 'transformerclass'):    # for rpython/memory tests
-            return self.transformerclass(translator)
+            return self.transformerclass(self.db.translator)
         raise NotImplementedError
 
     def struct_setup(self, structdefnode, rtti):
@@ -333,6 +355,24 @@ class BasicFrameworkGcPolicy(BasicGcPolicy):
             args = [funcgen.expr(v) for v in op.args]
             return '%s = %s; /* for moving GCs */' % (args[1], args[0])
 
+    def common_gcheader_initdata(self, defnode):
+        o = top_container(defnode.obj)
+        needs_hash = self.get_prebuilt_hash(o) is not None
+        hdr = defnode.db.gctransformer.gc_header_for(o, needs_hash)
+        return hdr._obj
+
+    def get_prebuilt_hash(self, obj):
+        # for prebuilt objects that need to have their hash stored and
+        # restored.  Note that only structures that are StructNodes all
+        # the way have their hash stored (and not e.g. structs with var-
+        # sized arrays at the end).  'obj' must be the top_container.
+        TYPE = typeOf(obj)
+        if not isinstance(TYPE, lltype.GcStruct):
+            return None
+        if TYPE._is_varsize():
+            return None
+        return getattr(obj, '_hash_cache_', None)
+
     def need_no_typeptr(self):
         config = self.db.translator.config
         return config.translation.gcremovetypeptr
@@ -364,7 +404,7 @@ class BasicFrameworkGcPolicy(BasicGcPolicy):
                self.tid_fieldname(tid_field),
                funcgen.expr(c_skipoffset)))
 
-    def OP_GC_WRITEBARRIER(self, funcgen, op):
+    def OP_GC_ASSUME_YOUNG_POINTERS(self, funcgen, op):
         raise Exception("the FramewokGCTransformer should handle this")
 
     def OP_GC_GCFLAG_EXTRA(self, funcgen, op):
@@ -393,15 +433,15 @@ class BasicFrameworkGcPolicy(BasicGcPolicy):
 
 class ShadowStackFrameworkGcPolicy(BasicFrameworkGcPolicy):
 
-    def gettransformer(self, translator):
+    def gettransformer(self):
         from rpython.memory.gctransform import shadowstack
-        return shadowstack.ShadowStackFrameworkGCTransformer(translator)
+        return shadowstack.ShadowStackFrameworkGCTransformer(self.db.translator)
 
 class AsmGcRootFrameworkGcPolicy(BasicFrameworkGcPolicy):
 
-    def gettransformer(self, translator):
+    def gettransformer(self):
         from rpython.memory.gctransform import asmgcroot
-        return asmgcroot.AsmGcRootFrameworkGCTransformer(translator)
+        return asmgcroot.AsmGcRootFrameworkGCTransformer(self.db.translator)
 
     def GC_KEEPALIVE(self, funcgen, v):
         return 'pypy_asm_keepalive(%s);' % funcgen.expr(v)

@@ -161,11 +161,7 @@ class Calendar(object):
         oneday = datetime.timedelta(days=1)
         while True:
             yield date
-            try:
-                date += oneday
-            except OverflowError:
-                # Adding one day could fail after datetime.MAXYEAR
-                break
+            date += oneday
             if date.month != month and date.weekday() == self.firstweekday:
                 break
 
@@ -220,7 +216,7 @@ class Calendar(object):
     def yeardatescalendar(self, year, width=3):
         """
         Return the data for the specified year ready for formatting. The return
-        value is a list of month rows. Each month row contains up to width months.
+        value is a list of month rows. Each month row contains upto width months.
         Each month contains between 4 and 6 weeks and each week contains 1-7
         days. Days are datetime.date objects.
         """
@@ -492,7 +488,6 @@ class TimeEncoding:
     def __enter__(self):
         self.oldlocale = _locale.getlocale(_locale.LC_TIME)
         _locale.setlocale(_locale.LC_TIME, self.locale)
-        return _locale.getlocale(_locale.LC_TIME)[1]
 
     def __exit__(self, *args):
         _locale.setlocale(_locale.LC_TIME, self.oldlocale)

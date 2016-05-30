@@ -5,7 +5,7 @@ Common types, functions from core win32 libraries, such as kernel32
 import os
 import errno
 
-from rpython.rlib.rposix_environ import make_env_impls
+from rpython.rtyper.module.ll_os_environ import make_env_impls
 from rpython.rtyper.tool import rffi_platform
 from rpython.tool.udir import udir
 from rpython.translator.tool.cbuild import ExternalCompilationInfo
@@ -79,7 +79,7 @@ class CConfig:
             "MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT)")
 
         defines = """FORMAT_MESSAGE_ALLOCATE_BUFFER FORMAT_MESSAGE_FROM_SYSTEM
-                       MAX_PATH _MAX_ENV FORMAT_MESSAGE_IGNORE_INSERTS
+                       MAX_PATH _MAX_ENV
                        WAIT_OBJECT_0 WAIT_TIMEOUT INFINITE
                        ERROR_INVALID_HANDLE
                        DELETE READ_CONTROL SYNCHRONIZE WRITE_DAC
@@ -118,73 +118,26 @@ if WIN32:
     INVALID_HANDLE_VALUE = rffi.cast(HANDLE, -1)
     PFILETIME = rffi.CArrayPtr(FILETIME)
 
-    _GetLastError = winexternal('GetLastError', [], DWORD,
-                                _nowrapper=True, sandboxsafe=True)
-    _SetLastError = winexternal('SetLastError', [DWORD], lltype.Void,
-                                _nowrapper=True, sandboxsafe=True)
+    _GetLastError = winexternal('GetLastError', [], DWORD, threadsafe=False)
+    _SetLastError = winexternal('SetLastError', [DWORD], lltype.Void)
 
-    def GetLastError_saved():
-        """Return the value of the "saved LastError".
-        The C-level GetLastError() is saved there after a call to a C
-        function, if that C function was declared with the flag
-        llexternal(..., save_err=rffi.RFFI_SAVE_LASTERROR).
-        Functions without that flag don't change the saved LastError.
-        Alternatively, if the function was declared RFFI_SAVE_WSALASTERROR,
-        then the value of the C-level WSAGetLastError() is saved instead
-        (into the same "saved LastError" variable).
-        """
-        from rpython.rlib import rthread
-        return rffi.cast(lltype.Signed, rthread.tlfield_rpy_lasterror.getraw())
+    def GetLastError():
+        return rffi.cast(lltype.Signed, _GetLastError())
+    def SetLastError(err):
+        _SetLastError(rffi.cast(DWORD, err))
 
-    def SetLastError_saved(err):
-        """Set the value of the saved LastError.  This value will be used in
-        a call to the C-level SetLastError() just before calling the
-        following C function, provided it was declared
-        llexternal(..., save_err=RFFI_READSAVED_LASTERROR).
-        """
-        from rpython.rlib import rthread
-        rthread.tlfield_rpy_lasterror.setraw(rffi.cast(DWORD, err))
+    # In tests, the first call to GetLastError is always wrong, because error
+    # is hidden by operations in ll2ctypes.  Call it now.
+    GetLastError()
 
-    def GetLastError_alt_saved():
-        """Return the value of the "saved alt LastError".
-        The C-level GetLastError() is saved there after a call to a C
-        function, if that C function was declared with the flag
-        llexternal(..., save_err=RFFI_SAVE_LASTERROR | RFFI_ALT_ERRNO).
-        Functions without that flag don't change the saved LastError.
-        Alternatively, if the function was declared 
-        RFFI_SAVE_WSALASTERROR | RFFI_ALT_ERRNO,
-        then the value of the C-level WSAGetLastError() is saved instead
-        (into the same "saved alt LastError" variable).
-        """
-        from rpython.rlib import rthread
-        return rffi.cast(lltype.Signed, rthread.tlfield_alt_lasterror.getraw())
-
-    def SetLastError_alt_saved(err):
-        """Set the value of the saved alt LastError.  This value will be used in
-        a call to the C-level SetLastError() just before calling the
-        following C function, provided it was declared
-        llexternal(..., save_err=RFFI_READSAVED_LASTERROR | RFFI_ALT_ERRNO).
-        """
-        from rpython.rlib import rthread
-        rthread.tlfield_alt_lasterror.setraw(rffi.cast(DWORD, err))
-
-    # In tests, the first call to _GetLastError() is always wrong,
-    # because error is hidden by operations in ll2ctypes.  Call it now.
-    _GetLastError()
-
-    GetModuleHandle = winexternal('GetModuleHandleA', [rffi.CCHARP], HMODULE)
-    LoadLibrary = winexternal('LoadLibraryA', [rffi.CCHARP], HMODULE,
-                              save_err=rffi.RFFI_SAVE_LASTERROR)
+    LoadLibrary = winexternal('LoadLibraryA', [rffi.CCHARP], HMODULE)
     GetProcAddress = winexternal('GetProcAddress',
                                  [HMODULE, rffi.CCHARP],
                                  rffi.VOIDP)
-    FreeLibrary = winexternal('FreeLibrary', [HMODULE], BOOL, releasegil=False)
+    FreeLibrary = winexternal('FreeLibrary', [HMODULE], BOOL, threadsafe=False)
 
     LocalFree = winexternal('LocalFree', [HLOCAL], DWORD)
-    CloseHandle = winexternal('CloseHandle', [HANDLE], BOOL, releasegil=False,
-                              save_err=rffi.RFFI_SAVE_LASTERROR)
-    CloseHandle_no_err = winexternal('CloseHandle', [HANDLE], BOOL,
-                                     releasegil=False)
+    CloseHandle = winexternal('CloseHandle', [HANDLE], BOOL, threadsafe=False)
 
     FormatMessage = winexternal(
         'FormatMessageA',
@@ -216,8 +169,7 @@ if WIN32:
         cfile = udir.join('dosmaperr.c')
         cfile.write(r'''
                 #include <errno.h>
-                #include <WinError.h>
-                #include <stdio.h>
+                #include  <stdio.h>
                 #ifdef __GNUC__
                 #define _dosmaperr mingw_dosmaperr
                 #endif
@@ -226,13 +178,8 @@ if WIN32:
                     int i;
                     for(i=1; i < 65000; i++) {
                         _dosmaperr(i);
-                        if (errno == EINVAL) {
-                            /* CPython issue #12802 */
-                            if (i == ERROR_DIRECTORY)
-                                errno = ENOTDIR;
-                            else
-                                continue;
-                        }
+                        if (errno == EINVAL)
+                            continue;
                         printf("%d\t%d\n", i, errno);
                     }
                     return 0;
@@ -244,7 +191,6 @@ if WIN32:
                 standalone=True)
         except (CompilationError, WindowsError):
             # Fallback for the mingw32 compiler
-            assert static_platform.name == 'mingw32'
             errors = {
                 2: 2, 3: 2, 4: 24, 5: 13, 6: 9, 7: 12, 8: 12, 9: 12, 10: 7,
                 11: 8, 15: 2, 16: 13, 17: 18, 18: 2, 19: 13, 20: 13, 21: 13,
@@ -255,7 +201,7 @@ if WIN32:
                 132: 13, 145: 41, 158: 13, 161: 2, 164: 11, 167: 13, 183: 17,
                 188: 8, 189: 8, 190: 8, 191: 8, 192: 8, 193: 8, 194: 8,
                 195: 8, 196: 8, 197: 8, 198: 8, 199: 8, 200: 8, 201: 8,
-                202: 8, 206: 2, 215: 11, 267: 20, 1816: 12,
+                202: 8, 206: 2, 215: 11, 1816: 12,
                 }
         else:
             output = os.popen(str(exename))
@@ -270,36 +216,35 @@ if WIN32:
     def llimpl_FormatError(code):
         "Return a message corresponding to the given Windows error code."
         buf = lltype.malloc(rffi.CCHARPP.TO, 1, flavor='raw')
-        buf[0] = lltype.nullptr(rffi.CCHARP.TO)
+
         try:
             msglen = FormatMessage(FORMAT_MESSAGE_ALLOCATE_BUFFER |
-                                   FORMAT_MESSAGE_FROM_SYSTEM | 
-                                   FORMAT_MESSAGE_IGNORE_INSERTS,
+                                   FORMAT_MESSAGE_FROM_SYSTEM,
                                    None,
                                    rffi.cast(DWORD, code),
                                    DEFAULT_LANGUAGE,
                                    rffi.cast(rffi.CCHARP, buf),
                                    0, None)
-            buflen = intmask(msglen)
 
-            # remove trailing cr/lf and dots
-            s_buf = buf[0]
-            while buflen > 0 and (s_buf[buflen - 1] <= ' ' or
-                                  s_buf[buflen - 1] == '.'):
-                buflen -= 1
+            if msglen <= 2:   # includes the case msglen < 0
+                return fake_FormatError(code)
 
-            if buflen <= 0:
-                result = 'Windows Error %d' % (code,)
-            else:
-                result = rffi.charpsize2str(s_buf, buflen)
-        finally:
+            # FormatMessage always appends \r\n.
+            buflen = intmask(msglen - 2)
+            assert buflen > 0
+
+            result = rffi.charpsize2str(buf[0], buflen)
             LocalFree(rffi.cast(rffi.VOIDP, buf[0]))
+        finally:
             lltype.free(buf, flavor='raw')
 
         return result
 
-    def lastSavedWindowsError(context="Windows Error"):
-        code = GetLastError_saved()
+    def fake_FormatError(code):
+        return 'Windows Error %d' % (code,)
+
+    def lastWindowsError(context="Windows Error"):
+        code = GetLastError()
         return WindowsError(code, context)
 
     def FAILED(hr):
@@ -323,8 +268,7 @@ if WIN32:
 
     _GetVersionEx = winexternal('GetVersionExA',
                                 [lltype.Ptr(OSVERSIONINFOEX)],
-                                DWORD,
-                                save_err=rffi.RFFI_SAVE_LASTERROR)
+                                DWORD)
 
     @jit.dont_look_inside
     def GetVersionEx():
@@ -333,7 +277,7 @@ if WIN32:
                          rffi.sizeof(OSVERSIONINFOEX))
         try:
             if not _GetVersionEx(info):
-                raise lastSavedWindowsError()
+                raise lastWindowsError()
             return (rffi.cast(lltype.Signed, info.c_dwMajorVersion),
                     rffi.cast(lltype.Signed, info.c_dwMinorVersion),
                     rffi.cast(lltype.Signed, info.c_dwBuildNumber),
@@ -348,8 +292,7 @@ if WIN32:
             lltype.free(info, flavor='raw')
 
     _WaitForSingleObject = winexternal(
-        'WaitForSingleObject', [HANDLE, DWORD], DWORD,
-        save_err=rffi.RFFI_SAVE_LASTERROR)
+        'WaitForSingleObject', [HANDLE, DWORD], DWORD)
 
     def WaitForSingleObject(handle, timeout):
         """Return values:
@@ -357,13 +300,12 @@ if WIN32:
         - WAIT_TIMEOUT when the timeout elapsed"""
         res = _WaitForSingleObject(handle, timeout)
         if res == rffi.cast(DWORD, -1):
-            raise lastSavedWindowsError("WaitForSingleObject")
+            raise lastWindowsError("WaitForSingleObject")
         return res
 
     _WaitForMultipleObjects = winexternal(
         'WaitForMultipleObjects', [
-            DWORD, rffi.CArrayPtr(HANDLE), BOOL, DWORD], DWORD,
-            save_err=rffi.RFFI_SAVE_LASTERROR)
+            DWORD, rffi.CArrayPtr(HANDLE), BOOL, DWORD], DWORD)
 
     def WaitForMultipleObjects(handles, waitall=False, timeout=INFINITE):
         """Return values:
@@ -377,26 +319,24 @@ if WIN32:
                 handle_array[i] = handles[i]
             res = _WaitForMultipleObjects(nb, handle_array, waitall, timeout)
             if res == rffi.cast(DWORD, -1):
-                raise lastSavedWindowsError("WaitForMultipleObjects")
+                raise lastWindowsError("WaitForMultipleObjects")
             return res
         finally:
             lltype.free(handle_array, flavor='raw')
 
     _CreateEvent = winexternal(
-        'CreateEventA', [rffi.VOIDP, BOOL, BOOL, LPCSTR], HANDLE,
-        save_err=rffi.RFFI_SAVE_LASTERROR)
+        'CreateEventA', [rffi.VOIDP, BOOL, BOOL, LPCSTR], HANDLE)
     def CreateEvent(*args):
         handle = _CreateEvent(*args)
         if handle == NULL_HANDLE:
-            raise lastSavedWindowsError("CreateEvent")
+            raise lastWindowsError("CreateEvent")
         return handle
     SetEvent = winexternal(
         'SetEvent', [HANDLE], BOOL)
     ResetEvent = winexternal(
         'ResetEvent', [HANDLE], BOOL)
     _OpenProcess = winexternal(
-        'OpenProcess', [DWORD, BOOL, DWORD], HANDLE,
-        save_err=rffi.RFFI_SAVE_LASTERROR)
+        'OpenProcess', [DWORD, BOOL, DWORD], HANDLE)
     def OpenProcess(*args):
         ''' OpenProcess( dwDesiredAccess, bInheritHandle, dwProcessId)
         where dwDesiredAccess is a combination of the flags:
@@ -422,14 +362,12 @@ if WIN32:
         '''
         handle = _OpenProcess(*args)
         if handle == NULL_HANDLE:
-            raise lastSavedWindowsError("OpenProcess")
+            raise lastWindowsError("OpenProcess")
         return handle
     TerminateProcess = winexternal(
-        'TerminateProcess', [HANDLE, rffi.UINT], BOOL,
-        save_err=rffi.RFFI_SAVE_LASTERROR)
+        'TerminateProcess', [HANDLE, rffi.UINT], BOOL)
     GenerateConsoleCtrlEvent = winexternal(
-        'GenerateConsoleCtrlEvent', [DWORD, DWORD], BOOL,
-        save_err=rffi.RFFI_SAVE_LASTERROR)
+        'GenerateConsoleCtrlEvent', [DWORD, DWORD], BOOL)
     _GetCurrentProcessId = winexternal(
         'GetCurrentProcessId', [], DWORD)
     def GetCurrentProcessId():
@@ -441,5 +379,19 @@ if WIN32:
         return rffi.cast(lltype.Signed, _GetConsoleCP())
     def GetConsoleOutputCP():
         return rffi.cast(lltype.Signed, _GetConsoleOutputCP())
+
+    def os_kill(pid, sig):
+        if sig == CTRL_C_EVENT or sig == CTRL_BREAK_EVENT:
+            if GenerateConsoleCtrlEvent(sig, pid) == 0:
+                raise lastWindowsError('os_kill failed generating event')
+            return
+        handle = OpenProcess(PROCESS_ALL_ACCESS, False, pid)
+        if handle == NULL_HANDLE:
+            raise lastWindowsError('os_kill failed opening process')
+        try:
+            if TerminateProcess(handle, sig) == 0:
+                raise lastWindowsError('os_kill failed to terminate process')
+        finally:
+            CloseHandle(handle)
 
     _wenviron_items, _wgetenv, _wputenv = make_env_impls(win32=True)

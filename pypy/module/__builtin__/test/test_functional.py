@@ -1,4 +1,5 @@
 class AppTestMap:
+
     def test_trivial_map_one_seq(self):
         assert map(lambda x: x+2, [1, 2, 3, 4]) == [3, 4, 5, 6]
 
@@ -57,11 +58,6 @@ class AppTestMap:
         b = []
         assert map(lambda x, y: x, a, b) == a
 
-    def test_map_second_item(self):
-        a = []
-        b = [1, 2, 3, 4, 5]
-        assert map(lambda x, y: y, a, b) == b
-
     def test_map_iterables(self):
         class A(object):
             def __init__(self, n):
@@ -81,7 +77,6 @@ class AppTestMap:
         assert result == [(2, 7), (1, 6), (None, 5), (None, 4),
                           (None, 3), (None, 2), (None, 1)]
 
-
 class AppTestZip:
     def test_one_list(self):
         assert zip([1,2,3]) == [(1,), (2,), (3,)]
@@ -98,7 +93,6 @@ class AppTestZip:
                     yield None
         assert zip(Foo()) == []
 
-
 class AppTestReduce:
     def test_None(self):
         raises(TypeError, reduce, lambda x, y: x+y, [1,2,3], None)
@@ -110,7 +104,6 @@ class AppTestReduce:
     def test_minus(self):
         assert reduce(lambda x, y: x-y, [10, 2, 8]) == 0
         assert reduce(lambda x, y: x-y, [2, 8], 10) == 0
-
 
 class AppTestFilter:
     def test_None(self):
@@ -131,7 +124,6 @@ class AppTestFilter:
             def __getitem__(self, i):
                 return i * 10
         assert filter(lambda x: x != 20, T("abcd")) == (0, 10, 30)
-
 
 class AppTestXRange:
     def test_xrange(self):
@@ -163,8 +155,7 @@ class AppTestXRange:
         assert list(xrange(0, 10, A())) == [0, 5]
 
     def test_xrange_float(self):
-        exc = raises(TypeError, xrange, 0.1, 2.0, 1.1)
-        assert "integer" in str(exc.value)
+        assert list(xrange(0.1, 2.0, 1.1)) == [0, 1]
 
     def test_xrange_long(self):
         import sys
@@ -197,22 +188,6 @@ class AppTestXRange:
         x = xrange(1)
         assert type(reversed(x)) == type(iter(x))
 
-    def test_cpython_issue16029(self):
-        import sys
-        M = min(sys.maxint, sys.maxsize)
-        x = xrange(0, M, M - 1)
-        assert x.__reduce__() == (xrange, (0, M, M - 1))
-        x = xrange(0, -M, 1 - M)
-        assert x.__reduce__() == (xrange, (0, -M - 1, 1 - M))
-
-    def test_cpython_issue16030(self):
-        import sys
-        M = min(sys.maxint, sys.maxsize)
-        x = xrange(0, M, M - 1)
-        assert repr(x) == 'xrange(0, %s, %s)' % (M, M - 1)
-        x = xrange(0, -M, 1 - M)
-        assert repr(x) == 'xrange(0, %s, %s)' % (-M - 1, 1 - M)
-
 
 class AppTestReversed:
     def test_reversed(self):
@@ -227,7 +202,6 @@ class AppTestReversed:
         assert list(reversed(list(reversed("hello")))) == ['h','e','l','l','o']
         raises(TypeError, reversed, reversed("hello"))
 
-
 class AppTestApply:
     def test_apply(self):
         def f(*args, **kw):
@@ -237,7 +211,6 @@ class AppTestApply:
         assert apply(f) == ((), {})
         assert apply(f, args) == (args, {})
         assert apply(f, args, kw) == (args, kw)
-
 
 class AppTestAllAny:
     """
@@ -287,7 +260,6 @@ class AppTestAllAny:
         assert any([x > 42 for x in S]) == True
         S = [10, 20, 30]
         assert any([x > 42 for x in S]) == False
-
 
 class AppTestMinMax:
     def test_min(self):

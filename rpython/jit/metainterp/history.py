@@ -1,13 +1,15 @@
 from rpython.rtyper.extregistry import ExtRegistryEntry
 from rpython.rtyper.lltypesystem import lltype, llmemory, rffi
+from rpython.rtyper.ootypesystem import ootype
 from rpython.rlib.objectmodel import we_are_translated, Symbolic
-from rpython.rlib.objectmodel import compute_unique_id, specialize
+from rpython.rlib.objectmodel import compute_unique_id
 from rpython.rlib.rarithmetic import r_int64, is_valid_int
 
 from rpython.conftest import option
 
-from rpython.jit.metainterp.resoperation import ResOperation, rop, AbstractValue
+from rpython.jit.metainterp.resoperation import ResOperation, rop
 from rpython.jit.codewriter import heaptracker, longlong
+from rpython.rlib.objectmodel import compute_identity_hash
 import weakref
 
 # ____________________________________________________________
@@ -18,7 +20,6 @@ FLOAT = 'f'
 STRUCT = 's'
 HOLE  = '_'
 VOID  = 'v'
-VECTOR = 'V'
 
 FAILARGS_LIMIT = 1000
 
@@ -34,6 +35,7 @@ def getkind(TYPE, supports_floats=True,
             return 'int'     # singlefloats are stored in an int
         if TYPE in (lltype.Float, lltype.SingleFloat):
             raise NotImplementedError("type %s not supported" % TYPE)
+        # XXX fix this for oo...
         if (TYPE != llmemory.Address and
             rffi.sizeof(TYPE) > rffi.sizeof(lltype.Signed)):
             if supports_longlong and TYPE is not lltype.LongFloat:
@@ -46,6 +48,8 @@ def getkind(TYPE, supports_floats=True,
             return "int"
         else:
             return "ref"
+    elif isinstance(TYPE, ootype.OOType):
+        return "ref"
     else:
         raise NotImplementedError("type %s not supported" % TYPE)
 getkind._annspecialcase_ = 'specialize:memo'
@@ -63,16 +67,23 @@ def repr_pointer(box):
 def repr_object(box):
     try:
         TYPE = box.value.obj._TYPE
-        return repr(TYPE)
+        if TYPE is ootype.String:
+            return '(%r)' % box.value.obj._str
+        if TYPE is ootype.Class or isinstance(TYPE, ootype.StaticMethod):
+            return '(%r)' % box.value.obj
+        if isinstance(box.value.obj, ootype._view):
+            return repr(box.value.obj._inst._TYPE)
+        else:
+            return repr(TYPE)
     except AttributeError:
         return box.value
 
 def repr_rpython(box, typechars):
-    return '%s/%s' % (box._get_hash_(), typechars,
-                        ) #compute_unique_id(box))
+    return '%s/%s%d' % (box._get_hash_(), typechars,
+                        compute_unique_id(box))
 
 
-class XxxAbstractValue(object):
+class AbstractValue(object):
     __slots__ = ()
 
     def getint(self):
@@ -84,6 +95,10 @@ class XxxAbstractValue(object):
     def getfloat(self):
         return longlong.getrealfloat(self.getfloatstorage())
 
+    def getlonglong(self):
+        assert longlong.supports_longlong
+        return self.getfloatstorage()
+
     def getref_base(self):
         raise NotImplementedError
 
@@ -91,11 +106,19 @@ class XxxAbstractValue(object):
         raise NotImplementedError
     getref._annspecialcase_ = 'specialize:arg(1)'
 
+    def _get_hash_(self):
+        return compute_identity_hash(self)
+
+    def clonebox(self):
+        raise NotImplementedError
+
     def constbox(self):
         raise NotImplementedError
 
+    def nonconstbox(self):
+        raise NotImplementedError
+
     def getaddr(self):
-        "Only for raw addresses (BoxInt & ConstInt), not for GC addresses"
         raise NotImplementedError
 
     def sort_key(self):
@@ -113,12 +136,6 @@ class XxxAbstractValue(object):
     def same_box(self, other):
         return self is other
 
-    def same_shape(self, other):
-        # only structured containers can compare their shape (vector box)
-        return True
-
-    def getaccum(self):
-        return None
 
 class AbstractDescr(AbstractValue):
     __slots__ = ()
@@ -126,6 +143,14 @@ class AbstractDescr(AbstractValue):
 
     def repr_of_descr(self):
         return '%r' % (self,)
+
+    def _clone_if_mutable(self):
+        return self
+    def clone_if_mutable(self):
+        clone = self._clone_if_mutable()
+        if not we_are_translated():
+            assert clone.__class__ is self.__class__
+        return clone
 
     def hide(self, cpu):
         descr_ptr = cpu.ts.cast_instance_to_base_ref(self)
@@ -137,38 +162,15 @@ class AbstractDescr(AbstractValue):
         descr_ptr = cpu.ts.cast_to_baseclass(descr_gcref)
         return cast_base_ptr_to_instance(AbstractDescr, descr_ptr)
 
-    def get_vinfo(self):
-        raise NotImplementedError
-
-DONT_CHANGE = AbstractDescr()
 
 class AbstractFailDescr(AbstractDescr):
     index = -1
     final_descr = False
 
-    _attrs_ = ('adr_jump_offset', 'rd_locs', 'rd_loop_token', 'rd_vector_info')
-
-    rd_vector_info = None
-
     def handle_fail(self, deadframe, metainterp_sd, jitdriver_sd):
         raise NotImplementedError
-    def compile_and_attach(self, metainterp, new_loop, orig_inputargs):
+    def compile_and_attach(self, metainterp, new_loop):
         raise NotImplementedError
-
-    def exits_early(self):
-        # is this guard either a guard_early_exit resop,
-        # or it has been moved before an guard_early_exit
-        return False
-
-    def loop_version(self):
-        # compile a loop version out of this guard?
-        return False
-
-    def attach_vector_info(self, info):
-        from rpython.jit.metainterp.resume import VectorInfo
-        assert isinstance(info, VectorInfo)
-        info.prev = self.rd_vector_info
-        self.rd_vector_info = info
 
 class BasicFinalDescr(AbstractFailDescr):
     final_descr = True
@@ -176,32 +178,18 @@ class BasicFinalDescr(AbstractFailDescr):
     def __init__(self, identifier=None):
         self.identifier = identifier      # for testing
 
-
 class BasicFailDescr(AbstractFailDescr):
     def __init__(self, identifier=None):
         self.identifier = identifier      # for testing
 
-    def make_a_counter_per_value(self, op, index):
-        pass # for testing
-
-
-@specialize.argtype(0)
-def newconst(value):
-    if value is None:
-        return ConstPtr(lltype.nullptr(llmemory.GCREF.TO))
-    elif lltype.typeOf(value) == lltype.Signed:
-        return ConstInt(value)
-    elif isinstance(value, bool):
-        return ConstInt(int(value))
-    elif lltype.typeOf(value) == longlong.FLOATSTORAGE:
-        return ConstFloat(value)
-    else:
-        assert lltype.typeOf(value) == llmemory.GCREF
-        return ConstPtr(value)
-
-class MissingValue(object):
-    "NOT_RPYTHON"
-
+class AbstractMethDescr(AbstractDescr):
+    # the base class of the result of cpu.methdescrof()
+    jitcodes = None
+    def setup(self, jitcodes):
+        # jitcodes maps { runtimeClass -> jitcode for runtimeClass.methname }
+        self.jitcodes = jitcodes
+    def get_jitcode_for_class(self, oocls):
+        return self.jitcodes[oocls]
 
 class Const(AbstractValue):
     __slots__ = ()
@@ -233,12 +221,6 @@ class Const(AbstractValue):
     def same_constant(self, other):
         raise NotImplementedError
 
-    def repr(self, memo):
-        return self.repr_rpython()
-
-    def is_constant(self):
-        return True
-
     def __repr__(self):
         return 'Const(%s)' % self._getrepr_()
 
@@ -256,10 +238,13 @@ class ConstInt(Const):
                 assert isinstance(value, Symbolic)
         self.value = value
 
+    def clonebox(self):
+        return BoxInt(self.value)
+
+    nonconstbox = clonebox
+
     def getint(self):
         return self.value
-
-    getvalue = getint
 
     def getaddr(self):
         return heaptracker.int2adr(self.value)
@@ -293,34 +278,24 @@ class ConstFloat(Const):
         assert lltype.typeOf(valuestorage) is longlong.FLOATSTORAGE
         self.value = valuestorage
 
-    @staticmethod
-    def fromfloat(x):
-        return ConstFloat(longlong.getfloatstorage(x))
+    def clonebox(self):
+        return BoxFloat(self.value)
+
+    nonconstbox = clonebox
 
     def getfloatstorage(self):
         return self.value
-
-    def getfloat(self):
-        return longlong.getrealfloat(self.value)
-
-    getvalue = getfloatstorage
 
     def _get_hash_(self):
         return longlong.gethash(self.value)
 
     def same_constant(self, other):
         if isinstance(other, ConstFloat):
-            # careful in this comparison: if self.value and other.value
-            # are both NaN, stored as regular floats (i.e. on 64-bit),
-            # then just using "==" would say False: two NaNs are always
-            # different from each other.  Conversely, "0.0 == -0.0" but
-            # they are not the same constant.
-            return (longlong.extract_bits(self.value) ==
-                    longlong.extract_bits(other.value))
+            return self.value == other.value
         return False
 
     def nonnull(self):
-        return bool(longlong.extract_bits(self.value))
+        return self.value != longlong.ZEROF
 
     def _getrepr_(self):
         return self.getfloat()
@@ -339,10 +314,13 @@ class ConstPtr(Const):
         assert lltype.typeOf(value) == llmemory.GCREF
         self.value = value
 
+    def clonebox(self):
+        return BoxPtr(self.value)
+
+    nonconstbox = clonebox
+
     def getref_base(self):
         return self.value
-
-    getvalue = getref_base
 
     def getref(self, PTR):
         return lltype.cast_opaque_ptr(PTR, self.getref_base())
@@ -353,6 +331,9 @@ class ConstPtr(Const):
             return lltype.identityhash(self.value)
         else:
             return 0
+
+    def getaddr(self):
+        return llmemory.cast_ptr_to_adr(self.value)
 
     def same_constant(self, other):
         if isinstance(other, ConstPtr):
@@ -377,6 +358,262 @@ class ConstPtr(Const):
             return '<uninitialized string>'
 
 CONST_NULL = ConstPtr(ConstPtr.value)
+
+class ConstObj(Const):
+    type = REF
+    value = ootype.NULL
+    _attrs_ = ('value',)
+
+    def __init__(self, value):
+        assert ootype.typeOf(value) is ootype.Object
+        self.value = value
+
+    def clonebox(self):
+        return BoxObj(self.value)
+
+    nonconstbox = clonebox
+
+    def getref_base(self):
+       return self.value
+
+    def getref(self, OBJ):
+        return ootype.cast_from_object(OBJ, self.getref_base())
+    getref._annspecialcase_ = 'specialize:arg(1)'
+
+    def _get_hash_(self):
+        if self.value:
+            return ootype.identityhash(self.value)
+        else:
+            return 0
+
+##    def getaddr(self):
+##        # so far this is used only when calling
+##        # CodeWriter.IndirectCallset.bytecode_for_address.  We don't need a
+##        # real addr, but just a key for the dictionary
+##        return self.value
+
+    def same_constant(self, other):
+        if isinstance(other, ConstObj):
+            return self.value == other.value
+        return False
+
+    def nonnull(self):
+        return bool(self.value)
+
+    _getrepr_ = repr_object
+
+    def repr_rpython(self):
+        return repr_rpython(self, 'co')
+
+    def _get_str(self):    # for debugging only
+        from rpython.rtyper.annlowlevel import hlstr
+        return hlstr(ootype.cast_from_object(ootype.String, self.value))
+
+class Box(AbstractValue):
+    __slots__ = ()
+    _extended_display = True
+    _counter = 0
+    is_box = True  # hint that we want to make links in graphviz from this
+
+    @staticmethod
+    def _new(x):
+        "NOT_RPYTHON"
+        kind = getkind(lltype.typeOf(x))
+        if kind == "int":
+            intval = lltype.cast_primitive(lltype.Signed, x)
+            return BoxInt(intval)
+        elif kind == "ref":
+            # XXX add ootype support?
+            ptrval = lltype.cast_opaque_ptr(llmemory.GCREF, x)
+            return BoxPtr(ptrval)
+        elif kind == "float":
+            return BoxFloat(longlong.getfloatstorage(x))
+        else:
+            raise NotImplementedError(kind)
+
+    def nonconstbox(self):
+        return self
+
+    def __repr__(self):
+        result = str(self)
+        if self._extended_display:
+            result += '(%s)' % self._getrepr_()
+        return result
+
+    def __str__(self):
+        if not hasattr(self, '_str'):
+            try:
+                if self.type == INT:
+                    t = 'i'
+                elif self.type == FLOAT:
+                    t = 'f'
+                else:
+                    t = 'p'
+            except AttributeError:
+                t = 'b'
+            self._str = '%s%d' % (t, Box._counter)
+            Box._counter += 1
+        return self._str
+
+    def _get_str(self):    # for debugging only
+        return self.constbox()._get_str()
+
+    def forget_value(self):
+        raise NotImplementedError
+
+class BoxInt(Box):
+    type = INT
+    _attrs_ = ('value',)
+
+    def __init__(self, value=0):
+        if not we_are_translated():
+            if is_valid_int(value):
+                value = int(value)    # bool -> int
+            else:
+                assert lltype.typeOf(value) == lltype.Signed
+        self.value = value
+
+    def forget_value(self):
+        self.value = 0
+
+    def clonebox(self):
+        return BoxInt(self.value)
+
+    def constbox(self):
+        return ConstInt(self.value)
+
+    def getint(self):
+        return self.value
+
+    def getaddr(self):
+        return heaptracker.int2adr(self.value)
+
+    def _get_hash_(self):
+        return make_hashable_int(self.value)
+
+    def nonnull(self):
+        return self.value != 0
+
+    def _getrepr_(self):
+        return self.value
+
+    def repr_rpython(self):
+        return repr_rpython(self, 'bi')
+
+class BoxFloat(Box):
+    type = FLOAT
+    _attrs_ = ('value',)
+
+    def __init__(self, valuestorage=longlong.ZEROF):
+        assert lltype.typeOf(valuestorage) is longlong.FLOATSTORAGE
+        self.value = valuestorage
+
+    def forget_value(self):
+        self.value = longlong.ZEROF
+
+    def clonebox(self):
+        return BoxFloat(self.value)
+
+    def constbox(self):
+        return ConstFloat(self.value)
+
+    def getfloatstorage(self):
+        return self.value
+
+    def _get_hash_(self):
+        return longlong.gethash(self.value)
+
+    def nonnull(self):
+        return self.value != longlong.ZEROF
+
+    def _getrepr_(self):
+        return self.getfloat()
+
+    def repr_rpython(self):
+        return repr_rpython(self, 'bf')
+
+class BoxPtr(Box):
+    type = REF
+    _attrs_ = ('value',)
+
+    def __init__(self, value=lltype.nullptr(llmemory.GCREF.TO)):
+        assert lltype.typeOf(value) == llmemory.GCREF
+        self.value = value
+
+    def forget_value(self):
+        self.value = lltype.nullptr(llmemory.GCREF.TO)
+
+    def clonebox(self):
+        return BoxPtr(self.value)
+
+    def constbox(self):
+        return ConstPtr(self.value)
+
+    def getref_base(self):
+        return self.value
+
+    def getref(self, PTR):
+        return lltype.cast_opaque_ptr(PTR, self.getref_base())
+    getref._annspecialcase_ = 'specialize:arg(1)'
+
+    def getaddr(self):
+        return llmemory.cast_ptr_to_adr(self.value)
+
+    def _get_hash_(self):
+        if self.value:
+            return lltype.identityhash(self.value)
+        else:
+            return 0
+
+    def nonnull(self):
+        return bool(self.value)
+
+    def repr_rpython(self):
+        return repr_rpython(self, 'bp')
+
+    _getrepr_ = repr_pointer
+
+NULLBOX = BoxPtr()
+
+
+class BoxObj(Box):
+    type = REF
+    _attrs_ = ('value',)
+
+    def __init__(self, value=ootype.NULL):
+        assert ootype.typeOf(value) is ootype.Object
+        self.value = value
+
+    def forget_value(self):
+        self.value = ootype.NULL
+
+    def clonebox(self):
+        return BoxObj(self.value)
+
+    def constbox(self):
+        return ConstObj(self.value)
+
+    def getref_base(self):
+        return self.value
+
+    def getref(self, OBJ):
+        return ootype.cast_from_object(OBJ, self.getref_base())
+    getref._annspecialcase_ = 'specialize:arg(1)'
+
+    def _get_hash_(self):
+        if self.value:
+            return ootype.identityhash(self.value)
+        else:
+            return 0
+
+    def nonnull(self):
+        return bool(self.value)
+
+    def repr_rpython(self):
+        return repr_rpython(self, 'bo')
+
+    _getrepr_ = repr_object
+
 
 # ____________________________________________________________
 
@@ -465,11 +702,7 @@ class JitCellToken(AbstractDescr):
         self.compiled_loop_token.cpu.dump_loop_token(self)
 
 class TargetToken(AbstractDescr):
-    _ll_loop_code = 0     # for the backend.  If 0, we know that it is
-                          # a LABEL that was not compiled yet.
-
-    def __init__(self, targeting_jitcell_token=None,
-                 original_jitcell_token=None):
+    def __init__(self, targeting_jitcell_token=None):
         # Warning, two different jitcell_tokens here!
         #
         # * 'targeting_jitcell_token' is only useful for the front-end,
@@ -487,30 +720,30 @@ class TargetToken(AbstractDescr):
         #     out of which we made this bridge
         #
         self.targeting_jitcell_token = targeting_jitcell_token
-        self.original_jitcell_token = original_jitcell_token
+        self.original_jitcell_token = None
 
         self.virtual_state = None
+        self.exported_state = None
         self.short_preamble = None
 
     def repr_of_descr(self):
         return 'TargetToken(%d)' % compute_unique_id(self)
-
+        
 class TreeLoop(object):
     inputargs = None
     operations = None
     call_pure_results = None
     logops = None
     quasi_immutable_deps = None
+    resume_at_jump_descr = None
 
     def _token(*args):
         raise Exception("TreeLoop.token is killed")
     token = property(_token, _token)
 
-    # This is the jitcell where the trace starts.  Labels within the
-    # trace might belong to some other jitcells, i.e. they might have
-    # TargetTokens with a different value for 'targeting_jitcell_token'.
-    # But these TargetTokens also have a 'original_jitcell_token' field,
-    # which must be equal to this one.
+    # This is the jitcell where the trace starts. Labels within the trace might
+    # belong to some other jitcells in the sens that jumping to this other
+    # jitcell will result in a jump to the label.
     original_jitcell_token = None
 
     def __init__(self, name):
@@ -525,10 +758,10 @@ class TreeLoop(object):
         _list_all_operations(result, self.operations, omit_finish)
         return result
 
-    def summary(self, adding_insns={}, omit_finish=True):    # for debugging
+    def summary(self, adding_insns={}):    # for debugging
         "NOT_RPYTHON"
         insns = adding_insns.copy()
-        for op in self._all_operations(omit_finish=omit_finish):
+        for op in self._all_operations(omit_finish=True):
             opname = op.getopname()
             insns[opname] = insns.get(opname, 0) + 1
         return insns
@@ -536,69 +769,64 @@ class TreeLoop(object):
     def get_operations(self):
         return self.operations
 
-    def get_display_text(self, memo):    # for graphpage.py
-        return '%s\n[%s]' % (
-            self.name,
-            ', '.join([box.repr(memo) for box in self.inputargs]))
+    def get_display_text(self):    # for graphpage.py
+        return self.name + '\n' + repr(self.inputargs)
 
     def show(self, errmsg=None):
         "NOT_RPYTHON"
         from rpython.jit.metainterp.graphpage import display_procedures
         display_procedures([self], errmsg)
 
-    def check_consistency(self, check_descr=True):     # for testing
+    def check_consistency(self):     # for testing
         "NOT_RPYTHON"
-        self.check_consistency_of(self.inputargs, self.operations,
-                                  check_descr=check_descr)
+        self.check_consistency_of(self.inputargs, self.operations)
         for op in self.operations:
             descr = op.getdescr()
-            if check_descr and op.getopnum() == rop.LABEL and isinstance(descr, TargetToken):
+            if op.getopnum() == rop.LABEL and isinstance(descr, TargetToken):
                 assert descr.original_jitcell_token is self.original_jitcell_token
 
     @staticmethod
-    def check_consistency_of(inputargs, operations, check_descr=True):
-        "NOT_RPYTHON"
+    def check_consistency_of(inputargs, operations):
         for box in inputargs:
-            assert not isinstance(box, Const), "Loop.inputargs contains %r" % (box,)
+            assert isinstance(box, Box), "Loop.inputargs contains %r" % (box,)
         seen = dict.fromkeys(inputargs)
         assert len(seen) == len(inputargs), (
                "duplicate Box in the Loop.inputargs")
-        TreeLoop.check_consistency_of_branch(operations, seen,
-                                             check_descr=check_descr)
+        TreeLoop.check_consistency_of_branch(operations, seen)
 
     @staticmethod
-    def check_consistency_of_branch(operations, seen, check_descr=True):
+    def check_consistency_of_branch(operations, seen):
         "NOT_RPYTHON"
-        for num, op in enumerate(operations):
-            if op.is_ovf():
-                assert operations[num + 1].getopnum() in (rop.GUARD_NO_OVERFLOW,
-                                                          rop.GUARD_OVERFLOW)
+        for op in operations:
             for i in range(op.numargs()):
                 box = op.getarg(i)
-                if not isinstance(box, Const):
+                if isinstance(box, Box):
                     assert box in seen
-            if op.is_guard() and check_descr:
+            if op.is_guard():
                 assert op.getdescr() is not None
                 if hasattr(op.getdescr(), '_debug_suboperations'):
                     ops = op.getdescr()._debug_suboperations
                     TreeLoop.check_consistency_of_branch(ops, seen.copy())
                 for box in op.getfailargs() or []:
                     if box is not None:
-                        assert not isinstance(box, Const)
+                        assert isinstance(box, Box)
                         assert box in seen
-            elif check_descr:
+            else:
                 assert op.getfailargs() is None
-            if op.type != 'v':
-                seen[op] = True
+            box = op.result
+            if box is not None:
+                assert isinstance(box, Box)
+                assert box not in seen
+                seen[box] = True
             if op.getopnum() == rop.LABEL:
                 inputargs = op.getarglist()
                 for box in inputargs:
-                    assert not isinstance(box, Const), "LABEL contains %r" % (box,)
+                    assert isinstance(box, Box), "LABEL contains %r" % (box,)
                 seen = dict.fromkeys(inputargs)
                 assert len(seen) == len(inputargs), (
                     "duplicate Box in the LABEL arguments")
-
-        #assert operations[-1].is_final()
+                
+        assert operations[-1].is_final()
         if operations[-1].getopnum() == rop.JUMP:
             target = operations[-1].getdescr()
             if target is not None:
@@ -606,7 +834,7 @@ class TreeLoop(object):
 
     def dump(self):
         # RPython-friendly
-        print '%r: inputargs =' % self, self._dump_args(self.inputargs)
+        print '%r: inputargs =' % self, self._dump_args(self.inputargs)        
         for op in self.operations:
             args = op.getarglist()
             print '\t', op.getopname(), self._dump_args(args), \
@@ -643,31 +871,8 @@ class History(object):
         self.inputargs = None
         self.operations = []
 
-    @specialize.argtype(3)
-    def record(self, opnum, argboxes, value, descr=None):
-        op = ResOperation(opnum, argboxes, descr)
-        if value is None:
-            assert op.type == 'v'
-        elif isinstance(value, bool):
-            assert op.type == 'i'
-            op.setint(int(value))
-        elif lltype.typeOf(value) == lltype.Signed:
-            assert op.type == 'i'
-            op.setint(value)
-        elif lltype.typeOf(value) is longlong.FLOATSTORAGE:
-            assert op.type == 'f'
-            op.setfloatstorage(value)
-        else:
-            assert lltype.typeOf(value) == llmemory.GCREF
-            assert op.type == 'r'
-            op.setref_base(value)
-        self.operations.append(op)
-        return op
-
-    def record_default_val(self, opnum, argboxes, descr=None):
-        op = ResOperation(opnum, argboxes, descr)
-        assert op.is_same_as()
-        op.copy_value_from(argboxes[0])
+    def record(self, opnum, argboxes, resbox, descr=None):
+        op = ResOperation(opnum, argboxes, resbox, descr)
         self.operations.append(op)
         return op
 
@@ -745,7 +950,7 @@ class Stats(object):
     def add_jitcell_token(self, token):
         assert isinstance(token, JitCellToken)
         self.jitcell_token_wrefs.append(weakref.ref(token))
-
+        
     def set_history(self, history):
         self.operations = history.operations
 
@@ -789,8 +994,6 @@ class Stats(object):
             insns[opname] = insns.get(opname, 0) + 1
         if expected is not None:
             insns.pop('debug_merge_point', None)
-            insns.pop('enter_portal_frame', None)
-            insns.pop('leave_portal_frame', None)
             assert insns == expected
         for insn, expected_count in check.items():
             getattr(rop, insn.upper())  # fails if 'rop.INSN' does not exist
@@ -799,38 +1002,15 @@ class Stats(object):
                 "found %d %r, expected %d" % (found, insn, expected_count))
         return insns
 
-    def check_resops(self, expected=None, omit_finish=True, **check):
+    def check_resops(self, expected=None, **check):
         insns = {}
-        if 'call' in check:
-            assert check.pop('call') == 0
-            check['call_i'] = check['call_r'] = check['call_f'] = check['call_n'] = 0
-        if 'call_pure' in check:
-            assert check.pop('call_pure') == 0
-            check['call_pure_i'] = check['call_pure_r'] = check['call_pure_f'] = 0
-        if 'call_may_force' in check:
-            assert check.pop('call_may_force') == 0
-            check['call_may_force_i'] = check['call_may_force_r'] = check['call_may_force_f'] = check['call_may_force_n'] = 0
-        if 'call_assembler' in check:
-            assert check.pop('call_assembler') == 0
-            check['call_assembler_i'] = check['call_assembler_r'] = check['call_assembler_f'] = check['call_assembler_n'] = 0
-        if 'getfield_gc' in check:
-            assert check.pop('getfield_gc') == 0
-            check['getfield_gc_i'] = check['getfield_gc_r'] = check['getfield_gc_f'] = 0
-        if 'getarrayitem_gc_pure' in check:
-            assert check.pop('getarrayitem_gc_pure') == 0
-            check['getarrayitem_gc_pure_i'] = check['getarrayitem_gc_pure_r'] = check['getarrayitem_gc_pure_f'] = 0
-        if 'getarrayitem_gc' in check:
-            assert check.pop('getarrayitem_gc') == 0
-            check['getarrayitem_gc_i'] = check['getarrayitem_gc_r'] = check['getarrayitem_gc_f'] = 0
         for loop in self.get_all_loops():
-            insns = loop.summary(adding_insns=insns, omit_finish=omit_finish)
+            insns = loop.summary(adding_insns=insns)
         return self._check_insns(insns, expected, check)
 
     def _check_insns(self, insns, expected, check):
         if expected is not None:
             insns.pop('debug_merge_point', None)
-            insns.pop('enter_portal_frame', None)
-            insns.pop('leave_portal_frame', None)
             insns.pop('label', None)
             assert insns == expected
         for insn, expected_count in check.items():
@@ -863,7 +1043,7 @@ class Stats(object):
             opname = op.getopname()
             insns[opname] = insns.get(opname, 0) + 1
         return self._check_insns(insns, expected, check)
-
+        
     def check_loops(self, expected=None, everywhere=False, **check):
         insns = {}
         for loop in self.get_all_loops():
@@ -886,7 +1066,7 @@ class Stats(object):
             print
             import pdb; pdb.set_trace()
         return
-
+        
         for insn, expected_count in check.items():
             getattr(rop, insn.upper())  # fails if 'rop.INSN' does not exist
             found = insns.get(insn, 0)
